@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# ---- 环境与密钥 ----
+.env
+.env.*
+!.env.example
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+.DS_Store
+
+# ---- 日志 ----
+logs/
+*.log
+
+# ---- 测试 / 覆盖率 / 类型缓存 ----
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 项目临时文件（铁律：临时探针/脚本落 tmp/，执行完清空）----
+tmp/
+.codebuddy/
+demo/
+ml_models/
+

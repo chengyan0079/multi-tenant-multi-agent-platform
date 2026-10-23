@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-platform"
+version = "0.1.0"
+description = "多 Agent 编排系统（EduAgent 业务蓝本）：多模块单应用，LangGraph 图编排 + 插件化能力缝隙"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.111",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.1",
+    "slowapi>=0.1.9",
+    "langgraph>=0.2",
+    "langchain>=0.2",
+    "langchain-openai>=0.1",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "pymilvus>=2.4",
+    "redis>=5.0",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "loguru>=0.7",
+    "requests>=2.31",
+    "nacos-sdk-python>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

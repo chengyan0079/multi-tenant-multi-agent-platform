@@ -1,0 +1,6 @@
+name: code_exec
+version: 0.1.0
+capabilities:
+  - code_exec
+dependencies: []
+description: 代码题沙箱评估（规划）
