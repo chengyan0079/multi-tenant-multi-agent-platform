@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from backend.common.logger import get_logger
@@ -64,19 +65,6 @@ class ConfigManager:
         self._env_file = env_file
         self._yaml_file = yaml_file
 
-    def _load_env_file(self) -> Dict[str, str]:
-        """读取 .env 文件到扁平 dict（仅当文件存在）。环境变量优先级更高，这里不覆盖已有 env。"""
-        flat: Dict[str, str] = {}
-        if os.path.exists(self._env_file):
-            with open(self._env_file, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, val = line.partition("=")
-                    flat[key.strip()] = val.strip().strip('"').strip("'")
-        return flat
-
     def _load_yaml(self) -> Dict[str, Any]:
         """可选 YAML 覆盖（业务级默认配置），不存在返回空。"""
         if self._yaml_file and os.path.exists(self._yaml_file):
@@ -85,10 +73,14 @@ class ConfigManager:
         return {}
 
     def load(self) -> AppSettings:
-        """组装并校验配置；失败抛 ValidationError。"""
-        flat = self._load_env_file()
-        # 环境变量覆盖 .env 文件中的同名项
-        merged = {**flat, **{k: v for k, v in os.environ.items() if k in flat or k.isupper()}}
+        """组装并校验配置；失败抛 ValidationError。
+
+        通过 python-dotenv 将 .env 载入 os.environ（override=True：.env 覆盖已有环境变量），
+        其余模块统一从 os.environ 读取配置。
+        """
+        # 将 .env 载入进程环境变量（override=True：.env 中的同名项覆盖已有 os.environ）
+        load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
+        merged = dict(os.environ)
         yaml_cfg = self._load_yaml()
 
         postgres = PostgresSettings(

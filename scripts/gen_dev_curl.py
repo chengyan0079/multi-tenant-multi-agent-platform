@@ -24,19 +24,9 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parent.parent
-
-
-def load_env(path: Path) -> dict:
-    env: dict = {}
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip().strip('"').strip("'")
-    return env
 
 
 def _b64url(b: bytes) -> bytes:
@@ -61,7 +51,8 @@ def main() -> None:
     ap.add_argument("--run", action="store_true", help="直接执行生成的 curl")
     args = ap.parse_args()
 
-    env = load_env(ROOT / ".env")
+    load_dotenv(dotenv_path=ROOT / ".env", override=True)
+    env = os.environ
     dev_user = env.get("DEV_USER_ID", "")
     dev_tenant = env.get("DEV_TENANT_ID", "dev-tenant")
     secret = env.get("JWT_SECRET", "")

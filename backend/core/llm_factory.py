@@ -85,10 +85,52 @@ class LLMFactory:
         return [float(s) for s in result.scores]
 
     async def classify(self, text: str) -> str:
-        """bert-chinese 中文意图/文本分类快路径。未加载时降级为 'general'。"""
+        """bert-chinese 中文意图分类（消费离线训练产物）。
+
+        仅当 MODEL.classifier_dir 配置时加载；未配置或加载失败降级为 'general'。
+        产物由 offline/ 模块训练产出（HF 格式 + meta.json：labels 顺序 + max_len）。
+        """
+        if self._classifier is None:
+            await self._lazy_load_classifier()
         if self._classifier is None:
             return "general"
-        return await asyncio.to_thread(self._classifier.predict, text)
+        model, tokenizer, labels, max_len = self._classifier
+        return await asyncio.to_thread(self._classify_one, model, tokenizer, labels, max_len, text)
+
+    @staticmethod
+    def _classify_one(model, tokenizer, labels: list, max_len: int, text: str) -> str:
+        import torch
+
+        enc = tokenizer(
+            text, return_tensors="pt", truncation=True, padding="max_length", max_length=max_len
+        )
+        with torch.no_grad():
+            logits = model(**enc).logits
+        idx = int(logits.argmax(dim=-1).item())
+        return labels[idx] if 0 <= idx < len(labels) else "general"
+
+    async def _lazy_load_classifier(self) -> None:
+        """按 MODEL.classifier_dir 懒加载离线意图分类产物（只读消费，不依赖 offline 包）。"""
+        cfg = app_state.settings.model
+        if not cfg.classifier_dir:
+            self._classifier = None
+            return
+        try:
+            import json as _json
+            from pathlib import Path
+
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+            d = Path(cfg.classifier_dir)
+            meta = _json.loads((d / "meta.json").read_text(encoding="utf-8"))
+            tokenizer = AutoTokenizer.from_pretrained(d)
+            model = AutoModelForSequenceClassification.from_pretrained(d)
+            model.eval()
+            self._classifier = (model, tokenizer, meta["labels"], int(meta.get("max_len", 64)))
+            logger.info(f"意图分类器就绪: {d}")
+        except Exception as exc:
+            logger.warning(f"意图分类器加载跳过（将以 general 兜底）: {exc}")
+            self._classifier = None
 
     async def stop(self) -> None:
         self._llm = self._embedder = self._reranker = self._classifier = None

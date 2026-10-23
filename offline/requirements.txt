@@ -1,0 +1,5 @@
+# 离线模块依赖（与在线业务分离，独立安装；在线侧不强制这些依赖）
+torch>=2.1
+transformers>=4.40
+scikit-learn>=1.3
+pandas>=2.0

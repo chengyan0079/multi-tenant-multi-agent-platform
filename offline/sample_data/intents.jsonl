@@ -1,0 +1,24 @@
+{"text": "帮我优化简历里的项目经历", "intent": "resume"}
+{"text": "简历怎么写才能突出实习经验", "intent": "resume"}
+{"text": "帮我写一份求职简历", "intent": "resume"}
+{"text": "我的简历太单薄了怎么办", "intent": "resume"}
+{"text": "如何描述我的技术栈", "intent": "resume"}
+{"text": "帮我润色简历里的自我评价", "intent": "resume"}
+{"text": "帮我出一套期末模拟题", "intent": "exam"}
+{"text": "这门课期末考试重点有哪些", "intent": "exam"}
+{"text": "帮我批改这份试卷", "intent": "exam"}
+{"text": "给我出十道选择题", "intent": "exam"}
+{"text": "历年真题能帮我解析一下吗", "intent": "exam"}
+{"text": "出一份知识点测验", "intent": "exam"}
+{"text": "模拟一次技术面试", "intent": "interview"}
+{"text": "面试常被问到的问题有哪些", "intent": "interview"}
+{"text": "帮我准备产品经理面试", "intent": "interview"}
+{"text": "行为面试应该怎么回答", "intent": "interview"}
+{"text": "模拟一场 HR 面试", "intent": "interview"}
+{"text": "面试题该怎么准备", "intent": "interview"}
+{"text": "什么是 RESTful API", "intent": "qa"}
+{"text": "Python 怎么读取文件", "intent": "qa"}
+{"text": "解释一下闭包是什么", "intent": "qa"}
+{"text": "数据库索引有什么作用", "intent": "qa"}
+{"text": "机器学习过拟合怎么解决", "intent": "qa"}
+{"text": "HTTP 和 HTTPS 有什么区别", "intent": "qa"}
