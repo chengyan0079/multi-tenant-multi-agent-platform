@@ -1,0 +1,63 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.app-logo {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.app-content {
+  padding: 16px;
+  overflow: auto;
+}
+
+.login-page {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+}
+
+/* 窄屏适配：压缩留白，保证内容区可用宽度 */
+@media (max-width: 576px) {
+  .app-header {
+    padding: 0 8px;
+  }
+
+  .app-content {
+    padding: 8px;
+  }
+
+  .app-logo {
+    font-size: 14px;
+  }
+}
