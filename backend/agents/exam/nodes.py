@@ -4,7 +4,7 @@ from __future__ import annotations
 from langgraph.types import interrupt
 
 from backend.agents.exam.state import ExamState
-from backend.core.tracing import tracing
+from backend.observability.tracing import tracing
 
 
 async def parse_word(state: ExamState) -> ExamState:
@@ -51,7 +51,7 @@ async def human_review(state: ExamState) -> ExamState:
     """高风险发布前挂起（HITL），写入队列等待教师 resume。"""
     tracing.event("exam.human_review")
     reason = "试卷批改结果待教师确认后发布"
-    # interrupt 暂停图执行，teacher 经 /v1/threads/{id}/resume 注入决策
+    # interrupt 暂停图执行，teacher 经 /api/v1/threads/{id}/resume 注入决策
     decision = interrupt({"reason": reason})
     return {"hitl_reason": reason, "published": bool(decision.get("approve")) if isinstance(decision, dict) else False}
 

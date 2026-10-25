@@ -35,7 +35,7 @@ pydantic==2.14.1
 pydantic-settings==2.15.0              # 读取 .env
 
 httpx==0.28.1                          # 异步 HTTP 客户端
-python-jose[cryptography]==3.3.0       # JWT 令牌
+pyjwt==2.15.1                          # JWT 令牌
 passlib[bcrypt]==1.7.4                 # 密码 bcrypt 哈希
 bcrypt==4.0.1                          # passlib 1.7.4 不兼容 bcrypt>=5，锁定 4.x
 python-dotenv==1.2.4                   # 加载 .env

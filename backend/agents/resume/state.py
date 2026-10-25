@@ -4,6 +4,10 @@ from __future__ import annotations
 from typing import Dict, List, Optional, TypedDict
 
 
+# 六维度（graph 组装评分 fan-out 与 nodes 评分别共用同一份定义）
+_DIMENSIONS = ["content", "structure", "match", "expression", "project", "education"]
+
+
 class ResumeState(TypedDict, total=False):
     """简历审查图状态。tenant_id/trace_id 全链路透传，results 累积各维度评分。"""
 

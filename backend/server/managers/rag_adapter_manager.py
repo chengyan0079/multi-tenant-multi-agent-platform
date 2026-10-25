@@ -1,8 +1,8 @@
 """rag-ultra 适配层初始化（复用，不重建）。"""
 from __future__ import annotations
 
-from backend.rag.client import client
-from backend.server.base_manager import BaseManager
+from backend.mcp.retrieval.client import client
+from backend.server.base_manager import BaseManager, HealthInfo
 
 
 class RagAdapterManager(BaseManager):
@@ -18,3 +18,9 @@ class RagAdapterManager(BaseManager):
 
     async def stop(self) -> None:
         await client.stop()
+
+    async def health(self) -> HealthInfo:
+        # 客户端惰性连接：本地 SDK 或 HTTP 任一就绪即可用，否则降级（首次调用时再建连）
+        if client._module or client._http:
+            return HealthInfo(status="running")
+        return HealthInfo(status="degraded", detail="rag-ultra 客户端未就绪（惰性连接）")

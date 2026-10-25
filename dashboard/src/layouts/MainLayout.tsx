@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
+  ApiOutlined,
   DashboardOutlined,
   FileSearchOutlined,
   LogoutOutlined,
@@ -13,7 +14,7 @@ import {
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Drawer, Grid, Layout, Menu, Typography } from 'antd';
+import { Avatar, Button, Drawer, Grid, Layout, Menu, Tag, Typography } from 'antd';
 
 import { getUser, logout } from '../services/auth';
 
@@ -26,7 +27,18 @@ const menuItems = [
   { key: '/agents', icon: <RobotOutlined />, label: '智能体管理' },
   { key: '/sessions', icon: <MessageOutlined />, label: '会话运行' },
   { key: '/tools', icon: <ToolOutlined />, label: '工具与插件' },
-  { key: '/rbac', icon: <SafetyCertificateOutlined />, label: '权限中心' },
+  { key: '/models', icon: <ApiOutlined />, label: '模型注册表' },
+  {
+    key: '/rbac',
+    icon: <SafetyCertificateOutlined />,
+    label: '权限中心',
+    children: [
+      { key: '/users', label: '用户管理' },
+      { key: '/tenants', label: '租户管理' },
+      { key: '/roles', label: '角色管理' },
+      { key: '/menus', label: '菜单管理' },
+    ],
+  },
   { key: '/config', icon: <SettingOutlined />, label: '配置中心' },
   { key: '/audit', icon: <FileSearchOutlined />, label: '审计日志' },
 ];
@@ -65,10 +77,10 @@ export default function MainLayout() {
   );
 
   return (
-    <Layout style={{ height: '100%' }}>
+    <Layout className="app-shell">
       {!isMobile && (
         <Sider collapsible collapsed={collapsed} trigger={null} theme="dark" width={200}>
-          <div className="app-logo">{collapsed ? 'AP' : 'Agent Platform'}</div>
+          <div className="app-logo">{collapsed ? '智' : '智能体平台'}</div>
           {menuNode}
         </Sider>
       )}
@@ -94,11 +106,14 @@ export default function MainLayout() {
             onClick={() => (isMobile ? setDrawerOpen(true) : setCollapsed(!collapsed))}
           />
           <div className="app-header-right">
-            <Avatar size="small" icon={<UserOutlined />} />
+            <Avatar size="small" style={{ background: '#1677ff' }} icon={<UserOutlined />} />
             {!isMobile && (
               <>
-                <Typography.Text>{user.username}</Typography.Text>
-                <Typography.Text type="secondary">（{user.role}）</Typography.Text>
+                <Typography.Text strong>{user.name || user.username}</Typography.Text>
+                <Tag color="blue" style={{ marginInlineEnd: 0 }}>
+                  {user.role}
+                </Tag>
+                {user.tenantName ? <Tag style={{ marginInlineEnd: 0 }}>{user.tenantName}</Tag> : null}
               </>
             )}
             <Button type="text" icon={<LogoutOutlined />} onClick={handleLogout}>

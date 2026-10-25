@@ -1,31 +1,45 @@
 """
-logger - 日志配置（基于 loguru，对齐 RAG-Ultra）
+logger - 日志配置（基于 loguru）
 
 全程 trace_id 注入每条日志（由中间件写入 contextvars，patcher 读取），便于按链路收集。
-控制台 + 文件双写；文件按「日期 + 大小」切片、超期清理。get_logger 返回 loguru 单例。
+控制台 + 文件双写；文件按日期切片、压缩归档、超期清理。get_logger 返回 loguru 单例。
+日志文件路径若配成相对路径，按项目根目录解析，不受启动时 cwd 影响。
 """
 from __future__ import annotations
 
-import re
 import sys
+import uuid
 from contextvars import ContextVar
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from loguru import logger as _logger
 
-# 注意：不直接在模块顶层 import backend.config，避免 config.settings -> common.logger 的循环导入。
-# 需要配置的函数（setup_logging）内部惰性导入。BASE_DIR 本地计算，保持与 backend.config 解耦。
+# 本地计算 BASE_DIR，避免顶层 import backend.config 造成循环导入；
+# setup_logging 内部惰性读取 config.logging。
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # 全链路 trace_id：由 TraceMiddleware / 认证依赖写入 contextvars，日志 patcher 读取。
 trace_id_ctx: ContextVar[str | None] = ContextVar("trace_id", default=None)
 
 
+def ensure_trace_id() -> str:
+    """取当前上下文的 trace_id；没有就生成一个并写回 contextvars。
+
+    写回是为了让同一次请求（同一 async 上下文）内后续日志复用同一个 id，
+    而不是每条日志各生成一个。请求入口由 TraceIdMiddleware 优先透传
+    X-Trace-Id，请求结束会 reset，不影响请求之间的隔离。
+    """
+    tid = trace_id_ctx.get()
+    if not tid:
+        tid = uuid.uuid4().hex
+        trace_id_ctx.set(tid)
+    return tid
+
+
 def _inject_trace_id(record: dict) -> None:
-    """把当前上下文 trace_id 注入日志 record（无则 '-'）。"""
-    record["extra"]["trace_id"] = trace_id_ctx.get() or "-"
+    """把 trace_id 注入日志 record；上下文里没有就按需生成。"""
+    record["extra"]["trace_id"] = ensure_trace_id()
 
 
 # loguru 为单例：附加包名前缀与 trace_id 注入两个 patcher
@@ -35,66 +49,25 @@ logger = (
     .patch(_inject_trace_id)
 )
 
+# 字段取值来自 loguru record：
+#   process.id   —— 进程 PID，区分多 worker 部署，也能看出日志是否跨重启
+#   thread.name  —— 线程名（MainThread / asyncio_0 ...），用于判断同步阻塞落在了哪个线程
+#   毫秒时间戳   —— 与 trace_id 一起对齐链路，秒级精度不够排并发问题
 LOG_FORMAT = (
-    "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | trace={extra[trace_id]} | "
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
+    "pid={process.id} thread={thread.name} | trace={extra[trace_id]} | "
     "{name}:{file}:{line} - {message}"
 )
 
 
-class DatedSizeRotatingSink:
-    """按「日期 + 大小」切片、文件名形如 app-YYYYMMDD-<index>.log 的文件写入器。"""
+def _log_path(file: str) -> Path:
+    """把配置里的日志路径解析成绝对路径：相对路径以项目根目录为基准。
 
-    _PATTERN = re.compile(r"^app-(\d{8})-.*\.log$")
-
-    def __init__(self, log_dir: Path, max_bytes: int = 1024 ** 3, encoding: str = "utf-8",
-                 retention_days: int = 7) -> None:
-        self.log_dir = Path(log_dir)
-        self.max_bytes = max_bytes
-        self.encoding = encoding
-        self.retention_days = retention_days
-        self._date = ""
-        self._index = 0
-        self._file = None
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-
-    def _open(self) -> None:
-        if self._file is not None:
-            self._file.close()
-        self._file = open(self.log_dir / f"app-{self._date}-{self._index}.log", "a", encoding=self.encoding)
-
-    def _cleanup(self) -> None:
-        if self.retention_days <= 0:
-            return
-        today = datetime.strptime(self._date, "%Y%m%d")
-        cutoff = (today - timedelta(days=self.retention_days)).strftime("%Y%m%d")
-        for p in self.log_dir.glob("app-*-*.log"):
-            m = self._PATTERN.match(p.name)
-            if m and m.group(1) < cutoff:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
-
-    def __call__(self, message: Any) -> None:
-        record = message.record
-        day = record["time"].strftime("%Y%m%d")
-        text = str(message)
-        size = len(text.encode(self.encoding, errors="replace"))
-        if day != self._date:
-            self._date = day
-            self._index = 0
-            self._cleanup()
-            self._open()
-        elif self._file.tell() + size > self.max_bytes:
-            self._index += 1
-            self._open()
-        self._file.write(text)
-        self._file.flush()
-
-    def stop(self) -> None:
-        if self._file is not None:
-            self._file.close()
-            self._file = None
+    这样 `LOG_FILE=logs/app.log` 恒定落到 <项目根>/logs/，不再随启动目录变化
+    （从 backend/ 启动时曾落到 backend/logs/）。绝对路径原样使用。
+    """
+    p = Path(file).expanduser()
+    return p if p.is_absolute() else (BASE_DIR / p)
 
 
 def setup_logging(*, level: str | None = None) -> None:
@@ -103,17 +76,33 @@ def setup_logging(*, level: str | None = None) -> None:
 
     _logger.remove()
     lvl = level or config.logging.level
-    _logger.add(sys.stderr, level=lvl, colorize=False, format=LOG_FORMAT)
-    file_sink = DatedSizeRotatingSink(
-        Path(config.logging.file).parent, max_bytes=config.logging.size,
-        encoding="utf-8", retention_days=config.logging.days,
+    _logger.add(sys.stderr, level=lvl, colorize=True, format=LOG_FORMAT)
+    _logger.add(
+        str(_log_path(config.logging.file)),
+        level=lvl,
+        rotation="00:00",            # 每天零点切片
+        retention=f"{config.logging.days} days",
+        compression="zip",          # 旧日志压缩归档
+        enqueue=True,               # 异步写入，避免阻塞主逻辑
+        encoding="utf-8",
+        format=LOG_FORMAT,
     )
-    _logger.add(file_sink, level=lvl, enqueue=True, format=LOG_FORMAT)
 
 
 def get_logger(name: str | None = None) -> Any:
-    """获取 logger（loguru 为单例，name 仅语义）。"""
-    return _logger
+    """获取 logger（loguru 为单例，name 仅语义）。
+
+    必须返回打过 patch 的 logger：name 前缀与 trace_id 注入都挂在它上面。
+    若返回原始 _logger，LOG_FORMAT 里的 {extra[trace_id]} 会因 extra 为空而 KeyError。
+    """
+    return logger
 
 
-__all__ = ["logger", "setup_logging", "get_logger", "trace_id_ctx", "LOG_FORMAT"]
+__all__ = [
+    "logger",
+    "setup_logging",
+    "get_logger",
+    "ensure_trace_id",
+    "trace_id_ctx",
+    "LOG_FORMAT",
+]

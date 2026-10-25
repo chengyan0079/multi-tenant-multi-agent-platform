@@ -30,10 +30,10 @@
 
 ### 0.3 其余已确认约束
 
-- **运行时**：FastAPI + LangGraph + LangChain + SQLAlchemy(async) + PostgreSQL + Milvus + Redis。
+- **运行时**：FastAPI + LangGraph + LangChain + SQLAlchemy(async，`text()` 手写 SQL) + PostgreSQL + Milvus + Redis。
 - **工程范式**：复用 `AppServer` + `XXManager`（`register(manager, order)` + 单一 `run()`）、`ConfigManager` 集中加载校验 → `app_state.settings`，其余只消费。
 - **模型工厂**：`LLM Factory`（3.4）统一封装 LLM / Embedding / Reranker / 分类器，三层兜底 + 重试（3.5）。
-- **多租户**：全链路 `tenant_id`；Milvus partition key、Redis `t:{tenant_id}:` 前缀、PG 行级隔离。
+- **多租户**：全链路 `tenant_id`；Milvus partition key、Redis `t:{tenant}:u:{user}:` 前缀、PG 行级隔离。
 - **可观测**：结构化 JSON 日志全程 `trace_id`；LLM/工具/图转移轨迹进 Langfuse（自托管）。
 - **运行环境**：conda `agent_platform`（Python 3.12）；提交/推送由 CEO 控制（项目铁律）。
 
@@ -104,7 +104,8 @@
 | `backend/agents/interview` | 模拟面试 Agent（状态机 + SSE 图） | LangGraph、状态机、LLM 生成 |
 | `backend/rag` | **rag-ultra 集成适配层**（不重建，仅适配）：`adapter.py` 暴露 `rag_retrieve()`，`client.py` 接入 RAG-Ultra | 调用/导入 RAG-Ultra 检索与索引能力 |
 | `backend/plugins` | **插件管理**：能力缝隙。`protocol.py`(AgentPlugin 协议)、`registry.py`(运行时注册表)、`loader.py`(扫描 `backend/plugins` + entry-points)、`builtin/`(web_search/code_exec 等，每插件含 `manifest.yaml`)、`external/`(外部插件挂载点) | Protocol + Registry + BaseTool、错误边界 |
-| `backend/models` | SQLAlchemy 模型层：thread/run/message/plugin/tool/escalation/memory/audit 及 `business/` 各 Agent 元数据 | SQLAlchemy 2.x async |
+| `backend/data/postgres` | 表结构模型：按 `auth` / `agent` / `business` / `ops` 分域，含 thread/run/message/plugin/tool/escalation/memory/audit 及 `business/` 各 Agent 元数据。**仅供 `scripts/gen_schema.py` 生成 DDL，运行期不加载** | SQLAlchemy 2.x async（仅 DDL） |
+| `backend/data/sql` + `backend/data/dao` | 运行时数据访问：`session_scope`、`fetch_*` 助手、审计列注入；DAO 里 SQL 全部 `text()` 手写，结果映射为 dict | SQLAlchemy 2.x async + `text()` |
 | `backend/middleware` | 接入层中间件：认证（`get_current_user`）、trace_id 注入、租户级限流 | FastAPI middleware |
 | `backend/api/v1` | 统一入口（unified_chat）+ 各 Agent 直连端点 + orchestrator/threads/plugins/escalations 运维端点；前置拦截、意图路由、SSE 分发 | FastAPI、Pydantic v2、sse-starlette、slowapi |
 
@@ -115,7 +116,7 @@
 | 服务框架 | FastAPI + Pydantic v2 + asyncio + SSE（sse-starlette） |
 | 编排 | **LangGraph**（StateGraph + checkpointer + interrupt）+ LangChain（LLM/Tool 抽象） |
 | 配置 | `ConfigManager`（env + 可选 YAML，Pydantic 校验）→ `app_state.settings` |
-| ORM | **SQLAlchemy 2.x async**（`AsyncEngine` + `asyncpg`） |
+| 数据访问 | **SQLAlchemy 2.x async**（`AsyncEngine` + `asyncpg`），**不用 ORM 映射**：SQL 用 `text()` 手写，DAO 返回 `dict`；模型类只给建库脚本用 |
 | 状态/业务/记忆 | **PostgreSQL 15+**（`AsyncPostgresSaver` checkpointer + 业务表 + 长期记忆） |
 | 向量 | **Milvus 2.4+**（BGE-M3 dense 1024 + sparse，Hybrid/WeightedRanker，partition key 隔离） |
 | 缓存/会话/队列/HITL | Redis |
@@ -153,7 +154,7 @@
 
 ### 3.4 HITL / 转人工
 
-试卷批改等高风险动作前 `interrupt(reason)` 挂起，写入 HITL 队列（`escalations` / Redis `t:{tenant_id}:hitl`），教师确认后 `resume(thread_id, value)` 继续；不强行自动发布。
+试卷批改等高风险动作前 `interrupt(reason)` 挂起，写入 HITL 队列（`escalations` / Redis `t:{tenant}:u:{user}:hitl`），教师确认后 `resume(thread_id, value)` 继续；不强行自动发布。
 
 ---
 
@@ -179,37 +180,39 @@
 | 数据 | 存储 | 说明 |
 |---|---|---|
 | LangGraph checkpoints / writes | PostgreSQL | `AsyncPostgresSaver.setup()` 自动建表，状态外置 |
-| 业务/审计/长期记忆/插件目录/人工队列 | PostgreSQL | SQLAlchemy 管理 |
+| 业务/审计/长期记忆/插件目录/人工队列 | PostgreSQL | SQLAlchemy + `text()` 手写 SQL（DAO 层） |
 | 向量（dense + sparse） | **Milvus** | BGE-M3，partition key = tenant_id；Hybrid（WeightedRanker）召回 |
-| 会话窗口/答案缓存/队列/限流/HITL | Redis | `t:{tenant_id}:` 前缀 |
+| 会话窗口/答案缓存/队列/限流/HITL | Redis | `t:{tenant}:u:{user}:` 前缀 |
 
-### 5.2 核心表（SQLAlchemy 模型草图）
+### 5.2 核心表字段清单
 
-```python
-class AgentThread(Base):       # 一次会话/任务
-    id / tenant_id / status / graph_name / created_at / updated_at
+> 完整结构以《数据库设计文档》为准；模型类在 `backend/data/postgres/`（按 `auth` / `agent` / `business` / `ops` 分域），只服务于 `scripts/gen_schema.py` 生成 DDL，运行期不加载。
 
-class AgentRun(Base):          # 运行台账（token/成本/延迟）
-    id / tenant_id / thread_id / graph_name / status
+```text
+AgentThread          一次会话/任务
+    id / tenant_id / user_id / status / graph_name / create_at / updated_at
+
+AgentRun             运行台账（token/成本/延迟）
+    id / tenant_id / user_id / thread_id / graph_name / status
     prompt_tokens / completion_tokens / cost_cents / started_at / ended_at
 
-class AgentMessage(Base):      # append-only 轨迹（replay/fork）
-    id / tenant_id / thread_id / run_id / role / type / payload(JSON) / created_at
+AgentMessage         append-only 轨迹（replay/fork）
+    id / tenant_id / user_id / thread_id / run_id / role / type / payload(JSON) / create_at
 
-class AgentPlugin(Base):       # 能力/插件注册表
+AgentPlugin          能力/插件注册表
     name / version / capabilities(JSON) / status / config(JSON) / registered_at
 
-class AgentTool(Base):         # 工具目录
+AgentTool            工具目录
     name / plugin / description / schema(JSON)
 
-class AgentEscalation(Base):   # HITL / 转人工队列
-    id / tenant_id / thread_id / reason / status / assigned_to / resolved_at
+AgentEscalation      HITL / 转人工队列
+    id / tenant_id / user_id / thread_id / reason / status / assigned_user_id / resolved_at
 
-class AgentLongTermMemory(Base):  # 长期记忆（Letta 式分页）
-    id / tenant_id / agent_id / block / content / embedding_id
+AgentLongTermMemory  长期记忆（Letta 式分页）
+    id / tenant_id / user_id / agent_id / block / content / embedding_id
 
-class AgentAuditLog(Base):     # 审计
-    id / tenant_id / actor / action / target / detail(JSON) / created_at
+AgentAuditLog        审计
+    id / tenant_id / user_id / action / target / detail(JSON) / create_at / updated_at
 ```
 
 > 业务表（简历/问答/批改/面试各自的元数据）按 EduAgent 第 3 章建表规范落地，与上式共用同一 PostgreSQL 实例、按 `tenant_id` 行级隔离。
@@ -222,7 +225,7 @@ class AgentAuditLog(Base):     # 审计
 
 | 层 | 存储 | 内容 | 访问 |
 |---|---|---|---|
-| 短期 | Redis `t:{tenant_id}:session:{thread_id}` | 滚动窗口最近消息（多轮上下文） | memory 模块 |
+| 短期 | Redis `t:{tenant}:u:{user}:session:{thread_id}` | 滚动窗口最近消息（多轮上下文） | memory 模块 |
 | 长期 | PostgreSQL `agent_memory` | Letta 式分页记忆块（人设/事实/偏好/摘要） | memory 模块 |
 | 语义 | Milvus |  episodic / 语义片段向量（partition key=tenant_id） | memory 模块 |
 
@@ -239,7 +242,7 @@ class AgentAuditLog(Base):     # 审计
 
 ## 7. 意图路由与前置拦截（bert-chinese + LLM）
 
-统一入口 `backend/api/v1/unified_chat.py` 的请求生命周期（全程 SSE 流式）：
+统一入口 `backend/api/v1/chat/unified.py` 的请求生命周期（全程 SSE 流式）：
 
 ```
 用户一句话
@@ -286,7 +289,7 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 
 | 维度 | 机制 |
 |---|---|
-| 租户隔离 | 全链路 `tenant_id`；PG 行级过滤；Milvus partition key；Redis `t:{tenant_id}:` 前缀 |
+| 租户隔离 | 全链路 `tenant_id`；PG 行级过滤；Milvus partition key；Redis `t:{tenant}:u:{user}:session:{thread}` 前缀 |
 | 输入护栏 | 接入层 DFA 违禁词 + Prompt 注入防护 + 长度校验 |
 | 输出护栏 | 生成后违禁词/泄露二次过滤 |
 | 认证 | `backend/middleware/auth.py` 依赖注入 `get_current_user` |
@@ -303,9 +306,9 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 |---|---|---|
 | **租户 Tenant** | 组织单位（隔离边界） | 「成都七中」「新东方雅思部」「某公司企业大学」各为一个租户 |
 | **用户 User** | 具体的人，归属于某租户 | 学生张三、教师李老师 |
-| **角色 Role** | 用户在租户内的职能权限 | `student` / `teacher` / `admin` |
+| **角色 Role** | 用户在租户内的职能权限 | `student` / `teacher` / `tenant_admin` / `admin` |
 
-- 一个用户通过 `agent_user_tenant` 可**同时属于多个租户、担任不同角色**（如李老师既在「七中」任教师，又在「培训部」任 admin）。
+- 一个用户通过 `agent_user_tenant` 可**同时属于多个租户**（如李老师既在「七中」任教师，又在「培训部」任 tenant_admin），但**同一租户内只保留一个角色**（表主键 `(user_id, tenant_id)` 强制）；跨租户换角色靠在登录请求里指定 `tenant_id` 实现（换租户 = 重新登录），不是一次请求内叠加多角色，也不做会话内切换。
 - 鉴权产出的 `tenant_id` 是后续所有隔离的**根键**（见 §9.1 ②）。
 
 **② 一个租户内部包含什么**
@@ -326,7 +329,7 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 
 **④ 租户隔离 = 不仅隔离数据，还隔离配置**
 
-- **数据隔离**：PG `tenant_id` 行级 + Milvus partition key + Redis `t:{tenant_id}:` 前缀（§9.1 ②）。
+- **数据隔离**：PG `tenant_id` 行级 + Milvus partition key + Redis `t:{tenant}:u:{user}:` 前缀（§9.1 ②）。
 - **配置隔离**：某租户未开通「模拟面试」→ `agent_capability_policy` 关闭，Orchestrator 路由直接拒答（§9.1 ④）；模型配额 / 提示词模板 / 评分 rubric / HITL 策略均按租户存读，互不串台。
 - 效果：**一套部署同时服务多所机构，每家看到的是完全私有的空间**，且功能开通、配额、话术风格均可按机构定制。
 
@@ -341,40 +344,44 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 权限控制在本案采用**分层纵深模型**，从「你是谁」到「你能动什么」逐层收敛。各层与代码落点对应如下：
 
 **① 认证（Authentication）— 你是谁**
-- `backend/middleware/auth.py` 注入 `get_current_user` 依赖，解析 JWT/Session，产出 `user_id` / `tenant_id` / `roles[]` / `scopes[]`，写入 `request.state` 并贯穿全链路（含 SSE trace）。
-- 无合法凭证 → 401；凭证过期/无效 → 403。
+- 登录走 `POST /api/v1/auth/login`（`user.username` + 明文密码比对），签发 JWT；之后每个请求只带 `Authorization: Bearer`，`backend/middleware/auth.py` 的 `get_current_user` 解 payload 取 `user_id` + `tenant_id`。超管 token 无租户，`tenant_id` 保持 `None`，只按「主租户 + admin」校验身份，**不补主租户、不进业务链路**；租户身份再查 `agent_user_tenant` 得出角色名与 scopes，写入 `request.state` 并贯穿全链路（含 SSE trace）。
+- 不提供注册、改密、验证码；JWT 只承载 `user_id`，角色与权限始终查库，不信任 token 内的快照。
+- 无合法凭证 → 401；token 与 header 不一致、跨租户访问 → 403。
 
 **② 租户隔离（Tenant Boundary）— 你的数据边界（物理底线）**
-- 所有读写强制带 `tenant_id`：PG 行级过滤（`WHERE tenant_id = :tid`）、Milvus partition key、Redis `t:{tenant_id}:` 前缀（§9）。
+- 所有读写强制带 `tenant_id`：PG 行级过滤（`WHERE tenant_id = :tid`）、Milvus partition key、Redis `t:{tenant}:u:{user}:session:{thread}` 前缀（§9）。
 - 跨租户访问在存储层即被拦截，是权限的**不可绕过底线**。
 
 **③ 角色与授权（RBAC）— 你能调哪些能力**
-- EduAgent 场景角色：`student` / `teacher` / `admin`（可扩展）。`roles[]` 映射到允许的 Agent / 工具 / 端点：
+- EduAgent 场景角色 4 个（`agent_role.name` 为准，不读 `role_id` 数字）：`student` / `teacher` / `tenant_admin` / `admin`。角色经 `agent_role_permission` 映射到 scopes，scopes 决定可调用的 Agent / 工具 / 端点：
   - `student`：问答、模拟面试、简历审查（仅本人）、查看本人轨迹。
-  - `teacher`：上述 + 试卷批改、HITL 审批（`/v1/escalations` resume）、查看本班数据。
-  - `admin`：上述 + 插件/能力开关、租户配置、审计查看。
-- 授权在 `core/security.py` 以依赖/装饰器强制（如 `require_role("teacher")`、`require_scope("exam:grade")`），路由注册时声明所需最小权限（最小权限原则）。
+  - `teacher`：上述 + 试卷批改、HITL 审批（`/api/v1/escalations` resume）、查看本班数据。
+  - `tenant_admin`：本租户用户与角色（`rbac:*`）、本租户审计（`audit:read`）；**不含** `agent:*` / `model:*` / `config:*` / `tenant:*`。
+  - `admin`（仅主租户、全局唯一）：`*`，含租户管理、agent 域、模型配置、配置中心、全量审计。
+- 授权在 `backend/security/security.py` 以依赖强制（`require_scope(...)`、`require_super_admin()`、`require_tenant_admin()`），路由注册时声明所需最小权限；Scope 枚举集中在 `backend/security/rbac.py`，拼错在导入期即报错。
 
 **④ 能力 / 插件开关（Capability Gating）— 租户级可用面**
 - `AgentRegistry` 与 `PluginRegistry` 支持按租户 enable/disable（§15.1 步骤13 / §15.2 租户开关）：某租户未开通「模拟面试」则 Orchestrator 路由直接拒答，返回明确错误而非越权执行。
 
 **⑤ 资源级权限（Resource-level）— 你只能动自己的**
-- 业务资源（简历/答卷/会话）带 `created_by` / `class_id` / `owner_id`；学生仅访问 own，教师仅本班。在 `models/` 查询层加 ownership 断言，越权返回 403。
+- 业务资源（简历/答卷/会话）带 `owner_user_id` / `created_user_id` / `class_id`；学生仅访问 own，教师仅本班。在 `models/` 查询层加 ownership 断言，越权返回 403。会话（`agent_thread`）按 `(tenant_id, user_id)` 过滤，`X-Thread-Id` 不匹配归属即 404。
 
 **⑥ 操作权限与防越权（Operation Gating）**
 - 高风险动作（HITL 发布、配置变更、能力开关）需 `teacher`/`admin` 且经 `interrupt()` → `resume()` 显式确认，不自动执行（§3.4 / §9）。
 - 输入护栏拦截 Prompt 注入（防借注入绕过权限），输出护栏二次过滤防跨租户泄露（§9）。
 
 **⑦ 审计（Auditability）**
-- 所有认证失败、越权尝试、特权操作、HITL 决策、能力开关变更写入 `agent_audit_log`（§5.2 / §9），含 `actor` / `action` / `target` / `detail` / `tenant_id` / `trace_id`，供追溯与合规。
+- 所有认证失败、越权尝试、特权操作、HITL 决策、能力开关变更写入 `agent_audit_log`（§5.2 / §9），字段为 `tenant_id` / `user_id` / `action` / `target` / `detail` / `create_at`，供追溯与合规（该表当前无 `trace_id` 列，需要链路串联时得先加列）。
 
-**支撑数据模型（建议新增）**
+**支撑数据模型（已落地）**
 
 | 表 | 用途 |
 |---|---|
-| `agent_role` / `agent_role_permission` | RBAC 角色—权限映射 |
-| `agent_user_tenant` | 用户—租户—角色关联（支持多租户多角色） |
+| `agent_role` / `agent_role_permission` | RBAC 角色—权限点映射 |
+| `agent_user_tenant` | 用户—租户—角色分配（PK 保证单租户单角色，跨租户可多角色） |
 | `agent_capability_policy` | 租户级 Agent / 插件开通策略 |
+| `menu` | 菜单目录 + `scope`，按用户 scopes 过滤后下发（菜单只控入口显隐，不是安全边界） |
+| `user` / `tenant` | 登录认证主表与租户边界（`username` 唯一、`tenant.enabled`/`is_primary`） |
 
 > **原则**：认证在边界、隔离在存储、授权在路由、开关在注册表、权属在查询、留痕在审计——六层纵深，任一层失效不导致全局越权。
 
@@ -503,7 +510,7 @@ server.register(FastAPIManager(app),     100)
 | 4 意图路由 | 给 bert-chinese 增加新意图标签（如 `homework`）；在 `unified_chat.py` 增加「标签→Agent」映射与 SSE 事件；模糊意图仍走 LLM 兜底自动识别 | `core/llm_factory`、`api/v1/unified_chat` |
 | 5 编排接入 | 单 Agent 直达：Orchestrator 按 `agent_type` 取图执行；若需串联，pipeline 加节点、前置输出作后置输入（State 透传字段） | `core/orchestrator` |
 | 6 数据模型 | `backend/models/business/` 增该 Agent 元数据表；HITL 复用 `agent_escalations` | `models/business/` |
-| 7 API 端点 | `backend/api/v1/<new>.py` 暴露直连接口；统一入口已自动覆盖（路由命中即可） | `api/v1/` |
+| 7 API 端点 | `backend/api/v1/agent/<new>.py` 暴露直连接口；统一入口已自动覆盖（路由命中即可） | `api/v1/agent/` |
 | 8 记忆(可选) | 复用 `core/memory.py` 短期/长期/语义接口，无需自建 | `core/memory` |
 | 9 工具/能力 | 通用工具做 `backend/plugins/builtin/<tool>/`（含 `manifest.yaml` + `AgentPlugin`）；专属逻辑留本包内 | `plugins/` |
 | 10 配置 | `backend/config/schemas.py` 增该 Agent 专属项（模型/阈值/开关），经 ConfigManager 加载 | `config/` |
@@ -640,12 +647,15 @@ agent-platform/                              # 项目根（git repo）
 │  │  │  ├─ web_search/  (__init__.py / tool.py / manifest.yaml)   # 联网兜底
 │  │  │  └─ code_exec/   (__init__.py / tool.py / manifest.yaml)    # 代码题沙箱（规划）
 │  │  └─ external/                           # 外部插件挂载点（entry-points 注入）
-│  ├─ models/                                # SQLAlchemy 模型层
-│  │  ├─ base.py
-│  │  ├─ threads.py / runs.py / messages.py  # 会话 / 运行台账 / append-only 轨迹
-│  │  ├─ plugins.py / tools.py / escalations.py
-│  │  ├─ memory.py / audit.py
-│  │  └─ business/                           # 简历/问答/批改/面试元数据表
+│  ├─ data/                                  # 数据层
+│  │  ├─ postgres/                           # 表结构模型（仅供 gen_schema.py 生成 DDL，运行期不加载）
+│  │  │  ├─ base.py
+│  │  │  ├─ threads.py / runs.py / messages.py  # 会话 / 运行台账 / append-only 轨迹
+│  │  │  ├─ plugins.py / tools.py / escalations.py
+│  │  │  ├─ memory.py / audit.py
+│  │  │  └─ business/                        # 简历/问答/批改/面试元数据表
+│  │  ├─ sql/                                # 运行时数据访问：session_scope / fetch_* / 审计列注入
+│  │  └─ dao/                                # DAO：SQL 全部 text() 手写，返回 dict
 │  ├─ middleware/                            # 接入层中间件
 │  │  ├─ auth.py                             # get_current_user 依赖注入
 │  │  ├─ trace_id.py                         # 全链路 trace_id 注入
@@ -666,16 +676,16 @@ agent-platform/                              # 项目根（git repo）
 
 ```python
 # 统一入口（SSE）
-POST /v1/chat            # 一句话 → 前置拦截 → bert-chinese/LLM 路由 → SSE 分发
+POST /api/v1/chat            # 一句话 → 前置拦截 → bert-chinese/LLM 路由 → SSE 分发
 # 各 Agent 直连
-POST /v1/resume/...      # 简历审查
-POST /v1/qa/...          # 智能问答（内部走 rag_retrieve）
-POST /v1/exam/...        # 试卷批改（HITL）
-POST /v1/interview/...   # 模拟面试（SSE 多轮）
+POST /api/v1/resume/...      # 简历审查
+POST /api/v1/qa/...          # 智能问答（内部走 rag_retrieve）
+POST /api/v1/exam/...        # 试卷批改（HITL）
+POST /api/v1/interview/...   # 模拟面试（SSE 多轮）
 # 编排与运维
-POST /v1/orchestrator/run            # 指定 agent_type 或 pipeline_plan
-GET  /v1/threads/{id}                # 取会话状态
-POST /v1/threads/{id}/resume         # HITL 注入决策后继续
-GET  /v1/agents                      # 已注册 Agent/能力清单（按 tenant 过滤）
-GET  /v1/escalations                 # 人工队列（控制台）
+POST /api/v1/orchestrator/run        # 指定 agent_type 或 pipeline_plan
+GET  /api/v1/threads/{id}            # 取会话状态
+POST /api/v1/threads/{id}/resume     # HITL 注入决策后继续
+GET  /api/v1/admin/agents            # 已注册 Agent/能力清单（超管，按 tenant 过滤）
+GET  /api/v1/escalations             # 人工队列（控制台）
 ```

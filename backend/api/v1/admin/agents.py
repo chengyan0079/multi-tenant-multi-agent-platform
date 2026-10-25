@@ -13,25 +13,18 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from typing import Any, Optional
 
-from backend.api.exceptions import BizException
+from fastapi import APIRouter, Depends, Query
+
+from backend.api.v1.admin.schemas import CapabilityIn, EnabledIn
 from backend.app_state import app_state
-from backend.common.response import ErrCode, success
-from backend.data.dao.agent_dao import AgentDao
+from backend.common.response import success
+from backend.observability.exception import BizException, ErrCode
+from backend.data.dao.agent.agent_dao import AgentDao
 from backend.middleware.auth import get_current_user
 
 router = APIRouter(prefix="/agents", tags=["admin"])
-
-
-class EnabledIn(BaseModel):
-    enabled: bool
-
-
-class CapabilityIn(BaseModel):
-    agent_type: str = Field(..., max_length=64)
-    enabled: bool
 
 
 def _registered_types() -> set[str]:

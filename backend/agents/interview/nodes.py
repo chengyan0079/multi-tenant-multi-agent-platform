@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from backend.agents.interview.state import InterviewState
-from backend.core.tracing import tracing
+from backend.observability.tracing import tracing
 
 
 async def init_session(state: InterviewState) -> InterviewState:

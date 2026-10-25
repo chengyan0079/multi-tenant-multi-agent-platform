@@ -6,7 +6,7 @@ model - HF 格式意图分类器产物的构建/保存/加载。
   tokenizer.json / config.json            HF tokenizer + 模型配置
   meta.json                               {"labels": [...], "max_len": 64}  ← 在线侧据此映射
 
-在线消费端（backend.core.llm_factory）仅读取 meta.json + 模型，不依赖本模块代码。
+在线消费端（backend.common.llm.llm_factory）仅读取 meta.json + 模型，不依赖本模块代码。
 """
 from __future__ import annotations
 

@@ -1,9 +1,9 @@
 """冒烟测试：验证骨架模块可导入、核心抽象可实例化（不依赖外部存储）。"""
 from __future__ import annotations
 
-from backend.core.agent_registry import AgentRegistry
-from backend.core.orchestrator import Orchestrator
-from backend.plugins.registry import PluginRegistry
+from backend.orchestration.agent_registry import AgentRegistry
+from backend.orchestration.orchestrator import Orchestrator
+from backend.mcp.registry import PluginRegistry
 
 
 def test_registries_instantiate() -> None:

@@ -11,13 +11,9 @@ from pathlib import Path
 import pytest
 
 from backend.app_state import tenant_id_ctx, user_id_ctx
-from backend.data.dao import (
-    agent_dao,
-    api_log_dao,
-    config_dao,
-    rbac_dao,
-    thread_dao,
-)
+from backend.data.dao.agent import agent_dao, thread_dao
+from backend.data.dao.auth import login_log_dao, rbac_dao
+from backend.data.dao.ops import api_log_dao, audit_dao, config_dao
 from backend.data.sql.audit import (
     SYSTEM_TENANT_ID,
     SYSTEM_USER_ID,
@@ -125,6 +121,8 @@ def test_update_without_context_keeps_original(clear_identity: None) -> None:
 _INSERT_STATEMENTS = [
     (thread_dao._INSERT, "agent_thread"),
     (api_log_dao._INSERT, "agent_api_call_log"),
+    (audit_dao._INSERT, "agent_audit_log"),
+    (login_log_dao._INSERT, "agent_login_log"),
     (agent_dao._UPSERT_AGENT, "agent"),
     (agent_dao._UPSERT_POLICY, "agent_capability_policy"),
     (config_dao._INSERT_REQUEST, "agent_config_change_request"),

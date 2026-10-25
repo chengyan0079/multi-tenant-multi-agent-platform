@@ -8,41 +8,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from typing import Optional
 
+from fastapi import APIRouter, Depends, Query
+
+from backend.api.v1.admin.schemas import CreateRequestIn, ReviewIn, RollbackRequestIn
 from backend.common.response import success
 from backend.common.config_center import service
 from backend.middleware.auth import get_current_user
 
 router = APIRouter(prefix="/config", tags=["admin"])
-
-
-class CreateRequestIn(BaseModel):
-    namespace: str
-    group_id: str
-    data_id: str
-    domain: str = "prompt"
-    op_type: int  # 1=新增 2=修改 3=删除
-    title: Optional[str] = None
-    content_new: Optional[str] = None
-    content_format: str = "json"
-    reason: Optional[str] = None
-
-
-class RollbackRequestIn(BaseModel):
-    namespace: str
-    group_id: str
-    data_id: str
-    domain: str = "prompt"
-    src_history_nid: int
-    title: Optional[str] = None
-    reason: Optional[str] = None
-
-
-class ReviewIn(BaseModel):
-    action: int  # 1=通过 2=驳回
-    comment: Optional[str] = None
 
 
 @router.post("/requests", summary="发起配置变更申请")

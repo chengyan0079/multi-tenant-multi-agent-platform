@@ -78,7 +78,11 @@ def test_config_center_is_super_admin_only() -> None:
         scopes = set(DEFAULT_ROLES[role_id][1])
         assert Scope.CONFIG_READ not in scopes, f"role {role_id} 不应有 config:read"
         assert Scope.CONFIG_UPDATE not in scopes, f"role {role_id} 不应有 config:update"
-    assert DEFAULT_ROLES[3][1] == [Scope.ALL]
+    # 超管拥有配置中心权限，但已收敛为三域具体点（不再用全局 ALL）
+    admin_scopes = set(DEFAULT_ROLES[3][1])
+    assert Scope.CONFIG_READ in admin_scopes
+    assert Scope.CONFIG_REVIEW in admin_scopes
+    assert Scope.ALL not in admin_scopes
 
 
 def test_analyst_role_removed() -> None:

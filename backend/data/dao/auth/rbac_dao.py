@@ -1,0 +1,369 @@
+"""RBAC DAO：角色目录、角色权限、用户-租户-角色分配、租户开关。
+
+四张表的审计列不一样，写之前先看清：
+- `agent_role`：只有 user 审计列（全局表）；
+- `agent_role_permission` / `agent_user_tenant`：多对多中间表，**无审计列**；
+- `tenant`：只有业务列，没有审计列。
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy import text
+
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql.audit import audit_on_insert
+from backend.observability.exception import BizException, ErrCode
+
+_INSERT_ROLE = text("""
+INSERT INTO agent_role (role_id, name, description, create_user_id, update_user_id)
+VALUES (:role_id, :name, :description, :create_user_id, :update_user_id)
+ON CONFLICT (role_id) DO NOTHING
+""")
+
+_INSERT_PERMISSION = text("""
+INSERT INTO agent_role_permission (role_id, scope)
+VALUES (:role_id, :scope)
+ON CONFLICT (role_id, scope) DO NOTHING
+""")
+
+# 一次 join 拿全身份快照：分配不存在 / 角色不存在 / 租户停用 都退化成「无行」
+_GET_IDENTITY = text("""
+SELECT r.name AS role_name,
+       t.is_primary AS tenant_is_primary,
+       COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
+FROM agent_user_tenant aut
+JOIN agent_role r ON r.role_id = aut.role_id
+JOIN agent_tenant t ON t.id = aut.tenant_id
+LEFT JOIN agent_role_permission p ON p.role_id = aut.role_id
+WHERE aut.user_id = :user_id
+  AND aut.tenant_id = :tenant_id
+  AND t.enabled
+GROUP BY r.name, t.is_primary
+""")
+
+# created_at 在 DDL 里没有 DEFAULT，必须显式给值
+_UPSERT_MEMBERSHIP = text("""
+INSERT INTO agent_user_tenant (user_id, tenant_id, role_id, created_at)
+VALUES (:user_id, :tenant_id, :role_id, now())
+ON CONFLICT (user_id, tenant_id) DO UPDATE SET role_id = EXCLUDED.role_id
+""")
+
+# 超管分支：token 不含 tenant_id，只按 user_id + 主租户 + admin 角色判定。
+# 命中返回 admin 角色名 + is_primary=true；否则无行（视为非超管）。
+_GET_SUPER_ADMIN = text("""
+SELECT r.name AS role_name,
+       t.is_primary AS tenant_is_primary,
+       COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
+FROM agent_user_tenant aut
+JOIN agent_role r ON r.role_id = aut.role_id
+JOIN agent_tenant t ON t.id = aut.tenant_id
+LEFT JOIN agent_role_permission p ON p.role_id = aut.role_id
+WHERE aut.user_id = :user_id
+  AND t.is_primary
+  AND t.enabled
+  AND r.name = 'admin'
+GROUP BY r.name, t.is_primary
+""")
+
+# 登录选租户：列出用户在各个租户（含停用）的分配，主租户优先
+_GET_USER_ASSIGNMENTS = text("""
+SELECT aut.tenant_id AS tenant_id, t.name AS tenant_name,
+       t.is_primary AS tenant_is_primary, t.enabled AS tenant_enabled,
+       r.name AS role_name,
+       COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
+FROM agent_user_tenant aut
+JOIN agent_tenant t ON t.id = aut.tenant_id
+JOIN agent_role r ON r.role_id = aut.role_id
+LEFT JOIN agent_role_permission p ON p.role_id = aut.role_id
+WHERE aut.user_id = :user_id
+GROUP BY aut.tenant_id, t.name, t.is_primary, t.enabled, r.name
+ORDER BY t.is_primary DESC, aut.tenant_id
+""")
+
+# 角色目录 + 权限点（GET /admin/roles）
+_LIST_ROLES_PERMS = text("""
+SELECT r.role_id, r.name, r.description,
+       COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
+FROM agent_role r
+LEFT JOIN agent_role_permission p ON p.role_id = r.role_id
+GROUP BY r.role_id, r.name, r.description
+ORDER BY r.role_id
+""")
+
+# 本租户成员（GET /tenant/users，管理员排前）
+_LIST_TENANT_MEMBERS = text("""
+SELECT u.id AS user_id, u.username, u.name, r.name AS role_name
+FROM agent_user_tenant aut
+JOIN "agent_user" u ON u.id = aut.user_id
+JOIN agent_role r ON r.role_id = aut.role_id
+WHERE aut.tenant_id = :tenant_id
+ORDER BY (r.name = 'tenant_admin') DESC, u.id
+""")
+
+# 取某用户在某租户的角色名（改/解绑前校验归属与防自锁）
+_GET_MEMBERSHIP = text("""
+SELECT r.name AS role_name
+FROM agent_user_tenant aut
+JOIN agent_role r ON r.role_id = aut.role_id
+WHERE aut.user_id = :user_id AND aut.tenant_id = :tenant_id
+""")
+
+# 角色名 → role_id（代码一律按 name 判定，不直接写数字）
+_GET_ROLE_ID = text("SELECT role_id FROM agent_role WHERE name = :name")
+
+# 覆盖写角色权限点前清空
+_DELETE_ROLE_PERMS = text("DELETE FROM agent_role_permission WHERE role_id = :role_id")
+# 禁止删除的内置角色（业务键 1/2/3/5；4 已废弃不在此列）
+_BUILTIN_ROLE_IDS = frozenset({1, 2, 3, 5})
+
+# 原租户管理员降级为 student（更换管理员事务内）
+_SET_TENANT_ADMIN_DEMOTE = text("""
+UPDATE agent_user_tenant SET role_id = :student_role_id
+WHERE tenant_id = :tenant_id AND role_id = :admin_role_id
+""")
+
+
+class RbacDao:
+    """角色、权限点、用户租户分配的读写。"""
+
+    @staticmethod
+    async def ensure_roles_and_permissions(
+        roles: list[tuple[int, str, str]],
+        permissions: list[tuple[int, str]],
+        *,
+        user_id: int | None = None,
+    ) -> tuple[int, int]:
+        """幂等写入内置角色与权限点（单事务），返回 (新增角色数, 新增权限数)。
+
+        `roles` 为 (role_id, name, description)，`permissions` 为 (role_id, scope)。
+        启动期没有请求上下文，调用方须显式传 user_id=SYSTEM_USER_ID。
+        """
+        audit = audit_on_insert(user_id=user_id, with_tenant=False)
+        async with session_scope() as session:
+            created_roles = 0
+            for role_id, name, description in roles:
+                created_roles += await execute_write(
+                    session,
+                    _INSERT_ROLE,
+                    {
+                        "role_id": role_id,
+                        "name": name,
+                        "description": description,
+                        **audit,
+                    },
+                )
+            created_perms = 0
+            for role_id, scope in permissions:
+                created_perms += await execute_write(
+                    session, _INSERT_PERMISSION, {"role_id": role_id, "scope": scope}
+                )
+            await session.commit()
+        return created_roles, created_perms
+
+    @staticmethod
+    async def get_identity(user_id: int, tenant_id: int) -> dict[str, Any] | None:
+        """取用户在某租户的身份快照（角色名、是否主租户、权限点）。
+
+        分配不存在、角色缺失、租户不存在或已停用，统一返回 None。
+        """
+        async with session_scope() as session:
+            row = await fetch_one(
+                session, _GET_IDENTITY, {"user_id": user_id, "tenant_id": tenant_id}
+            )
+        if row is None:
+            return None
+        # array_agg 在不同驱动下可能返回 list 或 '{a,b}' 文本，统一成 list
+        scopes = row.get("scopes")
+        if isinstance(scopes, str):
+            scopes = [s for s in scopes.strip("{}").split(",") if s]
+        row["scopes"] = list(scopes or [])
+        return row
+
+    @staticmethod
+    async def upsert_membership(user_id: int, tenant_id: int, role_id: int) -> None:
+        """分配/更新角色（PK=(user_id, tenant_id) 冲突即更新）。"""
+        async with session_scope() as session:
+            await execute_write(
+                session,
+                _UPSERT_MEMBERSHIP,
+                {"user_id": user_id, "tenant_id": tenant_id, "role_id": role_id},
+            )
+            await session.commit()
+
+    @staticmethod
+    async def get_super_admin_identity(user_id: int) -> dict[str, Any] | None:
+        """超管分支身份快照：用户在主租户且角色名为 admin 时返回，否则 None。
+
+        返回 role_name='admin'、tenant_is_primary=True、该角色的权限点列表
+        （具体 scope；上层 RbacService 会将其收敛为超管口径 scopes=["*"]）。
+        """
+        async with session_scope() as session:
+            row = await fetch_one(
+                session, _GET_SUPER_ADMIN, {"user_id": user_id}
+            )
+            if row is None:
+                return None
+            scopes = row.get("scopes")
+            if isinstance(scopes, str):
+                scopes = [s for s in scopes.strip("{}").split(",") if s]
+            row["scopes"] = list(scopes or [])
+            return row
+
+    @staticmethod
+    async def get_user_assignments(user_id: int) -> list[dict[str, Any]]:
+            """登录选租户用：列出用户在各租户（含停用）的分配（租户名/主标记/启用/角色/权限点）。"""
+            async with session_scope() as session:
+                rows = await fetch_all(
+                    session, _GET_USER_ASSIGNMENTS, {"user_id": user_id}
+                )
+            for r in rows:
+                scopes = r.get("scopes")
+                if isinstance(scopes, str):
+                    scopes = [s for s in scopes.strip("{}").split(",") if s]
+                r["scopes"] = list(scopes or [])
+            return rows
+
+    @staticmethod
+    async def list_roles_with_permissions() -> list[dict[str, Any]]:
+            """角色目录 + 权限点（GET /admin/roles）。"""
+            async with session_scope() as session:
+                rows = await fetch_all(session, _LIST_ROLES_PERMS)
+            for r in rows:
+                scopes = r.get("scopes")
+                if isinstance(scopes, str):
+                    scopes = [s for s in scopes.strip("{}").split(",") if s]
+                r["scopes"] = list(scopes or [])
+            return rows
+
+    @staticmethod
+    async def get_role_id(name: str) -> int | None:
+            """角色名 → role_id（代码只按 name 判定，不直接写数字）。"""
+            async with session_scope() as session:
+                return await fetch_value(session, _GET_ROLE_ID, {"name": name})
+
+    @staticmethod
+    async def set_role_permissions(role_id: int, scopes: list[str]) -> None:
+            """覆盖角色权限点：先清空再插入，单事务提交（§6.5 改权限即时生效）。"""
+            async with session_scope() as session:
+                await execute_write(session, _DELETE_ROLE_PERMS, {"role_id": role_id})
+                for s in scopes:
+                    await execute_write(
+                        session, _INSERT_PERMISSION, {"role_id": role_id, "scope": s}
+                    )
+                await session.commit()
+
+    @staticmethod
+    async def next_role_id() -> int:
+        """取 agent_role 当前最大 role_id + 1（业务键自增，非序列）。"""
+        async with session_scope() as session:
+            return int(
+                await fetch_value(
+                    session, text("SELECT COALESCE(MAX(role_id), 0) + 1 FROM agent_role")
+                )
+            )
+
+    @staticmethod
+    async def create_role(
+        name: str, description: str | None, scopes: list[str], *, user_id: int
+    ) -> int:
+        """新建角色并写入权限点；返回新 role_id。"""
+        audit = audit_on_insert(user_id=user_id, with_tenant=False)
+        role_id = await RbacDao.next_role_id()
+        async with session_scope() as session:
+            await execute_write(
+                session,
+                _INSERT_ROLE,
+                {"role_id": role_id, "name": name, "description": description, **audit},
+            )
+            for s in scopes:
+                await execute_write(session, _INSERT_PERMISSION, {"role_id": role_id, "scope": s})
+            await session.commit()
+        return role_id
+
+    @staticmethod
+    async def delete_role(role_id: int) -> None:
+        """删除角色（含权限点）；内置角色（1/2/3/5）不可删。"""
+        if role_id in _BUILTIN_ROLE_IDS:
+            raise BizException(ErrCode.PARAM_ERROR, f"内置角色 {role_id} 不可删除")
+        async with session_scope() as session:
+            await execute_write(session, _DELETE_ROLE_PERMS, {"role_id": role_id})
+            await execute_write(
+                session,
+                text("DELETE FROM agent_role WHERE role_id = :role_id"),
+                {"role_id": role_id},
+            )
+            await session.commit()
+
+    @staticmethod
+    async def assign_role(user_id: int, tenant_id: int, role_id: int) -> None:
+            """普通分配/改角色（student/teacher），PK 冲突即更新。"""
+            await RbacDao.upsert_membership(user_id, tenant_id, role_id)
+
+    @staticmethod
+    async def get_membership(user_id: int, tenant_id: int) -> str | None:
+            """取用户在某租户的角色名（租户管理员改/解绑前校验归属与防自锁）。"""
+            async with session_scope() as session:
+                row = await fetch_one(
+                    session, _GET_MEMBERSHIP, {"user_id": user_id, "tenant_id": tenant_id}
+                )
+            return row["role_name"] if row else None
+
+    @staticmethod
+    async def delete_membership(user_id: int, tenant_id: int) -> int:
+            """从租户解绑用户（不删 user 记录）。返回受影响行数。"""
+            async with session_scope() as session:
+                n = await execute_write(
+                    session,
+                    text(
+                        "DELETE FROM agent_user_tenant "
+                        "WHERE user_id = :user_id AND tenant_id = :tenant_id"
+                    ),
+                    {"user_id": user_id, "tenant_id": tenant_id},
+                )
+                await session.commit()
+                return n
+
+    @staticmethod
+    async def list_tenant_members(tenant_id: int) -> list[dict[str, Any]]:
+            """本租户成员（含角色名，管理员排前）。"""
+            async with session_scope() as session:
+                return await fetch_all(
+                    session, _LIST_TENANT_MEMBERS, {"tenant_id": tenant_id}
+                )
+
+    @staticmethod
+    async def set_tenant_admin(tenant_id: int, user_id: int) -> int | None:
+            """原子更换租户管理员：原管理员降 student，再写入新 tenant_admin。
+
+            返回被降级的原管理员 user_id（无则 None）。同一事务保证不出现 0 或 2 个管理员的中间态。
+            """
+            student_id = await RbacDao.get_role_id("student")
+            admin_id = await RbacDao.get_role_id("tenant_admin")
+            async with session_scope() as session:
+                old = await fetch_one(
+                    session,
+                    text(
+                        "SELECT user_id FROM agent_user_tenant "
+                        "WHERE tenant_id = :tenant_id AND role_id = :admin_role_id"
+                    ),
+                    {"tenant_id": tenant_id, "admin_role_id": admin_id},
+                )
+                replaced = old["user_id"] if old else None
+                if replaced is not None and replaced != user_id:
+                    await execute_write(
+                        session,
+                        _SET_TENANT_ADMIN_DEMOTE,
+                        {
+                            "tenant_id": tenant_id,
+                            "student_role_id": student_id,
+                            "admin_role_id": admin_id,
+                        },
+                    )
+                await execute_write(
+                    session,
+                    _UPSERT_MEMBERSHIP,
+                    {"user_id": user_id, "tenant_id": tenant_id, "role_id": admin_id},
+                )
+                await session.commit()
+            return replaced

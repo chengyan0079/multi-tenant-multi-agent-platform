@@ -4,20 +4,25 @@
   - 注册 register_instance(ephemeral=True)，心跳由 SDK gRPC 长连接自动维持。
   - 注销 deregister_instance + shutdown。
 放在最后注册（order 110）：确保服务已真正监听后再对外暴露。
+
+服务发现实例由 `NacosClient` 持有（与配置中心 manager 共享同一个容器实例），
+本 manager 只负责注册/注销编排与生命周期。
 """
 from __future__ import annotations
 
 from backend.app_state import app_state
 from backend.common.logger import logger
-from backend.common.nacos_compat import import_error_hint, normalize_namespace_id
 from backend.config import config
-from backend.server.base_manager import BaseManager
+from backend.data.clients.nacos import NacosClient
+from backend.server.base_manager import BaseManager, HealthInfo
 
 
 class NacosDiscoverManager(BaseManager):
     """Nacos 服务发现启动项。"""
 
     def __init__(self) -> None:
+        super().__init__()
+        self._client: NacosClient | None = None
         self._naming = None
         self._registered = False
 
@@ -30,17 +35,20 @@ class NacosDiscoverManager(BaseManager):
             logger.info("Nacos 未启用（NACOS_ENABLED=False），跳过注册")
             return
         app_state.nacos_discovery = self
+        client = app_state.clients.ensure(
+            "nacos", lambda: NacosClient.from_settings(config.nacos)
+        )
+        await client.connect()
+        self._client = client
+        # SDK 缺失或未连接时 naming 为 None（connect 内已告警），跳过注册
+        self._naming = client.naming
+        if self._naming is None:
+            return
         try:
-            from v2.nacos import ClientConfig, NacosNamingService, RegisterInstanceParam
+            from v2.nacos import RegisterInstanceParam
         except ImportError:
-            logger.warning(import_error_hint("Nacos 服务发现"))
             return
 
-        cc = ClientConfig(
-            server_addresses=config.nacos.server_addr,
-            namespace_id=normalize_namespace_id(config.nacos.namespace),
-        )
-        self._naming = await NacosNamingService.create_naming_service(cc)
         try:
             ok = await self._naming.register_instance(RegisterInstanceParam(
                 service_name=config.service.name,
@@ -66,6 +74,7 @@ class NacosDiscoverManager(BaseManager):
         self._registered = False
         app_state.nacos_discovery = None
         if self._naming is None:
+            await self._safe_shutdown()
             return
         try:
             from v2.nacos import DeregisterInstanceParam
@@ -79,10 +88,16 @@ class NacosDiscoverManager(BaseManager):
         await self._safe_shutdown()
 
     async def _safe_shutdown(self) -> None:
-        if self._naming is None:
-            return
-        try:
-            await self._naming.shutdown()
-        except Exception:
-            pass
+        if self._client is not None:
+            await self._client.close()
         self._naming = None
+        self._client = None
+
+    async def health(self) -> HealthInfo:
+        if not config.nacos.enabled:
+            return HealthInfo(status="running", detail="Nacos 未启用，跳过")
+        if self._client is None:
+            return HealthInfo(status="down", detail="Nacos 客户端未连接")
+        if self._registered:
+            return HealthInfo(status="running")
+        return HealthInfo(status="degraded", detail="已连接但未注册")

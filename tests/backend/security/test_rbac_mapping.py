@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from backend.data.dao.rbac_dao import RbacDao
+from backend.data.dao.auth.rbac_dao import RbacDao
 from backend.data.sql.audit import SYSTEM_USER_ID
 from backend.security.rbac import DEFAULT_ROLES, RbacService
 

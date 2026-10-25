@@ -1,7 +1,7 @@
 """
 config - 离线模块配置（环境变量覆盖，默认指向项目内路径）。
 
-路径默认相对于项目根（offline/ 的上级）。训练产物默认写入 ml_models/...，
+路径默认相对于项目根（offline/ 的上级）。训练产物默认写入 models/...，
 该目录已被 .gitignore 忽略，权重不入库；源码与示例数据入库。
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ class OfflineConfig:
 
     data: Path = ROOT / "offline" / "sample_data" / "intents.jsonl"
     base_model: str = "bert-base-chinese"
-    model_out: Path = ROOT / "ml_models" / "bert-intent-recognition-model"
+    model_out: Path = ROOT / "models" / "bert-intent-recognition-model"
     epochs: int = 3
     batch: int = 16
     lr: float = 2e-5

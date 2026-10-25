@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
-from backend.core.agent_registry import AgentRegistry
+from backend.orchestration.agent_registry import AgentRegistry
 
 
 class Agent(ABC):

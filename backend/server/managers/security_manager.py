@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from backend.app_state import app_state
 from backend.common.logger import get_logger
-from backend.server.base_manager import BaseManager
+from backend.server.base_manager import BaseManager, HealthInfo
 
 
 class SecurityManager(BaseManager):
@@ -14,3 +14,8 @@ class SecurityManager(BaseManager):
 
     async def stop(self) -> None:
         return None
+
+    async def health(self) -> HealthInfo:
+        if not app_state.settings.security.jwt_secret:
+            return HealthInfo(status="degraded", detail="JWT_SECRET 未配置，认证不可用")
+        return HealthInfo(status="running")

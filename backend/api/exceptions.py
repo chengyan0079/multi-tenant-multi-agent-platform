@@ -7,15 +7,14 @@
 """
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.common.logger import logger
-from backend.common.response import BizException, ErrCode, fail
-from backend.core.exception import AgentError
-from fastapi import FastAPI
+from backend.common.response import fail
+from backend.observability.exception import AgentError, BizException, ErrCode
 
 HTTP_CODE_MAP = {
     400: ErrCode.PARAM_ERROR,
@@ -52,9 +51,13 @@ async def biz_exc_handler(request: Request, exc: BizException) -> JSONResponse:
 
 
 async def agent_err_handler(request: Request, exc: AgentError) -> JSONResponse:
-    """领域异常处理器：统一兜底为内部错误（http_status 200，前端读 code 判断）。"""
+    """领域异常处理器：按异常类型映射业务码兜底（http_status 200，前端读 code 判断）。
+
+    AgentError 子类各自携带 code（如 TenantError→FORBIDDEN、GuardrailError→GUARDRAIL），
+    与接口层 BizException/AuthError 的权限/护栏语义保持一致，不再一律 INTERNAL。
+    """
     logger.warning(f"领域异常: {exc}")
-    return JSONResponse(status_code=200, content=fail(ErrCode.INTERNAL, str(exc)).model_dump())
+    return JSONResponse(status_code=200, content=fail(exc.code, str(exc)).model_dump())
 
 
 async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:

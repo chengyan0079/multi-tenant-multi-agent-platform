@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from backend.app_state import app_state
-from backend.core.llm_factory import LLMFactory
-from backend.server.base_manager import BaseManager
+from backend.common.llm.llm_factory import LLMFactory
+from backend.server.base_manager import BaseManager, HealthInfo
 
 
 class ModelManager(BaseManager):
@@ -16,3 +16,8 @@ class ModelManager(BaseManager):
         if app_state.llm_factory is not None:
             await app_state.llm_factory.stop()
             app_state.llm_factory = None
+
+    async def health(self) -> HealthInfo:
+        if app_state.llm_factory is None:
+            return HealthInfo(status="down", detail="llm_factory 未初始化")
+        return HealthInfo(status="running")

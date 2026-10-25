@@ -28,16 +28,17 @@ class PostgresClient(BaseClient):
 
     name = "postgres"
 
-    def __init__(self, url: str, *, echo: bool = False) -> None:
+    def __init__(self, url: str, *, echo: bool = False, search_path: str | None = None) -> None:
         self._url = url
         self._echo = echo
+        self._search_path = search_path
         self._engine: AsyncEngine | None = None
         self._sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
     @classmethod
     def from_settings(cls, cfg: "PostgresSettings", *, echo: bool = False) -> "PostgresClient":
         """按配置构造（配置由调用方读取并传入，保持本类无全局依赖）。"""
-        return cls(cfg.async_url, echo=echo)
+        return cls(cfg.async_url, echo=echo, search_path=cfg.search_path)
 
     # ---------- 生命周期 ----------
     @property
@@ -47,7 +48,14 @@ class PostgresClient(BaseClient):
     async def connect(self) -> None:
         """创建 engine（幂等）。"""
         if self._engine is None:
-            self._engine = create_async_engine(self._url, echo=self._echo, future=True)
+            connect_args: dict = {}
+            if self._search_path:
+                # asyncpg 通过 server_settings 在建立连接时注入 search_path，
+                # 使裸 SQL 默认解析到专属 schema（如 agent_platform）
+                connect_args["server_settings"] = {"search_path": self._search_path}
+            self._engine = create_async_engine(
+                self._url, echo=self._echo, future=True, connect_args=connect_args
+            )
             self._sessionmaker = async_sessionmaker(self._engine, expire_on_commit=False)
 
     async def close(self) -> None:

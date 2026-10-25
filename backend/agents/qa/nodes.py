@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from backend.agents.qa.state import QAState
 from backend.app_state import app_state, get_tenant_id
-from backend.core.llm_factory import LLMFactory
-from backend.core.tracing import tracing
-from backend.rag.adapter import rag_retrieve
+from backend.common.llm.llm_factory import LLMFactory
+from backend.observability.tracing import tracing
+from backend.mcp.retrieval.adapter import rag_retrieve
 
 
 async def classify(state: QAState) -> QAState:

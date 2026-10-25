@@ -7,9 +7,13 @@ import Dashboard from './pages/Dashboard';
 import Agents from './pages/Agents';
 import Sessions from './pages/Sessions';
 import Tools from './pages/Tools';
-import Rbac from './pages/Rbac';
+import UserList from './pages/rbac/UserList';
+import TenantList from './pages/rbac/TenantList';
+import RoleList from './pages/rbac/RoleList';
+import MenuList from './pages/rbac/MenuList';
 import ConfigCenter from './pages/ConfigCenter';
 import AuditLog from './pages/AuditLog';
+import ModelList from './pages/ModelList';
 import { isLogin } from './services/auth';
 
 /** 登录守卫：未登录跳转登录页 */
@@ -37,7 +41,12 @@ export default function App() {
         <Route path="agents" element={<Agents />} />
         <Route path="sessions" element={<Sessions />} />
         <Route path="tools" element={<Tools />} />
-        <Route path="rbac" element={<Rbac />} />
+        <Route path="models" element={<ModelList />} />
+        <Route path="users" element={<UserList />} />
+        <Route path="tenants" element={<TenantList />} />
+        <Route path="roles" element={<RoleList />} />
+        <Route path="menus" element={<MenuList />} />
+        <Route path="rbac" element={<Navigate to="/users" replace />} />
         <Route path="config" element={<ConfigCenter />} />
         <Route path="audit" element={<AuditLog />} />
       </Route>

@@ -1,9 +1,9 @@
 """简历审查节点：解析/六维度评分/诊断/报告。"""
 from __future__ import annotations
 
-from backend.agents.resume.state import ResumeState
-from backend.core.tracing import tracing
-from backend.plugins.registry import PluginRegistry
+from backend.agents.resume.state import ResumeState, _DIMENSIONS
+from backend.observability.tracing import tracing
+from backend.mcp.registry import PluginRegistry
 
 
 async def parse_pdf(state: ResumeState) -> ResumeState:
@@ -21,7 +21,6 @@ async def parse_pdf(state: ResumeState) -> ResumeState:
 
 
 # 六维度：并行 fan-out。每个节点只写自身维度分数，互不覆盖。
-_DIMENSIONS = ["content", "structure", "match", "expression", "project", "education"]
 
 
 async def _score_dimension(state: ResumeState, dim: str) -> ResumeState:

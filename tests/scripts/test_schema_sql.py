@@ -150,6 +150,9 @@ def test_insert_column_counts_match() -> None:
     pattern = re.compile(r'INSERT INTO ([\w"]+) \(([^)]*)\) VALUES(.*?);', re.S)
     checked = 0
     for match in pattern.finditer(cleaned):
+        # 含子查询（如 agent_user_tenant 用 SELECT 关联避免硬编码 id）的行无法做列数核对，跳过
+        if "SELECT" in match.group(0):
+            continue
         table, columns, values = match.group(1), match.group(2), match.group(3)
         column_count = len([c for c in columns.split(",") if c.strip()])
         values = values.split("ON CONFLICT")[0]
