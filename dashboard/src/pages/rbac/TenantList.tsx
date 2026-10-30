@@ -1,104 +1,87 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
-  Alert,
   App as AntdApp,
   Button,
-  DatePicker,
   Drawer,
   Form,
   Input,
   Modal,
+  Popconfirm,
   Switch,
-  Space,
-  Table,
   Tag,
   Typography,
 } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import dayjs, { Dayjs } from 'dayjs';
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import dayjs from 'dayjs';
 import {
   createTenant,
   listTenants,
   setTenantManager,
+  setTenantStatus,
   updateTenant,
+  getTenant,
   type TenantItem,
 } from '../../services/rbac';
+import { sortByTimeThenId } from '../../utils/sort';
 
 export default function TenantList() {
   const { message } = AntdApp.useApp();
-  const [data, setData] = useState<TenantItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [name, setName] = useState('');
-  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
+  const actionRef = useRef<ActionType>();
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createForm] = Form.useForm();
 
-  const [drawerTenant, setDrawerTenant] = useState<TenantItem | null>(null);
+  const [drawerTenant, setDrawerTenant] = useState<(TenantItem & { updated_at?: string }) | null>(null);
   const [updateForm] = Form.useForm();
   const [mgrForm] = Form.useForm();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await listTenants({
-        page,
-        page_size: pageSize,
-        name: name || undefined,
-        created_from: range ? range[0].format('YYYY-MM-DD') : undefined,
-        created_to: range ? range[1].format('YYYY-MM-DD') : undefined,
-      });
-      setData(res.items);
-      setTotal(res.total);
-    } catch (e) {
-      // 加载失败要把原因展示出来，否则页面上只表现为「空表格」
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [page, pageSize, name, range]);
+  const request = useCallback(async (params: any) => {
+    const range = params.create_at as [any, any] | undefined;
+    const res = await listTenants({
+      page: params.current ?? 1,
+      page_size: params.pageSize ?? 20,
+      name: params.name || undefined,
+      created_from: range?.[0] ? dayjs(range[0]).format('YYYY-MM-DD') : undefined,
+      created_to: range?.[1] ? dayjs(range[1]).format('YYYY-MM-DD') : undefined,
+    });
+    return { data: sortByTimeThenId(res.items), success: true, total: res.total };
+  }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const columns: ColumnsType<TenantItem> = [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-    { title: '名称', dataIndex: 'name', key: 'name' },
+  const columns: ProColumns<TenantItem>[] = [
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 80, search: false },
+    { title: '名称', dataIndex: 'name', key: 'name', valueType: 'text' },
     {
       title: '状态',
       dataIndex: 'enabled',
       key: 'enabled',
-      render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? '启用' : '停用'}</Tag>,
+      search: false,
+      render: (value: any) => <Tag color={value ? 'green' : 'red'}>{value ? '启用' : '停用'}</Tag>,
     },
-    {
-      title: '主租户',
-      dataIndex: 'is_primary',
-      key: 'is_primary',
-      render: (v: boolean) => (v ? <Tag color="blue">主租户</Tag> : <></>),
-    },
-    { title: '管理员', dataIndex: 'manager_username', key: 'manager_username', render: (v) => v ?? '-' },
-    { title: '用户数', dataIndex: 'user_count', key: 'user_count', width: 90 },
+    { title: '管理员', dataIndex: 'manager_username', key: 'manager_username', search: false, render: (v) => v ?? '-' },
+    { title: '用户数', dataIndex: 'user_count', key: 'user_count', width: 90, search: false },
     {
       title: '创建时间',
       dataIndex: 'create_at',
       key: 'create_at',
-      render: (v?: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
+      search: false,
+      render: (value: any) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-'),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'create_at',
+      key: 'create_at_range',
+      hideInTable: true,
+      valueType: 'dateRange',
     },
     {
       title: '操作',
       key: 'action',
+      search: false,
       render: (_, record) => (
         <Button
           type="link"
           onClick={() => {
-            setDrawerTenant(record);
+            openDetail(record.id);
             updateForm.setFieldsValue({ name: record.name, enabled: record.enabled });
             mgrForm.setFieldsValue({ username: record.manager_username ?? '' });
           }}
@@ -109,10 +92,6 @@ export default function TenantList() {
     },
   ];
 
-  const onSearch = () => {
-    setPage(1);
-  };
-
   const onCreate = async (values: { name: string }) => {
     setCreating(true);
     try {
@@ -120,7 +99,7 @@ export default function TenantList() {
       message.success('租户已创建');
       setCreateOpen(false);
       createForm.resetFields();
-      load();
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -131,12 +110,27 @@ export default function TenantList() {
   const onUpdate = async (values: { name?: string; enabled?: boolean }) => {
     if (!drawerTenant) return;
     try {
-      await updateTenant(drawerTenant.id, values);
+      // 启停走专用 status 端点；改名走 updateTenant
+      if (values.enabled !== drawerTenant.enabled) {
+        await setTenantStatus(drawerTenant.id, values.enabled ?? true);
+      }
+      if (values.name && values.name !== drawerTenant.name) {
+        await updateTenant(drawerTenant.id, { name: values.name });
+      }
       message.success('租户已更新');
       setDrawerTenant(null);
-      load();
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
+    }
+  };
+
+  const openDetail = async (id: number) => {
+    try {
+      const t = await getTenant(id);
+      setDrawerTenant(t);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -146,7 +140,7 @@ export default function TenantList() {
       await setTenantManager(drawerTenant.id, values.username, values.password);
       message.success('管理员已更新');
       setDrawerTenant(null);
-      load();
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
     }
@@ -154,57 +148,21 @@ export default function TenantList() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        租户管理
-        <Button type="primary" style={{ marginLeft: 16 }} onClick={() => setCreateOpen(true)}>
-          新建租户
-        </Button>
-      </Typography.Title>
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Input
-          placeholder="租户名"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          allowClear
-          style={{ width: 160 }}
-        />
-        <DatePicker.RangePicker
-          value={range}
-          onChange={(v) => setRange(v as [Dayjs, Dayjs] | null)}
-          style={{ width: 280 }}
-        />
-        <Button type="primary" onClick={onSearch}>
-          查询
-        </Button>
-      </Space>
-      {error && (
-        <Alert
-          type="error"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={`加载失败：${error}`}
-          action={
-            <Button size="small" onClick={() => load()}>
-              重试
-            </Button>
-          }
-        />
-      )}
-      <Table<TenantItem>
+      <ProTable<TenantItem>
+        headerTitle="租户管理"
+        actionRef={actionRef}
+        toolBarRender={() => [
+          <Button key="add" type="primary" onClick={() => setCreateOpen(true)}>
+            新建租户
+          </Button>,
+        ]}
         rowKey="id"
-        loading={loading}
         columns={columns}
-        dataSource={data}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
-        }}
+        request={request}
+        search={{ labelWidth: 'auto' }}
+        options={{ fullScreen: true, setting: true, density: true, reload: true }}
+        pagination={{ pageSize: 20, showSizeChanger: true }}
+        scroll={{ x: 'max-content' }}
       />
       <Drawer
         title={`租户详情 #${drawerTenant?.id ?? ''}`}
@@ -216,7 +174,11 @@ export default function TenantList() {
           <>
             <p>
               <b>创建时间：</b>
-              {drawerTenant.create_at ? dayjs(drawerTenant.create_at).format('YYYY-MM-DD HH:mm') : '-'}
+              {drawerTenant.create_at ? dayjs(drawerTenant.create_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+            </p>
+            <p>
+              <b>更新时间：</b>
+              {drawerTenant.updated_at ? dayjs(drawerTenant.updated_at).format('YYYY-MM-DD HH:mm') : '-'}
             </p>
             <Typography.Title level={5}>改名 / 启停</Typography.Title>
             <Form form={updateForm} layout="vertical" onFinish={onUpdate}>
@@ -224,11 +186,17 @@ export default function TenantList() {
                 <Input />
               </Form.Item>
               <Form.Item name="enabled" label="启用" valuePropName="checked">
-                <Switch disabled={drawerTenant.is_primary} />
+                <Switch />
               </Form.Item>
-              <Button type="primary" htmlType="submit">
-                保存
-              </Button>
+              <Popconfirm
+                title="确认保存改名 / 启停？"
+                description="停用租户将使其下所有用户无法登录"
+                onConfirm={() => updateForm.submit()}
+                okText="保存"
+                cancelText="取消"
+              >
+                <Button type="primary">保存</Button>
+              </Popconfirm>
             </Form>
             <Typography.Title level={5} style={{ marginTop: 24 }}>
               更换管理员
@@ -240,9 +208,15 @@ export default function TenantList() {
               <Form.Item name="password" label="密码（新用户必填）">
                 <Input.Password />
               </Form.Item>
-              <Button type="primary" htmlType="submit">
-                提交
-              </Button>
+              <Popconfirm
+                title="确认更换管理员？"
+                description="原管理员将降级为普通用户，且无法撤销"
+                onConfirm={() => mgrForm.submit()}
+                okText="提交"
+                cancelText="取消"
+              >
+                <Button type="primary">提交</Button>
+              </Popconfirm>
             </Form>
           </>
         )}

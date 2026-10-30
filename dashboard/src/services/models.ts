@@ -44,10 +44,19 @@ export const MODEL_TYPES = [
   { value: 'classifier', label: 'classifier（分类）' },
 ];
 
-export const listModels = (modelType?: string) => {
-  const query = modelType ? `?model_type=${encodeURIComponent(modelType)}` : '';
-  return http.get<{ items: ModelItem[]; total: number }>(`/api/v1/admin/models${query}`);
+export const listModels = (params: { model_type?: string; page?: number; page_size?: number } = {}) => {
+  const qs = new URLSearchParams();
+  if (params.model_type) qs.set('model_type', params.model_type);
+  if (params.page) qs.set('page', String(params.page));
+  if (params.page_size) qs.set('page_size', String(params.page_size));
+  const s = qs.toString();
+  return http.get<{ items: ModelItem[]; total: number; page: number; page_size: number }>(
+    `/api/v1/admin/models${s ? '?' + s : ''}`,
+  );
 };
+
+export const getModel = (id: number) =>
+  http.get<ModelItem>(`/api/v1/admin/models/${id}`);
 
 export const createModel = (payload: ModelPayload) =>
   http.post<{ id: number }>('/api/v1/admin/models', payload);
@@ -57,3 +66,10 @@ export const updateModel = (modelId: number, payload: ModelPayload) =>
 
 export const deleteModel = (modelId: number) =>
   http.delete<{ id: number }>(`/api/v1/admin/models/${modelId}`);
+
+/** 模型启停（status 端点）。 */
+export const setModelStatus = (modelId: number, enabled: boolean) =>
+  http.patch<{ id: number; enabled: boolean }>(
+    `/api/v1/admin/models/${modelId}/status`,
+    { enabled },
+  );

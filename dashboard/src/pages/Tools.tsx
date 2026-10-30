@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Space, Tag, Typography } from 'antd';
+import { ProTable, type ProColumns } from '@ant-design/pro-components';
 import type { ColumnsType } from 'antd/es/table';
 
 import { listPlugins } from '../services/plugins';
@@ -81,9 +82,11 @@ export default function Tools() {
         />
       )}
 
-      <Table<ToolRow>
+      <ProTable<ToolRow>
+        search={false}
+        options={{ fullScreen: true, setting: true, density: true, reload: false }}
         rowKey="key"
-        columns={columns}
+        columns={columns as ProColumns<ToolRow>[]}
         dataSource={rows}
         loading={loading}
         pagination={false}

@@ -1,35 +1,42 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Descriptions, Drawer, Select, Space, Tag, Tooltip, Typography } from 'antd';
+import { ProTable, type ProColumns } from '@ant-design/pro-components';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
-import { listAuditLogs, type AuditItem } from '../services/audit';
+import { getAuditLog, listAuditLogs, type AuditItem } from '../services/audit';
 import { listTenants, type TenantItem } from '../services/rbac';
+import { sortByTimeThenId } from '../utils/sort';
 
 /** 结果着色：审计里的 result 是字符串（成功/失败），未知值统一灰色 */
 const RESULT_COLOR: Record<string, string> = { 成功: 'green', 失败: 'red' };
 
 export default function AuditLog() {
   const [items, setItems] = useState<AuditItem[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tenantId, setTenantId] = useState<number | undefined>();
-  const [limit, setLimit] = useState(200);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [drawerLog, setDrawerLog] = useState<AuditItem | null>(null);
+  const { message } = AntdApp.useApp();
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listAuditLogs({ tenant_id: tenantId, limit });
-      setItems(res?.items ?? []);
+      const res = await listAuditLogs({ tenant_id: tenantId, page, page_size: pageSize });
+      setItems(sortByTimeThenId(res?.items ?? []));
+      setTotal(res?.total ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [tenantId, limit]);
+  }, [tenantId, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -46,6 +53,16 @@ export default function AuditLog() {
 
   const tenantLabel = (id: number): string =>
     tenantOptions.find((o) => o.value === id)?.label ?? `#${id}`;
+
+  const openDetail = async (id: string) => {
+    setDrawerLog(null);
+    try {
+      const log = await getAuditLog(id);
+      setDrawerLog(log);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const columns: ColumnsType<AuditItem> = [
     {
@@ -108,37 +125,39 @@ export default function AuditLog() {
       render: (v: string | null) => (v ? <code>{v}</code> : '-'),
     },
     { title: 'IP', dataIndex: 'ip', key: 'ip', width: 130, render: (v: string | null) => v ?? '-' },
+    {
+      title: '操作',
+      key: 'action',
+      width: 90,
+      render: (_, row: AuditItem) => (
+        <Button type="link" size="small" onClick={() => openDetail(row.id)}>
+          详情
+        </Button>
+      ),
+    },
   ];
 
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
-        审计日志
+        业务审计
       </Typography.Title>
       <Space style={{ marginBottom: 16 }} wrap>
         <Select
           placeholder="按租户过滤"
           value={tenantId}
-          onChange={(v) => setTenantId(v)}
+          onChange={(v) => {
+            setTenantId(v);
+            setPage(1);
+          }}
           options={tenantOptions}
           allowClear
           style={{ width: 200 }}
         />
-        <Select
-          value={limit}
-          onChange={setLimit}
-          style={{ width: 150 }}
-          options={[
-            { value: 100, label: '最近 100 条' },
-            { value: 200, label: '最近 200 条' },
-            { value: 500, label: '最近 500 条' },
-            { value: 1000, label: '最近 1000 条' },
-          ]}
-        />
         <Button type="primary" onClick={() => load()}>
           刷新
         </Button>
-        <Typography.Text type="secondary">共 {items.length} 条（按时间倒序）</Typography.Text>
+        <Typography.Text type="secondary">共 {total} 条（按时间倒序）</Typography.Text>
       </Space>
       {error && (
         <Alert
@@ -153,14 +172,46 @@ export default function AuditLog() {
           }
         />
       )}
-      <Table<AuditItem>
+      <ProTable<AuditItem>
+        search={false}
+        options={{ fullScreen: true, setting: true, density: true, reload: false }}
         rowKey="id"
-        columns={columns}
+        columns={columns as ProColumns<AuditItem>[]}
         dataSource={items}
         loading={loading}
-        pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (t) => `共 ${t} 条` }}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          onChange: (p, ps) => {
+            setPage(p);
+            setPageSize(ps);
+          },
+        }}
         scroll={{ x: 'max-content' }}
       />
+      <Drawer
+        title={`审计详情 #${drawerLog?.id ?? ''}`}
+        open={drawerLog !== null}
+        onClose={() => setDrawerLog(null)}
+        width={520}
+      >
+        {drawerLog && (
+          <Descriptions column={1} bordered size="small">
+            <Descriptions.Item label="ID">{drawerLog.id}</Descriptions.Item>
+            <Descriptions.Item label="租户">{drawerLog.tenant_id}</Descriptions.Item>
+            <Descriptions.Item label="操作人">{drawerLog.user_id}</Descriptions.Item>
+            <Descriptions.Item label="动作"><code>{drawerLog.action}</code></Descriptions.Item>
+            <Descriptions.Item label="对象">{drawerLog.target ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="详情">{drawerLog.detail ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="结果">{drawerLog.result ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="traceId">{drawerLog.trace_id ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="IP">{drawerLog.ip ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="时间">{drawerLog.create_at ? dayjs(drawerLog.create_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</Descriptions.Item>
+          </Descriptions>
+        )}
+      </Drawer>
     </div>
   );
 }

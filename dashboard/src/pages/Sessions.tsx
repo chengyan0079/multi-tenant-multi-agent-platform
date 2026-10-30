@@ -1,4 +1,5 @@
-import { Card, Table, Tag, Typography } from 'antd';
+import { Card, Tag, Typography } from 'antd';
+import { ProTable, type ProColumns } from '@ant-design/pro-components';
 import type { ColumnsType } from 'antd/es/table';
 
 import { sessions, type SessionItem } from '../mock/tables';
@@ -28,8 +29,11 @@ const columns: ColumnsType<SessionItem> = [
 export default function Sessions() {
   return (
     <Card title={<Typography.Title level={4} style={{ margin: 0 }}>会话运行</Typography.Title>}>
-      <Table<SessionItem>
-        columns={columns}
+      <ProTable<SessionItem>
+        rowKey="threadId"
+        search={false}
+        options={{ fullScreen: true, setting: true, density: true, reload: false }}
+        columns={columns as ProColumns<SessionItem>[]}
         dataSource={sessions}
         pagination={false}
         scroll={{ x: 'max-content' }}

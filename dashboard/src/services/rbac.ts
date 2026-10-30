@@ -1,4 +1,5 @@
 import { http } from './http';
+import { isTenantContext } from './auth';
 
 export interface UserItem {
   id: number;
@@ -13,7 +14,6 @@ export interface TenantItem {
   id: number;
   name: string;
   enabled: boolean;
-  is_primary: boolean;
   manager_username: string | null;
   user_count: number;
   create_at?: string;
@@ -63,6 +63,11 @@ export async function listUsers(params: {
   created_from?: string;
   created_to?: string;
 }) {
+  // 超管走 /admin/users（可跨租户）；租户管理员走 /tenant/users（强制本租户，不接受 tenant_id）
+  if (isTenantContext()) {
+    const { page, page_size, username, created_from, created_to } = params;
+    return http.get<Paged<UserItem>>(`/api/v1/tenant/users${qs({ page, page_size, username, created_from, created_to })}`);
+  }
   return http.get<Paged<UserItem>>(`/api/v1/admin/users${qs(params)}`);
 }
 
@@ -76,8 +81,8 @@ export async function listTenants(params: {
   return http.get<Paged<TenantItem>>(`/api/v1/admin/tenants${qs(params)}`);
 }
 
-export async function listRoles() {
-  return http.get<Paged<RoleItem>>(`/api/v1/admin/roles`);
+export async function listRoles(page = 1, pageSize = 20) {
+  return http.get<Paged<RoleItem>>(`/api/v1/admin/roles${qs({ page, page_size: pageSize })}`);
 }
 
 export async function createRole(payload: { name: string; description?: string; scopes: string[] }) {
@@ -88,8 +93,8 @@ export async function deleteRole(roleId: number) {
   return http.delete(`/api/v1/admin/roles/${roleId}`);
 }
 
-export async function listMenus() {
-  return http.get<{ items: MenuNode[]; total: number }>(`/api/v1/admin/menus`);
+export async function listMenus(page = 1, pageSize = 50) {
+  return http.get<Paged<MenuNode>>(`/api/v1/admin/menus${qs({ page, page_size: pageSize })}`);
 }
 
 export async function createMenu(payload: {
@@ -124,6 +129,10 @@ export async function deleteMenu(id: number) {
 }
 
 export async function changeUserRole(userId: number, tenantId: number, role: string) {
+  // 超管侧带租户；租户管理员侧角色仅限本租户，请求体只传 role
+  if (isTenantContext()) {
+    return http.put(`/api/v1/tenant/users/${userId}/role`, { role });
+  }
   return http.put(`/api/v1/admin/rbac/users/${userId}/role`, { tenant_id: tenantId, role });
 }
 
@@ -135,9 +144,32 @@ export async function setTenantManager(tenantId: number, username: string, passw
   return http.put(`/api/v1/admin/tenants/${tenantId}/manager`, { username, password });
 }
 
-/** 新建租户：is_primary 由后端固定为 false，不接受入参 */
+/** 新建租户：只传名称，租户间地位平等 */
 export async function createTenant(name: string) {
   return http.post<{ id: number }>('/api/v1/admin/tenants', { name });
+}
+
+/** 租户详情（含管理员、用户数、时间）。 */
+export async function getTenant(tenantId: number) {
+  return http.get<TenantItem & { manager_username?: string | null; user_count?: number; create_at?: string; updated_at?: string }>(
+    `/api/v1/admin/tenants/${tenantId}`,
+  );
+}
+
+/** 用户详情（超管；响应已剥 password，含 enabled）。 */
+export async function getUser(userId: number) {
+  if (isTenantContext()) {
+    return http.get<UserItem & { enabled?: boolean }>(`/api/v1/tenant/users/${userId}`);
+  }
+  return http.get<UserItem & { enabled?: boolean }>(`/api/v1/admin/rbac/users/${userId}`);
+}
+
+/** 改角色名称/说明（权限点走 updateRolePermissions） */
+export async function updateRole(roleId: number, payload: { name: string; description?: string }) {
+  return http.put<{ role_id: number; name: string; description: string | null }>(
+    `/api/v1/admin/roles/${roleId}`,
+    payload,
+  );
 }
 
 /** 覆盖角色权限点（全量列表，后端先清空再写，并会校验权限点是否合法） */
@@ -148,53 +180,72 @@ export async function updateRolePermissions(roleId: number, scopes: string[]) {
   );
 }
 
+/** 菜单显隐（status 端点）。 */
+export async function setMenuStatus(id: number, visible: boolean) {
+  return http.patch(`/api/v1/admin/menus/${id}/status`, { visible });
+}
+
+/** 租户启停（status 端点）。 */
+export async function setTenantStatus(tenantId: number, enabled: boolean) {
+  return http.patch(`/api/v1/admin/tenants/${tenantId}/status`, { enabled });
+}
+
 /**
- * 权限点目录：与后端 backend/security/rbac.py 的 Scope 枚举一一对应。
- * 后端对未知权限点直接报错，所以这里只放枚举里有的值，不要临时手输。
+ * 权限点目录（经 GET /admin/scopes 拉取后端 Scope 全量）。
+ * @deprecated 仅作历史参考，前端下拉已改由 listScopes() 动态加载。
  */
 export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'qa:ask', label: 'qa:ask（问答）' },
-  { value: 'qa:read', label: 'qa:read（问答记录读取）' },
+  { value: 'qa:page', label: 'qa:page（问答记录查询）' },
   { value: 'interview:ask', label: 'interview:ask（模拟面试）' },
-  { value: 'interview:read', label: 'interview:read（面试记录读取）' },
+  { value: 'interview:page', label: 'interview:page（面试记录查询）' },
   { value: 'resume:ask', label: 'resume:ask（简历问答）' },
   { value: 'resume:upload', label: 'resume:upload（简历上传）' },
-  { value: 'resume:read', label: 'resume:read（简历读取）' },
+  { value: 'resume:page', label: 'resume:page（简历查询）' },
   { value: 'exam:ask', label: 'exam:ask（试卷问答）' },
-  { value: 'exam:read', label: 'exam:read（试卷读取）' },
-  { value: 'exam:create', label: 'exam:create（出卷）' },
+  { value: 'exam:page', label: 'exam:page（试卷查询）' },
+  { value: 'exam:add', label: 'exam:add（出卷）' },
   { value: 'exam:update', label: 'exam:update（改卷）' },
   { value: 'knowledge:ask', label: 'knowledge:ask（知识库问答）' },
-  { value: 'knowledge:read', label: 'knowledge:read（知识库读取）' },
+  { value: 'knowledge:page', label: 'knowledge:page（知识库查询）' },
   { value: 'knowledge:upload', label: 'knowledge:upload（知识库上传）' },
   { value: 'knowledge:download', label: 'knowledge:download（知识库下载）' },
-  { value: 'config:read', label: 'config:read（配置读取）' },
-  { value: 'config:write', label: 'config:write（配置写入）' },
+  { value: 'config:page', label: 'config:page（配置查询）' },
+  { value: 'config:update', label: 'config:update（配置写入）' },
   { value: 'config:review', label: 'config:review（配置复核）' },
-  { value: 'config:create', label: 'config:create（配置新增）' },
-  { value: 'config:update', label: 'config:update（配置修改）' },
+  { value: 'config:add', label: 'config:add（配置新增）' },
   { value: 'config:delete', label: 'config:delete（配置删除）' },
-  { value: 'audit:read', label: 'audit:read（审计读取）' },
-  { value: 'agent:read', label: 'agent:read（智能体读取）' },
-  { value: 'agent:write', label: 'agent:write（智能体写入）' },
-  { value: 'agent:create', label: 'agent:create（智能体新建）' },
+  { value: 'audit:page', label: 'audit:page（审计查询）' },
+  { value: 'message:page', label: 'message:page（消息管理查看）' },
+  { value: 'agent:page', label: 'agent:page（智能体查询）' },
+  { value: 'agent:update', label: 'agent:update（智能体写入）' },
+  { value: 'agent:add', label: 'agent:add（智能体新建）' },
   { value: 'agent:delete', label: 'agent:delete（智能体删除）' },
-  { value: 'model:read', label: 'model:read（模型读取）' },
-  { value: 'model:write', label: 'model:write（模型写入）' },
-  { value: 'model:create', label: 'model:create（模型新增）' },
-  { value: 'model:update', label: 'model:update（模型修改）' },
+  { value: 'model:page', label: 'model:page（模型查询）' },
+  { value: 'model:update', label: 'model:update（模型写入）' },
+  { value: 'model:add', label: 'model:add（模型新增）' },
   { value: 'model:delete', label: 'model:delete（模型删除）' },
   { value: 'auth:login', label: 'auth:login（登录）' },
-  { value: 'auth:read', label: 'auth:read（身份读取）' },
-  { value: 'auth:write', label: 'auth:write（身份写入）' },
-  { value: 'user:read', label: 'user:read（用户读取）' },
-  { value: 'user:write', label: 'user:write（用户写入）' },
-  { value: 'user:create', label: 'user:create（用户新建）' },
+  { value: 'auth:page', label: 'auth:page（身份查询）' },
+  { value: 'auth:update', label: 'auth:update（身份写入）' },
+  { value: 'user:page', label: 'user:page（用户查询）' },
+  { value: 'user:update', label: 'user:update（用户写入）' },
+  { value: 'user:add', label: 'user:add（用户新建）' },
   { value: 'user:delete', label: 'user:delete（用户删除）' },
-  { value: 'rbac:read', label: 'rbac:read（角色读取）' },
-  { value: 'rbac:write', label: 'rbac:write（角色写入）' },
-  { value: 'tenant:read', label: 'tenant:read（租户读取）' },
-  { value: 'tenant:write', label: 'tenant:write（租户写入）' },
-  { value: 'tenant:create', label: 'tenant:create（租户新建）' },
+  { value: 'rbac:page', label: 'rbac:page（角色查询）' },
+  { value: 'rbac:update', label: 'rbac:update（角色写入）' },
+  { value: 'tenant:page', label: 'tenant:page（租户查询）' },
+  { value: 'tenant:update', label: 'tenant:update（租户写入）' },
+  { value: 'tenant:add', label: 'tenant:add（租户新建）' },
   { value: 'tenant:delete', label: 'tenant:delete（租户删除）' },
+  { value: 'agent:status', label: 'agent:status（智能体启停）' },
+  { value: 'model:status', label: 'model:status（模型启停）' },
+  { value: 'tenant:status', label: 'tenant:status（租户启停）' },
+  { value: 'menu:status', label: 'menu:status（菜单显隐）' },
 ];
+
+/** 全量权限点：直接取后端 backend/security/rbac.py 的 Scope，前端无需硬编码同步。 */
+export async function listScopes(): Promise<string[]> {
+  const r = await http.get<{ items: string[] }>('/api/v1/admin/scopes');
+  return r.items ?? [];
+}

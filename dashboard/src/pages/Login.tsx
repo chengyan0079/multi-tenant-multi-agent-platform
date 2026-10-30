@@ -51,7 +51,7 @@ export default function Login() {
         <aside className="login-brand">
           <div className="login-brand-logo">AP</div>
           <Typography.Title level={2} className="login-brand-title">
-            智能体平台
+            多租户多智能体协作平台
           </Typography.Title>
           <Typography.Paragraph className="login-brand-desc">
             统一管理智能体、会话、工具与权限，让每一次调用都可观测、可审计。

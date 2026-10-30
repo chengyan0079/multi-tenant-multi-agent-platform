@@ -5,36 +5,54 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-platform"
 version = "0.1.0"
-description = "多 Agent 编排系统（EduAgent 业务蓝本）：多模块单应用，LangGraph 图编排 + 插件化能力缝隙"
+description = "多 Agent 编排系统"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.111",
-    "pydantic>=2.7",
-    "pydantic-settings>=2.3",
-    "python-dotenv>=1.0",
-    "uvicorn[standard]>=0.30",
-    "sse-starlette>=2.1",
-    "slowapi>=0.1.9",
-    "langgraph>=0.2",
-    "langchain>=0.2",
-    "langchain-openai>=0.1",
-    "sqlalchemy[asyncio]>=2.0",
-    "asyncpg>=0.29",
-    "alembic>=1.13",
-    "pymilvus>=2.4",
-    "redis>=5.0",
-    "python-jose[cryptography]>=3.3",
-    "passlib[bcrypt]>=1.7",
-    "httpx>=0.27",
-    "pyyaml>=6.0",
-    "loguru>=0.7",
-    "requests>=2.31",
-    "nacos-sdk-python>=2.0",
+    "marshmallow<4",
+    "langchain==1.2.10",
+    "langchain-core==1.2.16",
+    "langchain-text-splitters==1.1.1",
+    "langgraph==1.0.9",
+    "langgraph-prebuilt==1.0.8",
+    "langgraph-checkpoint-postgres==2.0.8",
+    "langchain-openai==1.1.10",
+    "transformers==5.19.0",
+    "sentence-transformers==6.1.0",
+    "sentencepiece==0.2.2",
+    "torch==2.14.1",
+    "FlagEmbedding>=1.4.2",
+    "fastapi==0.146.0",
+    "uvicorn[standard]==0.54.0",
+    "python-multipart==0.0.32",
+    "sse-starlette==2.1.3",
+    "slowapi==0.1.10",
+    "uuid6==2025.0.1",
+    "asyncpg==0.30.0",
+    "sqlalchemy[asyncio]==2.0.36",
+    "redis==8.1.0",
+    "aio-pika==10.2.1",
+    "pymilvus[model]==3.0.2",
+    "numpy==2.5.4",
+    "python-docx==1.2.0",
+    "pymupdf==1.28.2",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.15.0",
+    "PyYAML==6.0.3",
+    "httpx==0.28.1",
+    "requests==2.34.2",
+    "pyjwt==2.15.1",
+    "cryptography==50.0.2",
+    "python-dotenv==1.2.4",
+    "pwdlib[argon2,bcrypt]==0.3.1",
+    "mcp==1.26.0",
+    "nacos-sdk-python==3.2.0",
+    "duckduckgo-search==8.1.1",
+    "loguru==0.7.3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+dev = ["pytest==8.3.4", "pytest-asyncio==0.24.0", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]
 include = ["backend*"]

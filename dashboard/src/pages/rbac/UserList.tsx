@@ -1,20 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   App as AntdApp,
   Button,
-  DatePicker,
   Drawer,
   Form,
-  Input,
+  Popconfirm,
   Select,
-  Space,
-  Table,
   Typography,
 } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import dayjs, { Dayjs } from 'dayjs';
-import { listTenants, listUsers, changeUserRole, type TenantItem, type UserItem } from '../../services/rbac';
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import dayjs from 'dayjs';
+import { listTenants, listUsers, changeUserRole, getUser, type TenantItem, type UserItem } from '../../services/rbac';
+import { sortByTimeThenId } from '../../utils/sort';
 
 const ROLE_OPTIONS = [
   { value: 'student', label: 'student' },
@@ -24,45 +21,28 @@ const ROLE_OPTIONS = [
 
 export default function UserList() {
   const { message } = AntdApp.useApp();
-  const [data, setData] = useState<UserItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [username, setUsername] = useState('');
-  const [tenantId, setTenantId] = useState<number | undefined>();
-  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const actionRef = useRef<ActionType>();
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  const [drawerUser, setDrawerUser] = useState<UserItem | null>(null);
+  const [drawerUser, setDrawerUser] = useState<(UserItem & { enabled?: boolean }) | null>(null);
   const [roleForm] = Form.useForm();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await listUsers({
-        page,
-        page_size: pageSize,
-        username: username || undefined,
-        tenant_id: tenantId,
-        created_from: range ? range[0].format('YYYY-MM-DD') : undefined,
-        created_to: range ? range[1].format('YYYY-MM-DD') : undefined,
-      });
-      setData(res.items);
-      setTotal(res.total);
-    } catch (e) {
-      // 加载失败要把原因展示出来，否则页面上只表现为「空表格」
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [page, pageSize, username, tenantId, range]);
+  const tenantValueEnum = useMemo(
+    () => Object.fromEntries(tenantOptions.map((o) => [o.value, o.label])),
+    [tenantOptions],
+  );
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const request = useCallback(async (params: any) => {
+    const range = params.create_at as [any, any] | undefined;
+    const res = await listUsers({
+      page: params.current ?? 1,
+      page_size: params.pageSize ?? 20,
+      username: params.username || undefined,
+      tenant_id: params.tenant_id,
+      created_from: range?.[0] ? dayjs(range[0]).format('YYYY-MM-DD') : undefined,
+      created_to: range?.[1] ? dayjs(range[1]).format('YYYY-MM-DD') : undefined,
+    });
+    return { data: sortByTimeThenId(res.items), success: true, total: res.total };
+  }, []);
 
   useEffect(() => {
     listTenants({ page_size: 200 }).then((r) =>
@@ -70,31 +50,43 @@ export default function UserList() {
     );
   }, []);
 
-  const columns: ColumnsType<UserItem> = [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-    { title: '用户名', dataIndex: 'username', key: 'username' },
-    { title: '显示名', dataIndex: 'name', key: 'name' },
-    { title: '主租户ID', dataIndex: 'tenant_id', key: 'tenant_id', width: 100 },
+  const columns: ProColumns<UserItem>[] = [
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 80, search: false },
+    { title: '用户名', dataIndex: 'username', key: 'username', valueType: 'text' },
+    { title: '显示名', dataIndex: 'name', key: 'name', search: false },
+    {
+      title: '租户ID',
+      dataIndex: 'tenant_id',
+      key: 'tenant_id',
+      width: 100,
+      valueType: 'select',
+      valueEnum: tenantValueEnum,
+    },
     {
       title: '创建时间',
       dataIndex: 'create_at',
       key: 'create_at',
-      render: (v?: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '-'),
+      search: false,
+      render: (value: any) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-'),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'create_at',
+      key: 'create_at_range',
+      hideInTable: true,
+      valueType: 'dateRange',
     },
     {
       title: '操作',
       key: 'action',
+      search: false,
       render: (_, record) => (
-        <Button type="link" onClick={() => setDrawerUser(record)}>
+        <Button type="link" onClick={() => openDetail(record)}>
           详情
         </Button>
       ),
     },
   ];
-
-  const onSearch = () => {
-    setPage(1);
-  };
 
   const onRoleSubmit = async (values: { role: string; tenant_id: number }) => {
     if (!drawerUser) return;
@@ -102,70 +94,33 @@ export default function UserList() {
       await changeUserRole(drawerUser.id, values.tenant_id, values.role);
       message.success('角色已更新');
       setDrawerUser(null);
-      load();
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
     }
   };
 
+  const openDetail = async (record: UserItem) => {
+    try {
+      const u = await getUser(record.id);
+      setDrawerUser(u);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        用户管理
-      </Typography.Title>
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Input
-          placeholder="用户名"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          allowClear
-          style={{ width: 160 }}
-        />
-        <Select
-          placeholder="按租户过滤"
-          value={tenantId}
-          onChange={(v) => setTenantId(v)}
-          options={tenantOptions}
-          allowClear
-          style={{ width: 180 }}
-        />
-        <DatePicker.RangePicker
-          value={range}
-          onChange={(v) => setRange(v as [Dayjs, Dayjs] | null)}
-          style={{ width: 280 }}
-        />
-        <Button type="primary" onClick={onSearch}>
-          查询
-        </Button>
-      </Space>
-      {error && (
-        <Alert
-          type="error"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={`加载失败：${error}`}
-          action={
-            <Button size="small" onClick={() => load()}>
-              重试
-            </Button>
-          }
-        />
-      )}
-      <Table<UserItem>
+      <ProTable<UserItem>
+        headerTitle="用户管理"
+        actionRef={actionRef}
         rowKey="id"
-        loading={loading}
         columns={columns}
-        dataSource={data}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
-        }}
+        request={request}
+        search={{ labelWidth: 'auto' }}
+        options={{ fullScreen: true, setting: true, density: true, reload: true }}
+        pagination={{ pageSize: 20, showSizeChanger: true }}
+        scroll={{ x: 'max-content' }}
       />
       <Drawer
         title={`用户详情 #${drawerUser?.id ?? ''}`}
@@ -180,16 +135,20 @@ export default function UserList() {
               {drawerUser.username}
             </p>
             <p>
+              <b>是否启用：</b>
+              {drawerUser.enabled ? '是' : '否'}
+            </p>
+            <p>
               <b>显示名：</b>
               {drawerUser.name}
             </p>
             <p>
-              <b>主租户ID：</b>
+              <b>租户ID：</b>
               {drawerUser.tenant_id}
             </p>
             <p>
               <b>创建时间：</b>
-              {drawerUser.create_at ? dayjs(drawerUser.create_at).format('YYYY-MM-DD HH:mm') : '-'}
+              {drawerUser.create_at ? dayjs(drawerUser.create_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
             </p>
             <Typography.Title level={5}>修改角色</Typography.Title>
             <Form
@@ -204,9 +163,15 @@ export default function UserList() {
               <Form.Item name="role" label="角色" rules={[{ required: true }]}>
                 <Select options={ROLE_OPTIONS} />
               </Form.Item>
-              <Button type="primary" htmlType="submit">
-                提交
-              </Button>
+              <Popconfirm
+                title="确认修改用户角色？"
+                description="角色变更立即生效，影响该用户权限"
+                onConfirm={() => roleForm.submit()}
+                okText="提交"
+                cancelText="取消"
+              >
+                <Button type="primary">提交</Button>
+              </Popconfirm>
             </Form>
           </>
         )}

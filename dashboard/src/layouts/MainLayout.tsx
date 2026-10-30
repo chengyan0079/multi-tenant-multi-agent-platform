@@ -1,130 +1,122 @@
-import { useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { ProLayout, type MenuDataItem } from '@ant-design/pro-components';
 import {
   ApiOutlined,
+  AppstoreOutlined,
+  AuditOutlined,
+  CommentOutlined,
   DashboardOutlined,
+  DeploymentUnitOutlined,
+  ExceptionOutlined,
+  FileOutlined,
   FileSearchOutlined,
-  LogoutOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
+  FileTextOutlined,
+  FolderOpenOutlined,
+  FormOutlined,
+  KeyOutlined,
+  LoginOutlined,
+  MailOutlined,
+  MenuOutlined,
   MessageOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
+  SendOutlined,
   SettingOutlined,
+  TeamOutlined,
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Drawer, Grid, Layout, Menu, Tag, Typography } from 'antd';
 
-import { getUser, logout } from '../services/auth';
+import { getSession, getUser, logout, type MenuNode } from '../services/auth';
+import { useThemeMode } from '../theme/ThemeProvider';
+import AppStatusBar from './AppStatusBar';
 
-const { Header, Sider, Content } = Layout;
-const { useBreakpoint } = Grid;
+const PRODUCT_NAME = '多租户多智能体协作平台';
 
-/** 左侧菜单栏 */
-const menuItems = [
-  { key: '/dashboard', icon: <DashboardOutlined />, label: '监控概览' },
-  { key: '/agents', icon: <RobotOutlined />, label: '智能体管理' },
-  { key: '/sessions', icon: <MessageOutlined />, label: '会话运行' },
-  { key: '/tools', icon: <ToolOutlined />, label: '工具与插件' },
-  { key: '/models', icon: <ApiOutlined />, label: '模型注册表' },
-  {
-    key: '/rbac',
-    icon: <SafetyCertificateOutlined />,
-    label: '权限中心',
-    children: [
-      { key: '/users', label: '用户管理' },
-      { key: '/tenants', label: '租户管理' },
-      { key: '/roles', label: '角色管理' },
-      { key: '/menus', label: '菜单管理' },
-    ],
-  },
-  { key: '/config', icon: <SettingOutlined />, label: '配置中心' },
-  { key: '/audit', icon: <FileSearchOutlined />, label: '审计日志' },
-];
+/** 后端 menu.icon 字符串 → antd 图标组件；未匹配用默认图标兜底。 */
+const ICONS: Record<string, ReactNode> = {
+  DashboardOutlined: <DashboardOutlined />,
+  MessageOutlined: <MessageOutlined />,
+  MailOutlined: <MailOutlined />,
+  SendOutlined: <SendOutlined />,
+  ExceptionOutlined: <ExceptionOutlined />,
+  RobotOutlined: <RobotOutlined />,
+  ToolOutlined: <ToolOutlined />,
+  DeploymentUnitOutlined: <DeploymentUnitOutlined />,
+  SettingOutlined: <SettingOutlined />,
+  FileSearchOutlined: <FileSearchOutlined />,
+  FileOutlined: <FileOutlined />,
+  FolderOpenOutlined: <FolderOpenOutlined />,
+  SafetyCertificateOutlined: <SafetyCertificateOutlined />,
+  TeamOutlined: <TeamOutlined />,
+  UserOutlined: <UserOutlined />,
+  KeyOutlined: <KeyOutlined />,
+  MenuOutlined: <MenuOutlined />,
+  CommentOutlined: <CommentOutlined />,
+  FileTextOutlined: <FileTextOutlined />,
+  LoginOutlined: <LoginOutlined />,
+  ApiOutlined: <ApiOutlined />,
+  FormOutlined: <FormOutlined />,
+  AuditOutlined: <AuditOutlined />,
+};
+
+/** 由后端下发的菜单树构建 ProLayout 的 route（菜单已按当前身份 scope 过滤，显隐自动贴合权限）。 */
+function buildMenuRoutes(menus: MenuNode[]): MenuDataItem[] {
+  return menus.map((m) => ({
+    path: m.path,
+    name: m.name,
+    icon: ICONS[m.icon ?? ''] ?? <AppstoreOutlined />,
+    routes: m.children && m.children.length ? buildMenuRoutes(m.children) : undefined,
+  })) as MenuDataItem[];
+}
 
 export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const screens = useBreakpoint();
-  // 窄屏（< lg，即 <992px）用抽屉菜单；宽屏用可折叠侧边栏
-  const isMobile = screens.lg === false;
-
   const navigate = useNavigate();
   const location = useLocation();
+  const { isDark } = useThemeMode();
+
   const user = getUser();
+  const session = getSession();
+  const menuRoutes = useMemo(() => buildMenuRoutes(session?.menus ?? []), [session]);
 
   const handleLogout = () => {
     logout();
     navigate('/login', { replace: true });
   };
 
-  const onMenuClick = ({ key }: { key: string }) => {
-    navigate(key);
-    if (isMobile) {
-      setDrawerOpen(false);
-    }
-  };
-
-  const menuNode = (
-    <Menu
-      theme={isMobile ? 'light' : 'dark'}
-      mode="inline"
-      selectedKeys={[location.pathname]}
-      items={menuItems}
-      onClick={onMenuClick}
-    />
-  );
-
   return (
-    <Layout className="app-shell">
-      {!isMobile && (
-        <Sider collapsible collapsed={collapsed} trigger={null} theme="dark" width={200}>
-          <div className="app-logo">{collapsed ? '智' : '智能体平台'}</div>
-          {menuNode}
-        </Sider>
-      )}
-
-      {isMobile && (
-        <Drawer
-          title="导航菜单"
-          placement="left"
-          width={220}
-          open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-        >
-          {menuNode}
-        </Drawer>
-      )}
-
-      <Layout>
-        <Header className="app-header">
-          <Button
-            type="text"
-            aria-label="切换菜单"
-            icon={isMobile || collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => (isMobile ? setDrawerOpen(true) : setCollapsed(!collapsed))}
-          />
-          <div className="app-header-right">
-            <Avatar size="small" style={{ background: '#1677ff' }} icon={<UserOutlined />} />
-            {!isMobile && (
-              <>
-                <Typography.Text strong>{user.name || user.username}</Typography.Text>
-                <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-                  {user.role}
-                </Tag>
-                {user.tenantName ? <Tag style={{ marginInlineEnd: 0 }}>{user.tenantName}</Tag> : null}
-              </>
-            )}
-            <Button type="text" icon={<LogoutOutlined />} onClick={handleLogout}>
-              {!isMobile && '退出登录'}
-            </Button>
-          </div>
-        </Header>
-        <Content className="app-content">
+    <>
+      <div className="app-bg" aria-hidden="true" />
+      <ProLayout
+        title={PRODUCT_NAME}
+        logo={<span className="app-logo-badge">多</span>}
+        layout="side"
+        navTheme={isDark ? 'realDark' : 'light'}
+        fixedHeader
+        fixSiderbar
+        location={{ pathname: location.pathname }}
+        route={{ path: '/', routes: menuRoutes }}
+        token={{ sider: { colorMenuBackground: 'transparent' } }}
+        menuItemRender={(item, dom) => (
+          <a
+            onClick={(e) => {
+              e.preventDefault();
+              if (item.path) navigate(item.path);
+            }}
+          >
+            {dom}
+          </a>
+        )}
+        onCollapse={setCollapsed}
+        collapsed={collapsed}
+      >
+        <AppStatusBar user={user} onLogout={handleLogout} />
+        <div className="app-content">
           <Outlet />
-        </Content>
-      </Layout>
-    </Layout>
+        </div>
+      </ProLayout>
+    </>
   );
 }

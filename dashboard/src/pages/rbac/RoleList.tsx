@@ -1,53 +1,94 @@
-import { useEffect, useState } from 'react';
-import { App as AntdApp, Button, Drawer, Form, Input, Modal, Select, Space, Table, Tag, Typography } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { App as AntdApp, Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
+import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
 import {
   createRole,
   deleteRole,
   listRoles,
-  SCOPE_OPTIONS,
+  listScopes,
+  updateRole,
   updateRolePermissions,
   type RoleItem,
 } from '../../services/rbac';
+import { sortByTimeThenId } from '../../utils/sort';
 
-// 内置角色（业务键）不可删除，仅做展示
-const BUILTIN_ROLE_IDS = [1, 2, 3, 5];
+/** 权限点下拉选项：按资源（冒号前）分组，值即后端 Scope 原文 */
+type ScopeGroup = { label: string; options: { label: string; value: string }[] };
 
 export default function RoleList() {
-  const { message } = AntdApp.useApp();
-  const [data, setData] = useState<RoleItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { message, modal } = AntdApp.useApp();
+  const actionRef = useRef<ActionType>();
   const [detail, setDetail] = useState<RoleItem | null>(null);
+  const [editRole, setEditRole] = useState<RoleItem | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [permRole, setPermRole] = useState<RoleItem | null>(null);
   const [permScopes, setPermScopes] = useState<string[]>([]);
   const [savingPerms, setSavingPerms] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [scopeOptions, setScopeOptions] = useState<ScopeGroup[]>([]);
   const [form] = Form.useForm();
+  const [editForm] = Form.useForm();
 
-  const load = () => {
-    setLoading(true);
-    listRoles()
-      .then((r) => setData(r.items))
-      .finally(() => setLoading(false));
-  };
-
+  /** 权限点全量取自后端 Scope（GET /admin/scopes），新增权限点前端无需改动 */
   useEffect(() => {
-    load();
+    void listScopes()
+      .then((codes) => {
+        const groups = new Map<string, { label: string; value: string }[]>();
+        for (const code of codes) {
+          const resource = code.split(':')[0];
+          const list = groups.get(resource) ?? [];
+          list.push({ label: code, value: code });
+          groups.set(resource, list);
+        }
+        setScopeOptions([...groups.entries()].map(([resource, options]) => ({ label: resource, options })));
+      })
+      .catch((e) => message.error(e instanceof Error ? e.message : String(e)));
+  }, [message]);
+
+  const request = useCallback(async (params: any) => {
+    const r = await listRoles(params.current ?? 1, params.pageSize ?? 20);
+    return { data: sortByTimeThenId(r.items), success: true, total: r.total };
   }, []);
 
-  /** 打开详情时把当前权限点灌进受控 Select；保存走覆盖接口（后端先清空再写） */
-  const openDetail = (role: RoleItem) => {
-    setDetail(role);
+  /** 详情只读 */
+  const openDetail = (role: RoleItem) => setDetail(role);
+
+  /** 编辑：只改名称/说明（权限点走「配置权限」） */
+  const openEdit = (role: RoleItem) => {
+    setEditRole(role);
+    editForm.setFieldsValue({ name: role.name, description: role.description });
+  };
+
+  const submitEdit = async (values: { name: string; description?: string }) => {
+    if (!editRole) return;
+    setSavingEdit(true);
+    try {
+      await updateRole(editRole.role_id, values);
+      message.success('角色已更新');
+      setEditRole(null);
+      actionRef.current?.reload();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  /** 配置权限：覆盖式写入，勾选结果即该角色全部权限点 */
+  const openPerms = (role: RoleItem) => {
+    setPermRole(role);
     setPermScopes(role.scopes);
   };
 
-  const savePerms = async (roleId: number) => {
+  const savePerms = async () => {
+    if (!permRole) return;
     setSavingPerms(true);
     try {
-      await updateRolePermissions(roleId, permScopes);
+      await updateRolePermissions(permRole.role_id, permScopes);
       message.success('权限点已更新');
-      setDetail(null);
-      load();
+      setPermRole(null);
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -59,7 +100,7 @@ export default function RoleList() {
     try {
       await deleteRole(roleId);
       message.success('角色已删除');
-      load();
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
     }
@@ -72,7 +113,7 @@ export default function RoleList() {
       message.success('角色已创建');
       setModalOpen(false);
       form.resetFields();
-      load();
+      actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -80,17 +121,19 @@ export default function RoleList() {
     }
   };
 
-  const columns: ColumnsType<RoleItem> = [
-    { title: '角色ID', dataIndex: 'role_id', key: 'role_id', width: 90 },
-    { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '说明', dataIndex: 'description', key: 'description' },
+  const columns: ProColumns<RoleItem>[] = [
+    { title: '角色ID', dataIndex: 'role_id', key: 'role_id', width: 90, search: false },
+    { title: '名称', dataIndex: 'name', key: 'name', valueType: 'text' },
+    { title: '说明', dataIndex: 'description', key: 'description', valueType: 'text' },
     {
       title: '权限点',
       dataIndex: 'scopes',
       key: 'scopes',
-      render: (scopes: string[]) => (
+      search: false,
+      width: 420,
+      render: (value: any) => (
         <>
-          {scopes.map((s) => (
+          {(value as string[]).map((s) => (
             <Tag key={s}>{s}</Tag>
           ))}
         </>
@@ -99,14 +142,23 @@ export default function RoleList() {
     {
       title: '操作',
       key: 'action',
+      search: false,
+      width: 220,
+      fixed: 'right',
       render: (_, record) => (
         <Space>
           <a onClick={() => openDetail(record)}>详情</a>
-          {BUILTIN_ROLE_IDS.includes(record.role_id) ? (
-            <Typography.Text type="secondary">内置不可删</Typography.Text>
-          ) : (
-            <a onClick={() => onDelete(record.role_id)}>删除</a>
-          )}
+          <a onClick={() => openEdit(record)}>编辑</a>
+          <a onClick={() => openPerms(record)}>配置权限</a>
+          <Popconfirm
+            title="确认删除该角色？"
+            description="删除后该角色下用户的角色关联将失效"
+            onConfirm={() => onDelete(record.role_id)}
+            okText="删除"
+            cancelText="取消"
+          >
+            <a>删除</a>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -114,18 +166,21 @@ export default function RoleList() {
 
   return (
     <div>
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
-        角色管理
-        <Button type="primary" style={{ marginLeft: 16 }} onClick={() => setModalOpen(true)}>
-          新建角色
-        </Button>
-      </Typography.Title>
-      <Table<RoleItem>
+      <ProTable<RoleItem>
+        headerTitle="角色管理"
+        actionRef={actionRef}
+        toolBarRender={() => [
+          <Button key="add" type="primary" onClick={() => setModalOpen(true)}>
+            新建角色
+          </Button>,
+        ]}
         rowKey="role_id"
-        loading={loading}
         columns={columns}
-        dataSource={data}
-        pagination={false}
+        request={request}
+        search={{ labelWidth: 'auto' }}
+        options={{ fullScreen: true, setting: true, density: true, reload: true }}
+        pagination={{ pageSize: 20, showSizeChanger: true }}
+        scroll={{ x: 1200 }}
       />
       <Drawer
         title={`角色详情 - ${detail?.name ?? ''}`}
@@ -137,32 +192,74 @@ export default function RoleList() {
           <>
             <p>
               <b>说明：</b>
-              {detail.description}
+              {detail.description || '-'}
             </p>
-            <Typography.Title level={5}>权限点</Typography.Title>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-              覆盖保存：勾选结果即该角色的全部权限点，取消勾选会一并删除。
-            </Typography.Paragraph>
-            <Select
-              mode="multiple"
-              value={permScopes}
-              onChange={(v: string[]) => setPermScopes(v)}
-              options={SCOPE_OPTIONS}
-              optionFilterProp="label"
-              placeholder="选择权限点"
-              style={{ width: '100%' }}
-            />
-            <Button
-              type="primary"
-              style={{ marginTop: 16 }}
-              loading={savingPerms}
-              onClick={() => savePerms(detail.role_id)}
-            >
-              保存权限点
-            </Button>
+            <Typography.Title level={5}>权限点（{detail.scopes.length}）</Typography.Title>
+            <Space size={[4, 8]} wrap>
+              {detail.scopes.length ? (
+                detail.scopes.map((s) => <Tag key={s}>{s}</Tag>)
+              ) : (
+                <Typography.Text type="secondary">无</Typography.Text>
+              )}
+            </Space>
           </>
         )}
       </Drawer>
+      <Modal
+        title="编辑角色"
+        open={editRole !== null}
+        onCancel={() => setEditRole(null)}
+        onOk={() => editForm.submit()}
+        confirmLoading={savingEdit}
+        okText="保存"
+        forceRender
+      >
+        <Form form={editForm} layout="vertical" onFinish={submitEdit}>
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[{ required: true, message: '请输入角色名称' }]}
+            extra={editRole?.name === 'admin' ? '内置角色 admin 不可改名' : undefined}
+          >
+            <Input maxLength={64} disabled={editRole?.name === 'admin'} />
+          </Form.Item>
+          <Form.Item name="description" label="说明">
+            <Input maxLength={255} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title={`配置权限 - ${permRole?.name ?? ''}`}
+        open={permRole !== null}
+        onCancel={() => setPermRole(null)}
+        onOk={() => {
+          if (!permRole) return;
+          modal.confirm({
+            title: '确认覆盖保存权限点？',
+            content: '将清空该角色原有全部权限点并写入当前勾选项，影响线上鉴权',
+            okText: '保存',
+            cancelText: '取消',
+            onOk: () => savePerms(),
+          });
+        }}
+        confirmLoading={savingPerms}
+        okText="保存权限点"
+        width={640}
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          覆盖保存：勾选结果即该角色的全部权限点，取消勾选会一并删除。
+        </Typography.Paragraph>
+        <Select
+          mode="multiple"
+          value={permScopes}
+          onChange={(v: string[]) => setPermScopes(v)}
+          options={scopeOptions}
+          optionFilterProp="label"
+          placeholder="选择权限点（可搜索）"
+          style={{ width: '100%' }}
+        />
+      </Modal>
       <Modal
         title="新建角色"
         open={modalOpen}
@@ -181,9 +278,15 @@ export default function RoleList() {
           <Form.Item
             name="scopes"
             label="权限点"
-            rules={[{ required: true, message: '至少输入一个权限点' }]}
+            rules={[{ required: true, message: '请至少选择一个权限点' }]}
           >
-            <Select mode="tags" placeholder="输入或选择权限点（回车确认）" tokenSeparators={[',']} />
+            <Select
+              mode="multiple"
+              options={scopeOptions}
+              optionFilterProp="label"
+              allowClear
+              placeholder="选择权限点（可搜索）"
+            />
           </Form.Item>
         </Form>
       </Modal>

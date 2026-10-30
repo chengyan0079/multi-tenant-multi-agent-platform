@@ -22,10 +22,10 @@ import {
   Skeleton,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
 } from 'antd';
+import { ProTable, type ProColumns } from '@ant-design/pro-components';
 import {
   Area,
   AreaChart,
@@ -51,16 +51,16 @@ import {
   type TenantRankRow,
 } from '../services/dashboard';
 
-const PIE_COLORS = ['#1677ff', '#52c41a', '#faad14', '#eb2f96', '#722ed1', '#13c2c2'];
+const PIE_COLORS = ['#3b5bdb', '#13b5b1', '#22a06b', '#e3a008', '#ef6c4d', '#5b8def'];
 
 /** 四张指标卡的视觉配置：图标 + 主题色，按后端返回的 key 匹配 */
 const STAT_DECOR: Record<string, { icon: ReactNode; color: string; tint: string }> = {
-  api_calls: { icon: <ApiOutlined />, color: '#1677ff', tint: 'rgba(22, 119, 255, 0.12)' },
-  active_threads: { icon: <MessageOutlined />, color: '#722ed1', tint: 'rgba(114, 46, 209, 0.12)' },
-  agents: { icon: <RobotOutlined />, color: '#13c2c2', tint: 'rgba(19, 194, 194, 0.12)' },
-  success_rate: { icon: <CheckCircleOutlined />, color: '#52c41a', tint: 'rgba(82, 196, 26, 0.12)' },
+  api_calls: { icon: <ApiOutlined />, color: '#3b5bdb', tint: 'rgba(59, 91, 219, 0.12)' },
+  active_threads: { icon: <MessageOutlined />, color: '#13b5b1', tint: 'rgba(19, 181, 177, 0.12)' },
+  agents: { icon: <RobotOutlined />, color: '#22a06b', tint: 'rgba(34, 160, 107, 0.12)' },
+  success_rate: { icon: <CheckCircleOutlined />, color: '#e3a008', tint: 'rgba(227, 160, 8, 0.12)' },
 };
-const FALLBACK_DECOR = { icon: <ApiOutlined />, color: '#1677ff', tint: 'rgba(22, 119, 255, 0.12)' };
+const FALLBACK_DECOR = { icon: <ApiOutlined />, color: '#3b5bdb', tint: 'rgba(59, 91, 219, 0.12)' };
 
 const fmtNumber = (value: number): string => value.toLocaleString('zh-CN');
 
@@ -142,7 +142,7 @@ function StatCard({ item }: { item: DashboardStat }) {
   const decor = STAT_DECOR[item.key] ?? FALLBACK_DECOR;
   const up = item.trend > 0;
   const down = item.trend < 0;
-  const trendColor = up ? '#52c41a' : down ? '#ff4d4f' : '#8c8c8c';
+  const trendColor = up ? '#22a06b' : down ? '#e5484d' : '#8c8c8c';
   const TrendIcon = up ? ArrowUpOutlined : down ? ArrowDownOutlined : MinusOutlined;
 
   return (
@@ -309,15 +309,15 @@ export default function Dashboard() {
                 <AreaChart data={view.request_trend} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                   <defs>
                     <linearGradient id="dashRequests" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#1677ff" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="#1677ff" stopOpacity={0.02} />
+                      <stop offset="0%" stopColor="#3b5bdb" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="#3b5bdb" stopOpacity={0.02} />
                     </linearGradient>
                     <linearGradient id="dashErrors" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#ff4d4f" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="#ff4d4f" stopOpacity={0.02} />
+                      <stop offset="0%" stopColor="#e5484d" stopOpacity={0.3} />
+                      <stop offset="100%" stopColor="#e5484d" stopOpacity={0.02} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#eef0f5" vertical={false} />
                   <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
                   <YAxis tickLine={false} axisLine={false} fontSize={12} width={56} />
                   <Tooltip />
@@ -326,7 +326,7 @@ export default function Dashboard() {
                     type="monotone"
                     dataKey="requests"
                     name="请求数"
-                    stroke="#1677ff"
+                    stroke="#3b5bdb"
                     strokeWidth={2}
                     fill="url(#dashRequests)"
                   />
@@ -334,7 +334,7 @@ export default function Dashboard() {
                     type="monotone"
                     dataKey="errors"
                     name="错误数"
-                    stroke="#ff4d4f"
+                    stroke="#e5484d"
                     strokeWidth={2}
                     fill="url(#dashErrors)"
                   />
@@ -390,11 +390,11 @@ export default function Dashboard() {
                 <BarChart data={view.latency_by_hour} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                   <defs>
                     <linearGradient id="dashLatency" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#1677ff" stopOpacity={0.9} />
-                      <stop offset="100%" stopColor="#69b1ff" stopOpacity={0.55} />
+                      <stop offset="0%" stopColor="#3b5bdb" stopOpacity={0.9} />
+                      <stop offset="100%" stopColor="#5cc8c0" stopOpacity={0.55} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#eef0f5" vertical={false} />
                   <XAxis dataKey="hour" tickLine={false} axisLine={false} fontSize={12} />
                   <YAxis tickLine={false} axisLine={false} fontSize={12} width={56} unit="ms" />
                   <Tooltip formatter={(value: number) => `${fmtNumber(value)} ms`} />
@@ -412,11 +412,14 @@ export default function Dashboard() {
             title="最近活动"
             extra={<Typography.Text type="secondary">最新 5 条审计事件</Typography.Text>}
           >
-            <Table<ActivityRow>
+            <ProTable<ActivityRow>
+              search={false}
+              options={{ fullScreen: true, setting: true, density: true, reload: false }}
+              cardProps={{ styles: { body: { padding: 0 } } }}
               size="small"
               rowKey="key"
               pagination={false}
-              columns={activityColumns}
+              columns={activityColumns as ProColumns<ActivityRow>[]}
               dataSource={view.recent_activities}
               scroll={{ x: 520 }}
               locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无审计事件" /> }}
@@ -429,11 +432,14 @@ export default function Dashboard() {
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           <Col span={24}>
             <Card className="dash-card" title="租户用量排行" extra={<Typography.Text type="secondary">仅超管可见</Typography.Text>}>
-              <Table<TenantRankRow>
+              <ProTable<TenantRankRow>
+                search={false}
+                options={{ fullScreen: true, setting: true, density: true, reload: false }}
+                cardProps={{ styles: { body: { padding: 0 } } }}
                 size="small"
                 rowKey="tenant_id"
                 pagination={false}
-                columns={rankingColumns}
+                columns={rankingColumns as ProColumns<TenantRankRow>[]}
                 dataSource={view.tenant_ranking}
                 scroll={{ x: 480 }}
               />

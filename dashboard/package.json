@@ -9,12 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ant-design/icons": "^5.5.1",
-    "antd": "^5.22.2",
+    "@ant-design/icons": "^6.3.4",
+    "@ant-design/pro-components": "3.1.15-8",
+    "antd": "^6.6.8",
     "dayjs": "^1.11.13",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "react-diff-viewer-continued": "^3.4.0",
     "recharts": "^2.13.3"
   },
   "devDependencies": {

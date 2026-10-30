@@ -6,7 +6,7 @@
  * - 登录响应自带 user / 租户 / scopes / 菜单树，落地到 localStorage 供布局直接渲染；
  * - 过期时间按 expires_in 换算成本地时间戳，刷新页面时据此判断登录态。
  */
-import { http } from './http';
+import { http, resetTrace } from './http';
 import { clearToken, getToken, setToken } from './token';
 
 const SESSION_KEY = 'ap_session';
@@ -20,7 +20,6 @@ export interface LoginUser {
 export interface CurrentTenant {
   id: number;
   name: string;
-  is_primary: boolean;
 }
 
 export interface MenuNode {
@@ -85,9 +84,18 @@ export function login(username: string, password: string, tenantId?: number): Pr
     });
 }
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+  // 先通知后端使 Redis 会话失效；已失效或网络异常也清本地，不阻断登出
+  if (getToken()) {
+    try {
+      await http.post('/api/v1/auth/logout', {});
+    } catch {
+      // 后端会话已不存在或网络不通，忽略，继续清本地
+    }
+  }
   clearToken();
   localStorage.removeItem(SESSION_KEY);
+  resetTrace();
 }
 
 /** 读会话：token 丢失或已过期都视为未登录，并顺手清理脏数据。 */
@@ -114,6 +122,13 @@ export function getSession(): Session | null {
 
 export function isLogin(): boolean {
   return getSession() !== null;
+}
+
+/** 当前会话是否为「租户侧」（非超管）。后端 RBAC 按角色把接口拆成 /api/v1/admin 与
+ *  /api/v1/tenant 两套，前端据此选基路径：超管走 admin，租户管理员走 tenant。 */
+export function isTenantContext(): boolean {
+  const s = getSession();
+  return s != null && !s.isSuperAdmin;
 }
 
 export function getUser(): UserInfo {
