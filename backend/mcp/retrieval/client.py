@@ -1,8 +1,9 @@
 """
-client - 接入 RAG-Ultra（设计文档 §6.2 / §12）
+client - 接入 RAG 检索（设计文档 §6.2 / §12）
 
-两种接入方式：① 包导入（import_path 指向 RAG-Ultra 工程目录，复用其检索/索引能力）；
-② HTTP（http_base 指向已部署的 rag-ultra 服务）。优先包导入，无则降级 HTTP。
+三种接入方式：① MCP 服务（mcp_url 指向对外暴露的 MCP 服务，优先）；
+② 包导入（import_path 指向检索工程目录，复用其检索/索引能力）；
+③ HTTP（http_base 指向已部署的检索服务）。优先 MCP，无则降级到包导入 / HTTP。
 禁止把检索代码复制进本仓库（双份维护风险）。
 """
 from __future__ import annotations
@@ -17,8 +18,8 @@ from backend.observability.exception import CapabilityError
 logger = get_logger("rag_client")
 
 
-class RagUltraClient:
-    """rag-ultra 接入客户端；首次调用惰性建立连接。"""
+class RagClient:
+    """RAG 接入客户端；首次调用惰性建立连接。"""
 
     def __init__(self) -> None:
         self._module = None
@@ -27,27 +28,36 @@ class RagUltraClient:
     def _ensure(self) -> None:
         if self._module is not None or self._http is not None:
             return
-        cfg = app_state.settings.rag_ultra
+        cfg = app_state.settings.rag
         if cfg.import_path:
             try:
                 if cfg.import_path not in sys.path:
                     sys.path.insert(0, cfg.import_path)
-                # 复用 RAG-Ultra 的检索入口（具体路径按其工程接口调整）
+                # 复用检索工程的检索入口（具体路径按其接口调整）
                 self._module = __import__("core.rag_retriever.retriever", fromlist=["RagRetriever"])
-                logger.info("rag-ultra 包导入成功")
+                logger.info("RAG 包导入成功")
                 return
             except Exception as exc:
-                logger.warning(f"rag-ultra 包导入失败，尝试 HTTP: {exc}")
+                logger.warning(f"RAG 包导入失败，尝试 HTTP: {exc}")
         if cfg.http_base:
             import httpx
 
             self._http = httpx.AsyncClient(base_url=cfg.http_base, timeout=30.0)
-            logger.info(f"rag-ultra HTTP 客户端: {cfg.http_base}")
+            logger.info(f"RAG HTTP 客户端: {cfg.http_base}")
             return
-        raise CapabilityError("rag-ultra 未配置（import_path/http_base）", degradable=True)
+        raise CapabilityError("RAG 未配置（import_path/http_base）", degradable=True)
 
-    async def retrieve(self, query: str, tenant_id: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """调用 rag-ultra 混合召回 + bge-reranker 精排，返回命中块列表。"""
+    async def retrieve(self, query: str, tenant_id: int, top_k: int = 5) -> List[Dict[str, Any]]:
+        """调用 RAG 混合召回 + bge-reranker 精排，返回命中块列表。
+
+        接入优先级：MCP 服务（RAG_MCP_URL）> 包导入（RAG_IMPORT_PATH）> HTTP（RAG_HTTP_BASE）。
+        MCP 模式经对外暴露的 MCP 工具调用检索接口，无需在仓库内复制检索代码。
+        """
+        cfg = app_state.settings.rag
+        if cfg.mcp_url:
+            from backend.mcp.retrieval.mcp_client import mcp_retrieve
+
+            return await mcp_retrieve(query, tenant_id, top_k)
         self._ensure()
         if self._module is not None:
             retriever = self._module.RagRetriever
@@ -65,4 +75,4 @@ class RagUltraClient:
         self._http = self._module = None
 
 
-client = RagUltraClient()
+client = RagClient()

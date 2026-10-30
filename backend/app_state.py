@@ -42,6 +42,8 @@ class _AppState:
         # 中间件客户端容器（显式持有实例，便于整体替换做测试/多实例隔离）
         self.clients: ClientBundle = ClientBundle()
         self.redis: Optional[Redis] = None
+        # RabbitMQ 异步客户端（BrokerClient）；未启用/未连接时为 None
+        self.broker = None
         self.db_engine: Optional[AsyncEngine] = None
         self.milvus_client = None
         self.milvus_store: Optional[MemoryMilvusStore] = None

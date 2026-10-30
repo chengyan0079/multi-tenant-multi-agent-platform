@@ -17,7 +17,7 @@ async def classify(state: QAState) -> QAState:
 
 
 async def retrieve(state: QAState) -> QAState:
-    """rag_retrieve 工具（经 rag-ultra 适配层）。失败降级为空，不阻断生成。"""
+    """rag_retrieve 工具（经 RAG 适配层）。失败降级为空，不阻断生成。"""
     tracing.event("qa.retrieve")
     tenant = state.get("tenant_id") or get_tenant_id() or ""
     try:

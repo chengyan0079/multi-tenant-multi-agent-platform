@@ -24,6 +24,9 @@ from backend.data.dao.auth.menu_dao import MenuDao
 from backend.data.dao.auth.rbac_dao import RbacDao
 from backend.data.dao.auth.user_dao import UserDao
 from backend.middleware.auth import CurrentUser, get_current_user
+import secrets
+
+from backend.common.redis_session import create_session, delete_session
 from backend.observability.exception import AuthError, ErrCode
 from backend.security.jwt import create_access_token
 from backend.security.rbac import RbacService
@@ -101,7 +104,7 @@ async def _record_login(
 async def _login(username: str, password: str, tenant_id: int | None = None) -> dict[str, Any]:
     """登录核心：校验凭证 → 判定超管/租户用户 → 选租户 → 签发 JWT → 组装菜单。
 
-    超管（主租户 + admin 角色）不含租户，token 只放 user_id，current_tenant=null。
+    超管（agent_user.is_super_admin 标记）不含租户，token 只放 user_id，current_tenant=null。
     """
     user = await RbacService.authenticate(username, password)
     if user is None:
@@ -109,12 +112,14 @@ async def _login(username: str, password: str, tenant_id: int | None = None) -> 
     user_id = user["id"]
     cfg = app_state.settings.security
 
-    # 超管分支：主租户 + admin 角色
+    # 超管分支：只认 agent_user.is_super_admin 标记
     sa = await RbacDao.get_super_admin_identity(user_id)
     if sa is not None:
         scopes = sa["scopes"]  # 种子里 admin 角色的具体权限点（无 "*"）
-        token = create_access_token(user_id)
-        menus = await MenuDao.build(scopes, is_super_admin=True)
+        jti = secrets.token_hex(16)
+        token = create_access_token(user_id, jti=jti)
+        await create_session(jti, user_id, None)
+        menus = await MenuDao.build(scopes)
         return {
             "token": token,
             "expires_in": cfg.jwt_expire_minutes * 60,
@@ -142,8 +147,10 @@ async def _login(username: str, password: str, tenant_id: int | None = None) -> 
     identity = await RbacService.resolve_identity(user_id, chosen["tenant_id"])
     if identity is None:
         raise AuthError("角色解析失败", code=ErrCode.FORBIDDEN, http_status=403)
-    token = create_access_token(user_id, tenant_id=chosen["tenant_id"])
-    menus = await MenuDao.build(identity.scopes, is_super_admin=False)
+    jti = secrets.token_hex(16)
+    token = create_access_token(user_id, tenant_id=chosen["tenant_id"], jti=jti)
+    await create_session(jti, user_id, chosen["tenant_id"])
+    menus = await MenuDao.build(identity.scopes)
     return {
         "token": token,
         "expires_in": cfg.jwt_expire_minutes * 60,
@@ -153,7 +160,6 @@ async def _login(username: str, password: str, tenant_id: int | None = None) -> 
         "current_tenant": {
             "id": chosen["tenant_id"],
             "name": chosen["tenant_name"],
-            "is_primary": chosen["tenant_is_primary"],
         },
         "scopes": identity.scopes,
         "menus": menus,
@@ -183,7 +189,7 @@ async def login(request: Request, body: LoginIn) -> Any:
 
 @router.get("/menus", summary="当前用户菜单树")
 async def menus(current: CurrentUser = Depends(get_current_user)) -> Any:
-    tree = await MenuDao.build(current.scopes, current.is_super_admin)
+    tree = await MenuDao.build(current.scopes)
     return success({"menus": tree})
 
 
@@ -201,3 +207,12 @@ async def me(current: CurrentUser = Depends(get_current_user)) -> Any:
         "role_name": current.role_name,
         "scopes": current.scopes,
     })
+
+
+@router.post("/logout", summary="登出（使当前 token 立即失效）")
+async def logout(request: Request, current: CurrentUser = Depends(get_current_user)) -> Any:
+    """删 Redis 会话 key，当前 token 立即失效；多端各自独立，只清这一端。"""
+    jti = getattr(request.state, "jti", None)
+    if jti:
+        await delete_session(jti)
+    return success({"logged_out": True})

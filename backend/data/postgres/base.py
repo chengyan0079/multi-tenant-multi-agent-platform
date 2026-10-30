@@ -37,11 +37,13 @@ class AuditMixin:
     update_user_id: Mapped[int] = mapped_column(
         "update_user_id", BigInteger, nullable=False, comment="更新人ID（写 SQL 时注入）"
     )
-    create_tenant_id: Mapped[int] = mapped_column(
-        "create_tenant_id", BigInteger, nullable=False, comment="创建租户ID（写 SQL 时注入）"
+    create_tenant_id: Mapped[int | None] = mapped_column(
+        "create_tenant_id", BigInteger, nullable=True,
+        comment="创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL",
     )
-    update_tenant_id: Mapped[int] = mapped_column(
-        "update_tenant_id", BigInteger, nullable=False, comment="更新租户ID（写 SQL 时注入）"
+    update_tenant_id: Mapped[int | None] = mapped_column(
+        "update_tenant_id", BigInteger, nullable=True,
+        comment="更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL",
     )
 
 

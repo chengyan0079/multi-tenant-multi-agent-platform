@@ -25,13 +25,15 @@ def _postgres() -> PostgresClient:
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
-    """事务作用域会话：提交/回滚由调用方控制，退出时自动释放连接。
+    """事务作用域会话：进入即开启事务，正常退出自动提交、异常退出自动回滚。
 
-    这里复用 PostgresClient 的 sessionmaker，不新建 engine；单测可通过替换
-    app_state.clients 注入 fake。
+    统一用 SQLAlchemy 的 session.begin() 管理事务边界，替代各 DAO 散落的
+    session.commit()。Nacos 这类外部调用放进本块内即可：调用成功→块退出提交，
+    调用抛异常→块退出回滚。读操作同理，无副作用。
     """
     async with _postgres().session_scope() as session:
-        yield session
+        async with session.begin():
+            yield session
 
 
 async def fetch_all(

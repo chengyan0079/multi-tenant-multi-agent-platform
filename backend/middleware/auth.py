@@ -7,7 +7,7 @@ JWT payload：普通用户/租户管理员含 user_id + tenant_id；平台超管
 
 解析流程（数据库为唯一真相源，无硬编码常量兜底）：
 - 有 tenant_id → 租户分支：agent_user_tenant + agent_role + tenant 查身份（租户停用/无分配 → 403）；
-- 无 tenant_id → 超管分支：主租户 + admin 角色判定，命中则 tenant_id=None、is_super_admin=True、scopes=种子里 admin 角色的具体权限点（无 "*"，菜单再由白名单收敛）。
+- 无 tenant_id → 超管分支：只看 agent_user.is_super_admin，命中则 tenant_id=None（超管不挂租户）、is_super_admin=True、scopes=种子里 admin 角色的具体权限点（菜单由 scope 驱动，超管自然只看到有权限的基建菜单）。
 
 写入 request.state：user_id / tenant_id（超管恒 None）/ home_tenant_id（user.tenant_id，仅审计归属）/
 role_name / roles / is_super_admin / is_tenant_admin / scopes；并写入 contextvars（user_id_ctx / tenant_id_ctx）
@@ -18,13 +18,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
 from backend.app_state import app_state, tenant_id_ctx, user_id_ctx
 from backend.data.dao.auth.user_dao import UserDao
 from backend.security.rbac import Identity, RbacService
 from backend.common.logger import get_logger
+from backend.common.redis_session import touch_session
 
 logger = get_logger("auth")
 
@@ -91,7 +93,7 @@ async def _resolve_tenant_identity(user_id: int, tenant_id: int) -> Identity:
 
 
 async def _resolve_super_admin(user_id: int) -> Identity:
-    """超管分支：仅按 user_id + 主租户 + admin 角色判定；非超管 → 403。"""
+    """超管分支：仅按 agent_user.is_super_admin 判定；非超管 → 403。"""
     try:
         identity = await RbacService.resolve_super_admin(user_id)
     except Exception as exc:
@@ -105,17 +107,31 @@ async def _resolve_super_admin(user_id: int) -> Identity:
     return identity
 
 
-async def get_current_user(request: Request) -> CurrentUser:
+# 仅用于把 HTTPBearer 登记进 OpenAPI（让 Swagger UI 出现 Authorize 按钮）；
+# auto_error=False：缺/错 token 时不自动抛错，交给我们自己的提示口径。
+_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+) -> CurrentUser:
     """FastAPI 依赖：token 单源解析身份并查库授权；无登录。"""
     cfg = app_state.settings.security
-    header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
+    # 优先用 Security 注入的凭证（Swagger UI / OpenAPI 场景）；
+    # 直接调用（如单测未走 FastAPI 依赖注入）时回落到手动读 header，保持原行为。
+    if isinstance(credentials, HTTPAuthorizationCredentials):
+        token = credentials.credentials
+    else:
+        auth = request.headers.get("Authorization", "")
+        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else None
+    if not token:
         raise HTTPException(status_code=401, detail="缺少 Authorization")
     if not cfg.jwt_secret:
         raise HTTPException(status_code=401, detail="JWT_SECRET 未配置")
     try:
         payload = jwt.decode(
-            header[len("Bearer "):], cfg.jwt_secret, algorithms=[cfg.jwt_algorithm]
+            token, cfg.jwt_secret, algorithms=[cfg.jwt_algorithm]
         )
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="凭证无效或过期")
@@ -127,16 +143,25 @@ async def get_current_user(request: Request) -> CurrentUser:
     tenant_id_raw = payload.get("tenant_id")
     tenant_id = _parse_int(tenant_id_raw) if tenant_id_raw is not None else None
 
+    # 登录会话层（Redis 滑动续期）：jti 缺失的旧 token 跳过，兼容功能上线前的 token
+    jti = payload.get("jti")
+    if jti:
+        if not await touch_session(jti):
+            raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    request.state.jti = jti
+
     # 数据库为唯一真相源：有 tenant_id 走租户分支，否则走超管分支
     if tenant_id is not None:
         identity = await _resolve_tenant_identity(user_id, tenant_id)
     else:
         identity = await _resolve_super_admin(user_id)
 
-    # home_tenant_id 取 user.tenant_id（审计归属，超管也用主租户），仅用于审计列，不参与数据过滤
+    # home_tenant_id 取 user.tenant_id（审计归属），仅用于审计列，不参与数据过滤；超管为 None
     user = await UserDao.get(user_id)
     if user is None:
         raise HTTPException(status_code=403, detail="用户不存在或已被删除")
+    if not user.get("enabled"):
+        raise HTTPException(status_code=403, detail="账号已禁用")
     home_tenant_id = user.get("tenant_id")
 
     # 写入 request.state 与 contextvars，下游 require_role/require_scope、memory、audit 消费

@@ -20,30 +20,37 @@ fastapi==0.146.0
 uvicorn[standard]==0.54.0              # 高性能应用服务器
 python-multipart==0.0.32               # 文件上传（Word / PDF）
 sse-starlette==2.1.3                   # SSE 流式响应（问答 / 面试）
+slowapi==0.1.10                        # 路由级限流（Starlette/FastAPI；与租户、用户绑定）
 
+uuid6==2025.0.1
 asyncpg==0.30.0                        # PostgreSQL 异步驱动
 sqlalchemy[asyncio]==2.0.36            # 异步 SQL 工具
-pymilvus==3.0.2                        # Milvus 向量库客户端（支持异步）
-redis>=5.0.1                           # Redis 异步客户端（提示词缓存 / 短期记忆）
-minio>=7.2.0                           # MinIO(S3) 对象存储客户端（软依赖，用时才要求安装）
-numpy==1.26.4
+redis==8.1.0                           # Redis（缓存、双 Token 认证）
+aio-pika==10.2.1                       # RabbitMQ 异步消息队列（启用 MQ 时必装）
+pymilvus[model]==3.0.2                 # Milvus 向量库客户端（支持异步）
+numpy==2.5.4
 
 python-docx==1.2.0                     # Word 文档解析（试卷批改）
-pymupdf==1.28.2                        # PDF 解析（简历审查 - 此版本不用导入fitz）
+pymupdf==1.28.2                        # PDF 解析（简历审查 - 此版本不用导入 fitz）
 
 pydantic==2.14.1
 pydantic-settings==2.15.0              # 读取 .env
+PyYAML==6.0.3                          # YAML 解析（MCP 插件清单 / 配置加载）
 
 httpx==0.28.1                          # 异步 HTTP 客户端
-pyjwt==2.15.1                          # JWT 令牌
-passlib[bcrypt]==1.7.4                 # 密码 bcrypt 哈希
-bcrypt==4.0.1                          # passlib 1.7.4 不兼容 bcrypt>=5，锁定 4.x
-python-dotenv==1.2.4                   # 加载 .env
+requests==2.34.2                       # 同步 HTTP 客户端（Nacos 3.x 配置中心 REST 直连）
+pyjwt==2.15.1                          # JWT
+cryptography==50.0.2
 
+python-dotenv==1.2.4                   # 加载 .env
+pwdlib[argon2,bcrypt]==0.3.1           # 生成强哈希摘要
 mcp==1.26.0                            # 官方 MCP Python SDK
+nacos-sdk-python==3.2.0                # Nacos 3.x 客户端（服务发现/配置管理；需 3.x 才带 v2 子包）
 duckduckgo-search==8.1.1               # 免费 Web 搜索，无需 API key
 
 loguru==0.7.3                          # 日志（更先进的日志处理工具）
 
 pytest==8.3.4
 pytest-asyncio==0.24.0
+
+# minio==7.2.20                        # MinIO S3 兼容对象存储（启用 MinIO FileProvider 后再补，可选）

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 # ---------- 租户管理 ----------
 
 class TenantIn(BaseModel):
-    """新建租户：is_primary 不可指定，恒 false。"""
+    """新建租户：只填名称，租户间地位平等。"""
 
     name: str = Field(..., max_length=128)
 
@@ -45,6 +45,13 @@ class RoleCreateIn(BaseModel):
     scopes: list[str] = []
 
 
+class RoleUpdateIn(BaseModel):
+    """改角色名称/说明（权限点走 PUT /roles/{id}/permissions 单独覆盖）。"""
+
+    name: str = Field(..., max_length=64)
+    description: Optional[str] = Field(None, max_length=255)
+
+
 class UserRoleIn(BaseModel):
     """改某用户在某租户的角色。"""
 
@@ -73,17 +80,37 @@ class ModelIn(BaseModel):
 
 # ---------- 配置中心审批流 ----------
 
-class CreateRequestIn(BaseModel):
-    """发起配置变更申请。"""
+class ConfigAddIn(BaseModel):
+    """新增配置申请。"""
     namespace: str
     group_id: str
     data_id: str
-    domain: str = "prompt"
-    op_type: int  # 1=新增 2=修改 3=删除
     title: Optional[str] = None
-    content_new: Optional[str] = None
+    content_new: str
     content_format: str = "json"
     reason: Optional[str] = None
+
+
+class ConfigModifyIn(BaseModel):
+    """修改配置申请。"""
+    namespace: str
+    group_id: str
+    data_id: str
+    title: Optional[str] = None
+    content_new: str
+    content_format: str = "json"
+    reason: Optional[str] = None
+
+
+class ConfigDeleteIn(BaseModel):
+    """删除配置申请。"""
+    namespace: str
+    group_id: str
+    data_id: str
+    title: Optional[str] = None
+    reason: Optional[str] = None
+    # 删除不发布到 Nacos，仅作记录展示；不传则由服务端取 Nacos 当前配置的真实类型
+    content_format: Optional[str] = None
 
 
 class RollbackRequestIn(BaseModel):
@@ -91,16 +118,10 @@ class RollbackRequestIn(BaseModel):
     namespace: str
     group_id: str
     data_id: str
-    domain: str = "prompt"
     src_history_nid: int
     title: Optional[str] = None
     reason: Optional[str] = None
-
-
-class ReviewIn(BaseModel):
-    """复核（通过/驳回）。"""
-    action: int  # 1=通过 2=驳回
-    comment: Optional[str] = None
+    content_format: Optional[str] = None
 
 
 # ---------- Agent 管理 ----------
@@ -114,3 +135,31 @@ class CapabilityIn(BaseModel):
     """单条租户开通策略。"""
     agent_type: str = Field(..., max_length=64)
     enabled: bool
+
+
+class AgentIn(BaseModel):
+    """新增/更新智能体元数据的请求体（两类共用全字段结构）。"""
+
+    agent_type: str = Field(..., max_length=64, description="Agent 类型（业务键，建议与代码注册一致）")
+    name: str = Field(..., max_length=128)
+    description: Optional[str] = None
+    version: str = Field("1.0.0", max_length=32)
+    enabled: bool = True
+    input_schema: Optional[str] = Field(
+        None, description="输入 JSON Schema（JSON 文本）；留空表示无"
+    )
+
+
+class AgentModelBindIn(BaseModel):
+    """新增智能体↔模型绑定。"""
+
+    model_id: int = Field(..., description="model_registry 主键")
+    is_default: bool = False
+    priority: int = 0
+
+
+class AgentModelUpdateIn(BaseModel):
+    """更新绑定（默认项/优先级），字段均可选，未传则保留原值。"""
+
+    is_default: Optional[bool] = None
+    priority: Optional[int] = None

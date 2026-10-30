@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import text
 
 from backend.app_state import app_state
 from backend.common.logger import logger
+from backend.data.sql import fetch_all, fetch_value, session_scope
 
 _INSERT = text("""
 INSERT INTO agent_api_call_log (
@@ -41,6 +42,21 @@ _RECORD_KEYS = (
     "cost_ms",
 )
 
+# 时间倒序；tenant_id 为空表示全平台（仅超管）
+_LIST = text("""
+SELECT id, trace_id, caller, user_id, tenant_id, method, path, route,
+       query_string, status_code, cost_ms, req_time, create_at
+FROM agent_api_call_log
+WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
+ORDER BY req_time DESC
+LIMIT :limit OFFSET :offset
+""")
+
+_COUNT = text("""
+SELECT count(*) FROM agent_api_call_log
+WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
+""")
+
 
 class ApiLogDao:
     """API 调用日志落库（一条请求一行）。"""
@@ -50,17 +66,28 @@ class ApiLogDao:
         if app_state.db_engine is None:
             return  # 数据库未启动（如单测/降级），跳过落库
         try:
-            from backend.data.sql import session_scope
-
-            params: dict[str, Any] = {k: record.get(k) for k in _RECORD_KEYS}
-            # 请求头在中间件里是 dict，text() 不负责序列化，这里显式转 JSON 文本
-            headers = record.get("req_headers")
-            params["req_headers"] = (
-                json.dumps(headers, ensure_ascii=False) if headers is not None else None
-            )
-
             async with session_scope() as session:
+                params: dict[str, Any] = {k: record.get(k) for k in _RECORD_KEYS}
+                # 请求头在中间件里是 dict，text() 不负责序列化，这里显式转 JSON 文本
+                headers = record.get("req_headers")
+                params["req_headers"] = (
+                    json.dumps(headers, ensure_ascii=False) if headers is not None else None
+                )
+
                 await session.execute(_INSERT, params)
                 await session.commit()
         except Exception:  # noqa: BLE001  日志旁路：失败不影响主链路
             logger.exception("API 调用日志落库失败（不影响接口返回）")
+
+    @staticmethod
+    async def query(
+        tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """按租户过滤分页查询（tenant_id=None 查全量，仅超管），时间倒序。"""
+        async with session_scope() as session:
+            rows = await fetch_all(
+                session, _LIST,
+                {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size},
+            )
+            total = await fetch_value(session, _COUNT, {"tenant_id": tenant_id})
+            return rows, int(total)

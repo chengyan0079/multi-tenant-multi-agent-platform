@@ -45,37 +45,37 @@ def sec():
 
 @pytest.mark.asyncio
 async def test_super_admin_branch(sec):
-    sa = {"role_name": "admin", "tenant_is_primary": True, "scopes": ["agent:read"]}
+    sa = {"role_name": "admin", "scopes": ["agent:page"]}
     with patch(
         "backend.data.dao.auth.rbac_dao.RbacDao.get_super_admin_identity",
         new=AsyncMock(return_value=sa),
     ), patch(
         "backend.middleware.auth.UserDao.get",
-        new=AsyncMock(return_value={"tenant_id": 100}),
+        new=AsyncMock(return_value={"tenant_id": 100, "enabled": True}),
     ):
         user = await get_current_user(_make_request(_token(1001)))
     assert user.is_super_admin is True
     assert user.tenant_id is None
     assert user.home_tenant_id == 100
-    assert user.scopes == ["agent:read"]  # 超管用种子里 admin 角色的具体权限点，不再用 "*"
+    assert user.scopes == ["agent:page"]  # 超管用种子里 admin 角色的具体权限点，不再用 "*"
     assert user.is_tenant_admin is False
 
 
 @pytest.mark.asyncio
 async def test_tenant_branch(sec):
-    tenant = {"role_name": "tenant_admin", "tenant_is_primary": False, "scopes": ["rbac:read"]}
+    tenant = {"role_name": "tenant_admin", "scopes": ["rbac:page"]}
     with patch(
         "backend.data.dao.auth.rbac_dao.RbacDao.get_identity",
         new=AsyncMock(return_value=tenant),
     ), patch(
         "backend.middleware.auth.UserDao.get",
-        new=AsyncMock(return_value={"tenant_id": 200}),
+        new=AsyncMock(return_value={"tenant_id": 200, "enabled": True}),
     ):
         user = await get_current_user(_make_request(_token(7, 200)))
     assert user.is_tenant_admin is True
     assert user.tenant_id == 200
     assert user.is_super_admin is False
-    assert user.scopes == ["rbac:read"]
+    assert user.scopes == ["rbac:page"]
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_non_super_admin_without_tenant_403(sec):
         new=AsyncMock(return_value=None),
     ), patch(
         "backend.middleware.auth.UserDao.get",
-        new=AsyncMock(return_value={"tenant_id": 100}),
+        new=AsyncMock(return_value={"tenant_id": 100, "enabled": True}),
     ):
         with pytest.raises(HTTPException) as exc:
             await get_current_user(_make_request(_token(7)))
@@ -108,7 +108,7 @@ async def test_invalid_token_403(sec):
 
 @pytest.mark.asyncio
 async def test_user_not_found_403(sec):
-    sa = {"role_name": "admin", "tenant_is_primary": True, "scopes": ["agent:read"]}
+    sa = {"role_name": "admin", "scopes": ["agent:page"]}
     with patch(
         "backend.data.dao.auth.rbac_dao.RbacDao.get_super_admin_identity",
         new=AsyncMock(return_value=sa),

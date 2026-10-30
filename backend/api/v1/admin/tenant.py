@@ -1,6 +1,8 @@
 """超管租户管理端点（/api/v1/admin/tenants）。
 
-鉴权由装配处统一挂 require_super_admin()，写操作再叠加 require_scope(tenant:*) 做接口级校验。
+鉴权由装配处统一挂 require_super_admin()（租户创建/改名/启停/换管理员只对超管开放），
+写操作再叠加 require_scope(tenant:*) 做接口级校验。
+所有租户地位平等：没有主租户标记，新建即普通租户，改名/启停不会影响任何身份判定。
 管理员更换走 PUT /{id}/manager：原子地把原管理员降为 student 再写入新 tenant_admin（§6.2）。
 """
 from __future__ import annotations
@@ -17,13 +19,14 @@ from backend.data.dao.auth.rbac_dao import RbacDao
 from backend.data.dao.auth.tenant_dao import TenantDao
 from backend.data.dao.auth.user_dao import UserDao
 from backend.middleware.auth import CurrentUser, get_current_user
+from backend.security.rbac import Scope
 from backend.security.security import require_scope
 
 router = APIRouter(prefix="/tenants", tags=["admin"])
 
 
-def _operator(current: CurrentUser) -> dict[str, int]:
-    """审计写入参数：tenant_id 取操作者归属租户（超管用主租户），user_id 取当前用户。"""
+def _operator(current: CurrentUser) -> dict[str, int | None]:
+    """审计写入参数：tenant_id 取操作者归属租户（超管为 NULL），user_id 取当前用户。"""
     return {"tenant_id": current.home_tenant_id, "user_id": current.user_id}
 
 
@@ -34,7 +37,7 @@ async def list_tenants(
     created_to: Optional[str] = Query(None, description="创建截止日期 YYYY-MM-DD"),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(20, ge=1, le=200, description="每页条数"),
-    _: object = Depends(require_scope("tenant:read")),  # noqa: B008
+    _: object = Depends(require_scope(Scope.TENANT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
     rows = await TenantDao.list_with_stats(created_from=created_from, created_to=created_to)
@@ -47,12 +50,26 @@ async def list_tenants(
     return success({"items": paged, "total": total, "page": page, "page_size": page_size})
 
 
-@router.post("", summary="新建租户")
+@router.get("/{tenant_id}", summary="租户详情")
+async def get_tenant(
+    tenant_id: int,
+    _: object = Depends(require_scope(Scope.TENANT_VIEW)),  # noqa: B008
+    __: object = Depends(get_current_user),  # noqa: B008
+) -> Any:
+    row = await TenantDao.get_with_stats(tenant_id)
+    if row is None:
+        raise BizException(ErrCode.NOT_FOUND, f"租户不存在: {tenant_id}")
+    return success(row)
+
+
+@router.post("", summary="新建租户（仅超管）")
 async def create_tenant(
     body: TenantIn,
-    _: object = Depends(require_scope("tenant:write")),  # noqa: B008
+    _: object = Depends(require_scope(Scope.TENANT_ADD)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    if await TenantDao.get_by_name(body.name) is not None:
+        raise BizException(ErrCode.PARAM_ERROR, f"租户名称已存在: {body.name}")
     new_id = await TenantDao.create(body.name)
     await AuditDao.write(
         action="tenant.create", target=str(new_id), detail=f"新建租户 {body.name}",
@@ -65,14 +82,12 @@ async def create_tenant(
 async def update_tenant(
     tenant_id: int,
     body: TenantUpdate,
-    _: object = Depends(require_scope("tenant:write")),  # noqa: B008
+    _: object = Depends(require_scope(Scope.TENANT_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
     tenant = await TenantDao.get(tenant_id)
     if tenant is None:
         raise BizException(ErrCode.NOT_FOUND, f"租户不存在: {tenant_id}")
-    if body.enabled is False and tenant["is_primary"]:
-        raise BizException(ErrCode.PARAM_ERROR, "主租户不允许停用")
     await TenantDao.update(tenant_id, name=body.name, enabled=body.enabled)
     await AuditDao.write(
         action="tenant.update", target=str(tenant_id),
@@ -85,7 +100,7 @@ async def update_tenant(
 async def set_manager(
     tenant_id: int,
     body: TenantManagerIn,
-    _: object = Depends(require_scope("tenant:write")),  # noqa: B008
+    _: object = Depends(require_scope(Scope.TENANT_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
     tenant = await TenantDao.get(tenant_id)
@@ -113,3 +128,21 @@ async def set_manager(
         action="tenant.manager", target=str(tenant_id), detail=detail, **_operator(current)
     )
     return success({"tenant_id": tenant_id, "user_id": user_id, "replaced_user_id": replaced})
+
+
+@router.patch("/{tenant_id}/status", summary="状态变更（启停）")
+async def set_status(
+    tenant_id: int,
+    body: TenantUpdate,
+    _: object = Depends(require_scope(Scope.TENANT_STATUS)),  # noqa: B008
+    current: CurrentUser = Depends(get_current_user),  # noqa: B008
+):
+    tenant = await TenantDao.get(tenant_id)
+    if tenant is None:
+        raise BizException(ErrCode.NOT_FOUND, f"租户不存在: {tenant_id}")
+    await TenantDao.update(tenant_id, enabled=body.enabled)
+    await AuditDao.write(
+        action="tenant.status", target=str(tenant_id),
+        detail=f"enabled={body.enabled}", **_operator(current),
+    )
+    return success({"id": tenant_id, "enabled": body.enabled})

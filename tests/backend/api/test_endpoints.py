@@ -36,9 +36,9 @@ def _token(user_id: int, tenant_id: int | None = None) -> str:
     return "Bearer " + jwt.encode(payload, _SECRET, algorithm="HS256")
 
 
-_SA_SCOPES = ["tenant:read", "tenant:write", "rbac:read", "rbac:write", "user:read", "audit:read"]
-_SA_IDENTITY = {"role_name": "admin", "tenant_is_primary": True, "scopes": _SA_SCOPES}
-_SA_USER = {"id": 1001, "username": "admin", "name": "admin", "tenant_id": 1}
+_SA_SCOPES = ["tenant:page", "tenant:update", "rbac:page", "rbac:update", "user:page", "audit:page"]
+_SA_IDENTITY = {"role_name": "admin", "scopes": _SA_SCOPES}
+_SA_USER = {"id": 1001, "username": "admin", "name": "admin", "tenant_id": 1, "enabled": True}
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 """
 app_server - 按阶段分组 gather 启动 Manager，逆序停机（设计文档 §10）
 
-与 RAG-Ultra 同范式：任一启动项失败整体 fail-fast 并回滚已启动项。
+与既有启动范式同：任一启动项失败整体 fail-fast 并回滚已启动项。
 entrypoint 在 main.py：装配 AppServer().run()。
 
 优化：
@@ -179,7 +179,7 @@ class AppServer:
 
         return {
             "status": overall,
-            "started_at": app_state.started_at.isoformat() if app_state.started_at else None,
+            "started_at": app_state.started_at.strftime("%Y-%m-%d %H:%M:%S") if app_state.started_at else None,
             "components": components,
         }
 

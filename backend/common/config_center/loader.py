@@ -1,5 +1,5 @@
 """
-loader - 配置中心热加载（对齐 RAG-Ultra）
+loader - 配置中心热加载
 
 业务侧从 Nacos 配置中心读取配置并监听变更热更新到本地缓存。
 与「直连 Nacos 查询」(nacos_config) 不同，本 loader 用 SDK 的 gRPC 长连接订阅变更，避免轮询。

@@ -12,10 +12,19 @@ SCHEMA_SQL = (
 
 
 def test_tenant_has_flag_columns() -> None:
-    """租户表要有启停与主租户标记，以及主租户唯一索引。"""
+    """租户表只有启停列：租户地位平等，不再有主租户标记与唯一索引。"""
     assert "enabled BOOLEAN DEFAULT true NOT NULL" in SCHEMA_SQL
-    assert "is_primary BOOLEAN DEFAULT false NOT NULL" in SCHEMA_SQL
-    assert "uk_tenant_primary" in SCHEMA_SQL
+    assert "is_primary" not in SCHEMA_SQL
+    assert "uk_tenant_primary" not in SCHEMA_SQL
+
+
+def test_audit_tenant_id_nullable_for_super_admin() -> None:
+    """超管不挂租户，审计的 tenant_id 必须允许为空，否则超管写操作会 500。"""
+    block = re.search(
+        r"CREATE TABLE IF NOT EXISTS agent_audit_log \((.*?)\n\);", SCHEMA_SQL, re.S
+    )
+    assert block is not None
+    assert re.search(r"^\s+tenant_id BIGINT,\s*$", block.group(1), re.M)
 
 
 def test_user_has_unique_username() -> None:
@@ -30,16 +39,21 @@ def test_menu_has_scope_column() -> None:
 
 
 def test_identity_uniqueness_indexes() -> None:
-    """超管全局唯一、每租户管理员唯一的库层兜底。"""
-    assert "uk_aut_super_admin" in SCHEMA_SQL
+    """每租户管理员唯一的库层兜底（role_id=5，按角色名判定）。
+
+    超管不写 agent_user_tenant（身份以 agent_user.is_super_admin 为准），故不再有
+    uk_aut_super_admin；该索引断言已移除。
+    """
     assert "uk_aut_tenant_admin" in SCHEMA_SQL
 
 
-def test_tenant_admin_role_seed() -> None:
-    """角色目录要有 tenant_admin，并带上最小权限点。"""
-    assert "(5, 'tenant_admin'" in SCHEMA_SQL
-    assert "(5, 'rbac:write')" in SCHEMA_SQL
-    assert "(5, 'rbac:read')" in SCHEMA_SQL
+def test_admin_role_seeded_only() -> None:
+    """角色目录只预置超管 admin；其余角色（tenant_admin 等）由前端创建，不在此落库。"""
+    assert "(1, 'admin'" in SCHEMA_SQL
+    assert "(5, 'tenant_admin'" not in SCHEMA_SQL
+    assert "(2, 'teacher'" not in SCHEMA_SQL
+    assert "(1, 'user:page')" in SCHEMA_SQL
+    assert "(1, 'rbac:page')" in SCHEMA_SQL
 
 
 def test_audit_scope_is_read_only() -> None:
@@ -53,10 +67,11 @@ def test_config_center_only_for_super_admin() -> None:
     assert "(5, 'config:read')" not in SCHEMA_SQL
 
 
-def test_audit_only_for_admin_and_tenant_admin() -> None:
-    """审计只给超管与 tenant_admin：teacher 的 audit:read 已收回。"""
+def test_audit_only_for_admin() -> None:
+    """审计只读权限只给超管 admin；tenant_admin 不在此预置（由前端创建后再配）。"""
+    assert "(1, 'audit:page')" in SCHEMA_SQL
     assert "(2, 'audit:read')" not in SCHEMA_SQL
-    assert "(5, 'audit:read')" in SCHEMA_SQL
+    assert "(5, 'audit:page')" not in SCHEMA_SQL
 
 
 def test_analyst_role_removed() -> None:
@@ -70,7 +85,7 @@ def test_analyst_role_removed() -> None:
 
 def test_menu_scope_for_rbac_is_read() -> None:
     """权限中心菜单按读权限下发，避免只有写权限的角色看不见页面。"""
-    assert "true, 'rbac:read')" in SCHEMA_SQL
+    assert "true, 'rbac:page')" in SCHEMA_SQL
 
 
 def test_gen_schema_seed_not_reverted() -> None:
@@ -82,30 +97,13 @@ def test_gen_schema_seed_not_reverted() -> None:
     assert "'analyst'" not in source
     assert "(2, 'config:read')" not in source
     assert "(5, 'config:read')" not in source
-    assert "(5, 'tenant_admin'" in source
-    assert "true, 'rbac:read')" in source
-
-
-def test_default_roles_match_schema_seed() -> None:
-    """代码 DEFAULT_ROLES 与 schema.sql 权限点种子必须逐条一致，防止两处漂移。"""
-    from backend.security.rbac import DEFAULT_ROLES
-
-    block = re.search(
-        r"INSERT INTO agent_role_permission \(role_id, scope\) VALUES(.*?)ON CONFLICT",
-        SCHEMA_SQL,
-        re.S,
-    )
-    assert block is not None, "未找到权限点种子段"
-
-    seed: dict[int, set[str]] = {}
-    for role_id, scope in re.findall(r"\((\d+),\s*'([^']+)'\)", block.group(1)):
-        seed.setdefault(int(role_id), set()).add(scope)
-
-    code = {
-        role_id: {scope.value for scope in scopes}
-        for role_id, (_, scopes) in DEFAULT_ROLES.items()
-    }
-    assert code == seed
+    # 角色目录只预置 admin（role_id=1），tenant_admin / teacher 等由前端创建，不在生成器里写
+    assert "(1, 'admin'" in source
+    assert "(5, 'tenant_admin'" not in source
+    assert "(2, 'teacher'" not in source
+    # config:review 不是合法权限点（Scope 只登记 config:execute），种子不得写入
+    assert "'config:review'" not in source
+    assert "true, 'rbac:page')" in source
 
 
 def test_no_by_suffix_columns() -> None:

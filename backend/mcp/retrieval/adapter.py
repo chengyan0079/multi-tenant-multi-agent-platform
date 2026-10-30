@@ -1,5 +1,5 @@
 """
-adapter - rag-ultra 适配层对外暴露的检索工具（设计文档 §6.2）
+adapter - RAG 适配层对外暴露的检索工具（设计文档 §6.2）
 
 qa Agent 的 retrieve 节点直接消费 rag_retrieve(query, tenant_id, top_k)。
 tenant_id 透传为 Milvus partition key，保证知识不跨租户外泄。
@@ -22,8 +22,8 @@ class Chunk:
     metadata: dict = field(default_factory=dict)
 
 
-async def rag_retrieve(query: str, tenant_id: str, top_k: int = 5) -> List[Chunk]:
-    """对外检索工具：经 rag-ultra 客户端取回并封装为 Chunk。"""
+async def rag_retrieve(query: str, tenant_id: int, top_k: int = 5) -> List[Chunk]:
+    """对外检索工具：经 RAG 客户端取回并封装为 Chunk。"""
     raw = await client.retrieve(query, tenant_id, top_k)
     return [
         Chunk(

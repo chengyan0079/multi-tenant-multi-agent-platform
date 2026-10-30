@@ -1,4 +1,4 @@
-"""NacosConfigManager（order 105）：配置中心启动（对齐 RAG-Ultra）。
+"""NacosConfigManager（order 105）：配置中心启动。
 
 与 NacosDiscoverManager（仅服务发现）独立。本启动项：
   1. 拉起 ConfigCenterLoader（SDK gRPC 长连接订阅变更），注入 app_state 供健康检查读取；

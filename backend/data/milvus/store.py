@@ -1,10 +1,10 @@
 """
-milvus_store - 长期/语义记忆向量存储（设计文档 §6.1，参照 RAG-Ultra store.milvus_store）
+milvus_store - 长期/语义记忆向量存储（设计文档 §6.1）
 
 集合字段：id(主键) / tenant_id(分区键) / agent_id / block / content / dense / sparse / created_at，
 user_id 走动态字段（不重建集合也能加，检索时按它过滤）。
-dense 用 bge-m3 的 1024 维，度量 IP；写入与查询两侧都做 L2 归一化，使内积(IP)等价于余弦
-（与 RAG-Ultra 对齐）。sparse 用倒排索引 + IP。检索时按 tenant_id（必选）+ user_id + agent_id/block
+dense 用 bge-m3 的 1024 维，度量 IP；写入与查询两侧都做 L2 归一化，使内积(IP)等价于余弦。
+sparse 用倒排索引 + IP。检索时按 tenant_id（必选）+ user_id + agent_id/block
 过滤，再做 dense、sparse 两路召回并融合（RRF / 加权）。
 使用 pymilvus 的 AsyncMilvusClient，全部 IO 异步，向量化经 LLMFactory.embed 在 to_thread 中执行。
 """

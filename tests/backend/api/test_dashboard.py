@@ -144,8 +144,8 @@ def _dashboard_env(
     trend_rows: list[dict] | None = None,
 ):
     """构造已登录环境：tenant_id=None 走超管分支，否则走租户分支。"""
-    user = {"id": 2001, "username": "u", "name": "u", "tenant_id": tenant_id or 1}
-    identity = {"role_name": role_name, "tenant_is_primary": tenant_id is None, "scopes": []}
+    user = {"id": 2001, "username": "u", "name": "u", "tenant_id": tenant_id or 1, "enabled": True}
+    identity = {"role_name": role_name, "scopes": []}
     rbac_target = (
         "backend.data.dao.auth.rbac_dao.RbacDao.get_super_admin_identity"
         if tenant_id is None
@@ -199,19 +199,29 @@ def test_dashboard_requires_token():
 def test_dashboard_rejects_normal_user():
     """普通租户用户（student）不在准入范围。"""
     with _dashboard_env(role_name="student", tenant_id=2) as client:
-        resp = client.get("/api/v1/dashboard", headers=_token(2001, 2))
+        resp = client.get("/api/v1/dashboard", headers=_token(2001, 1))
     assert resp.status_code == 403
 
 
-def test_dashboard_tenant_admin_sees_own_tenant_only():
+def test_dashboard_any_tenant_admin_sees_own_tenant():
+    """租户之间地位平等：任意租户的管理员都能看控制台，且只看本租户。"""
     with _dashboard_env(role_name="tenant_admin", tenant_id=2) as client:
         resp = client.get("/api/v1/dashboard", headers=_token(2001, 2))
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["scope"]["tenant_id"] == 2
+
+
+def test_dashboard_tenant_admin_sees_own_tenant_only():
+    """租户管理员可看控制台，但只下发本租户数据。"""
+    with _dashboard_env(role_name="tenant_admin", tenant_id=1) as client:
+        resp = client.get("/api/v1/dashboard", headers=_token(2001, 1))
 
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["scope"] == {
         "is_super_admin": False,
-        "tenant_id": 2,
+        "tenant_id": 1,
         "days": 7,
         "since": data["scope"]["since"],
     }
@@ -223,9 +233,9 @@ def test_dashboard_tenant_admin_sees_own_tenant_only():
 
 def test_dashboard_stats_align_frontend():
     """四张卡的口径：同比百分比 + 成功率百分点差。"""
-    with _dashboard_env(role_name="tenant_admin", tenant_id=2) as client:
+    with _dashboard_env(role_name="tenant_admin", tenant_id=1) as client:
         stats = client.get(
-            "/api/v1/dashboard", headers=_token(2001, 2)
+            "/api/v1/dashboard", headers=_token(2001, 1)
         ).json()["data"]["stats"]
 
     assert [s["key"] for s in stats] == [
@@ -242,9 +252,9 @@ def test_dashboard_stats_align_frontend():
 
 def test_dashboard_trend_fills_missing_days():
     """有数据的天保留，没有的天补 0，保证 7 个点。"""
-    with _dashboard_env(role_name="tenant_admin", tenant_id=2) as client:
+    with _dashboard_env(role_name="tenant_admin", tenant_id=1) as client:
         trend = client.get(
-            "/api/v1/dashboard", headers=_token(2001, 2)
+            "/api/v1/dashboard", headers=_token(2001, 1)
         ).json()["data"]["request_trend"]
 
     assert len(trend) == 7
@@ -256,8 +266,8 @@ def test_dashboard_trend_fills_missing_days():
 
 
 def test_dashboard_payload_covers_all_frontend_sections():
-    with _dashboard_env(role_name="tenant_admin", tenant_id=2) as client:
-        data = client.get("/api/v1/dashboard", headers=_token(2001, 2)).json()["data"]
+    with _dashboard_env(role_name="tenant_admin", tenant_id=1) as client:
+        data = client.get("/api/v1/dashboard", headers=_token(2001, 1)).json()["data"]
 
     for key in (
         "stats", "request_trend", "agent_distribution",
@@ -269,9 +279,9 @@ def test_dashboard_payload_covers_all_frontend_sections():
 
 def test_dashboard_tenant_admin_cannot_query_other_tenant():
     """显式传别的 tenant_id 必须 403，不能静默忽略参数。"""
-    with _dashboard_env(role_name="tenant_admin", tenant_id=2) as client:
+    with _dashboard_env(role_name="tenant_admin", tenant_id=1) as client:
         resp = client.get(
-            "/api/v1/dashboard", params={"tenant_id": 3}, headers=_token(2001, 2)
+            "/api/v1/dashboard", params={"tenant_id": 3}, headers=_token(2001, 1)
         )
     assert resp.status_code == 403
 
@@ -324,9 +334,9 @@ def test_dashboard_cache_keys_split_by_role():
     ) as client:
         client.get("/api/v1/dashboard", headers=_token(2001))
     with patch.object(app_state, "redis", fake_redis), _dashboard_env(
-        role_name="tenant_admin", tenant_id=2
+        role_name="tenant_admin", tenant_id=1
     ) as client:
-        client.get("/api/v1/dashboard", headers=_token(2001, 2))
+        client.get("/api/v1/dashboard", headers=_token(2001, 1))
 
     assert any("super" in k for k in keys)
     assert any("tenant" in k for k in keys)

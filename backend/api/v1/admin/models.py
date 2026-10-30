@@ -12,11 +12,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from backend.api.v1.admin.schemas import ModelIn
+from backend.api.v1.admin.schemas import EnabledIn, ModelIn
 from backend.common.response import success
 from backend.observability.exception import BizException, ErrCode
 from backend.data.dao.agent.model_dao import ModelDao
 from backend.middleware.auth import get_current_user
+from backend.security.rbac import Scope
+from backend.security.security import require_scope
 
 router = APIRouter(prefix="/models", tags=["admin"])
 
@@ -42,17 +44,23 @@ def _serialize(row: dict) -> dict:
     }
 
 
-@router.get("", summary="模型列表")
+@router.get("", summary="模型列表（分页）")
 async def list_models(
     model_type: Optional[str] = Query(None, description="按 model_type 过滤"),
-    _: object = Depends(get_current_user),  # noqa: B008
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: object = Depends(require_scope(Scope.MODEL_PAGE)),  # noqa: B008
+    __: object = Depends(get_current_user),  # noqa: B008
 ):
     rows = await ModelDao.list_models(model_type)
-    return success({"items": [_serialize(r) for r in rows], "total": len(rows)})
+    total = len(rows)
+    start = (page - 1) * page_size
+    paged = rows[start : start + page_size]
+    return success({"items": [_serialize(r) for r in paged], "total": total, "page": page, "page_size": page_size})
 
 
 @router.get("/{model_id}", summary="模型详情")
-async def get_model(model_id: int, _: object = Depends(get_current_user)):  # noqa: B008
+async def get_model(model_id: int, _: object = Depends(require_scope(Scope.MODEL_VIEW)), __: object = Depends(get_current_user)):  # noqa: B008
     row = await ModelDao.get(model_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
@@ -60,7 +68,7 @@ async def get_model(model_id: int, _: object = Depends(get_current_user)):  # no
 
 
 @router.post("", summary="新增模型")
-async def create_model(body: ModelIn, _: object = Depends(get_current_user)):  # noqa: B008
+async def create_model(body: ModelIn, _: object = Depends(require_scope(Scope.MODEL_ADD)), __: object = Depends(get_current_user)):  # noqa: B008
     new_id = await ModelDao.create(
         model_type=body.model_type,
         name=body.name,
@@ -80,7 +88,7 @@ async def create_model(body: ModelIn, _: object = Depends(get_current_user)):  #
 
 @router.put("/{model_id}", summary="更新模型")
 async def update_model(
-    model_id: int, body: ModelIn, _: object = Depends(get_current_user)  # noqa: B008
+    model_id: int, body: ModelIn, _: object = Depends(require_scope(Scope.MODEL_UPDATE)), __: object = Depends(get_current_user)  # noqa: B008
 ):
     row = await ModelDao.get(model_id)
     if row is None:
@@ -106,9 +114,23 @@ async def update_model(
 
 
 @router.delete("/{model_id}", summary="删除模型")
-async def delete_model(model_id: int, _: object = Depends(get_current_user)):  # noqa: B008
+async def delete_model(model_id: int, _: object = Depends(require_scope(Scope.MODEL_DELETE)), __: object = Depends(get_current_user)):  # noqa: B008
     row = await ModelDao.get(model_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
     await ModelDao.delete(model_id)
     return success({"id": model_id})
+
+
+@router.patch("/{model_id}/status", summary="状态变更（启停）")
+async def set_status(
+    model_id: int,
+    body: EnabledIn,
+    _: object = Depends(require_scope(Scope.MODEL_STATUS)),  # noqa: B008
+    __: object = Depends(get_current_user),  # noqa: B008
+):
+    row = await ModelDao.get(model_id)
+    if row is None:
+        raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
+    await ModelDao.set_enabled(model_id, body.enabled)
+    return success({"id": model_id, "enabled": body.enabled})

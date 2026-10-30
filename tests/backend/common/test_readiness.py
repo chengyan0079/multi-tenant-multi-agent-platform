@@ -9,37 +9,33 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 from backend.app_state import app_state
-from backend.common.llm.llm_factory import LLMFactory
 from backend.data.dao.agent.model_dao import ModelDao
 from backend.mcp.registry import PluginRegistry
+from backend.server.managers.model_manager import ModelManager
 from backend.server.managers.plugin_manager import PluginManager
 
 
 async def test_check_ready_passes_when_all_present() -> None:
     """四类均有 enabled 记录时，自检通过、不抛异常。"""
-    f = LLMFactory()
     with patch.object(ModelDao, "count_enabled", new=AsyncMock(return_value=2)):
-        await f._check_ready()
+        await ModelManager._check_ready()
 
 
 async def test_check_ready_blocks_when_one_type_missing() -> None:
     """任一类型无 enabled 记录时，启动阻断（抛 RuntimeError 含「启动阻断」）。"""
-    f = LLMFactory()
-
     def side(mt: str) -> int:
         return 0 if mt == "llm" else 1
 
     with patch.object(ModelDao, "count_enabled", new=AsyncMock(side_effect=side)):
         with pytest.raises(RuntimeError, match="启动阻断"):
-            await f._check_ready()
+            await ModelManager._check_ready()
 
 
 async def test_check_ready_blocks_on_db_error() -> None:
     """查询 model_registry 抛错（DB 未就绪）时，自检失败并向上阻断启动。"""
-    f = LLMFactory()
     with patch.object(ModelDao, "count_enabled", new=AsyncMock(side_effect=RuntimeError("db down"))):
         with pytest.raises(RuntimeError):
-            await f._check_ready()
+            await ModelManager._check_ready()
 
 
 async def test_plugin_manager_start_warns_when_empty(monkeypatch) -> None:

@@ -168,6 +168,19 @@ class ModelDao:
             return await execute_write(session, _UPDATE, params)
 
     @staticmethod
+    async def set_enabled(model_id: int, enabled: bool) -> int:
+        """仅切换模型启用开关（status 端点用），其余列不变。"""
+        async with session_scope() as session:
+            return await execute_write(
+                session,
+                text(
+                    "UPDATE agent_model_registry SET enabled=:enabled, "
+                    "update_user_id=:update_user_id WHERE id=:id"
+                ),
+                {"id": model_id, "enabled": enabled, **audit_on_update(with_tenant=False)},
+            )
+
+    @staticmethod
     async def delete(model_id: int) -> int:
         """物理删除一条模型记录，返回影响行数。"""
         async with session_scope() as session:

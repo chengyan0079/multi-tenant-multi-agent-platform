@@ -1,5 +1,5 @@
 """全局异常处理器：将 HTTPException / 参数校验错误 / 业务异常 / 领域异常 / 未捕获异常
-统一包装为 {"code", "msg", "data"} 结构（对齐 RAG-Ultra）。
+统一包装为 {"code", "msg", "data"} 结构（全项目共用）。
 
 - HTTP 状态码保留（401/403/422/500…），body 内 code 为映射后的业务码；
 - 业务异常 BizException 可自定义 http_status（默认 200，前端读 code 判断）；

@@ -5,7 +5,7 @@
   1. visible = true
   2. scope IS NULL OR scope ∈ 用户 scopes OR 用户 scopes 含 "*"
   3. 父菜单可见（parent_id = 0 视为顶级）
-  4. 超管：path ∈ SUPER_ADMIN_MENU_PATHS（由调用方用 rbac.SUPER_ADMIN_MENU_PATHS 约束）
+  4. 超管：按自身 scopes 过滤，自然只得到有权限的基建菜单（菜单由 scope 驱动）
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from sqlalchemy import text
 
 from backend.data.sql import execute_write, fetch_all, fetch_value, session_scope
 from backend.observability.exception import BizException, ErrCode
-from backend.security.rbac import SUPER_ADMIN_MENU_PATHS
 
 _LIST_VISIBLE = text(
     "SELECT id, name, path, icon, parent_id, sort_order, visible, scope "
@@ -75,29 +74,21 @@ class MenuDao:
         return roots
 
     @staticmethod
-    async def build(
-        scopes: list[str], is_super_admin: bool
-    ) -> list[dict[str, Any]]:
-        """按身份组装菜单树（见 §7.2）。
+    async def build(scopes: list[str]) -> list[dict[str, Any]]:
+        """按 scope 组装菜单树（见 §7.2）。
 
-        - 超管：只下发 SUPER_ADMIN_MENU_PATHS 白名单内的基建菜单（按根路径匹配，
-          自动包含其下所有子菜单）；业务菜单（/dashboard、/sessions、/qa 等）不以
-          白名单前缀开头，自然被排除；
-        - 其余：按 scope 过滤（scope 为空 / 命中 / 含 '*'）后再成树。
+        统一按 scope 过滤（scope 为空 / 命中 / 含 '*'），不区分超管白名单：
+        - 超管 scopes 已含各基建域权限点（agent/model/config/tenant/rbac/audit/auth），
+          按 scope 自然得到全部基建菜单，而 /sessions、/qa 等业务菜单因超管无对应
+          scope 自动排除；
+        - 租户管理员按自身 scopes 过滤，只看到本租户可见的基建/权限菜单；
+        - dashboard:view 同时落在 admin 与 tenant_admin 角色上，控制台对超管和所有
+          租户管理员开放（非超管只看本租户数据，由 dashboard 端点收口）。
+        这样 /rbac 的子项（/tenants、/users、/roles、/menus）也能因 scope 命中而保留，
+        不会像旧白名单按 path 前缀匹配那样把 /tenants、/users 等丢棄。
         """
         rows = await MenuDao.list_visible()
-        if is_super_admin:
-            # 根路径精确匹配 + 后代路径（startswith 前缀）一并下发，使子菜单可见
-            rows = [
-                r
-                for r in rows
-                if any(
-                    r["path"] == p or r["path"].startswith(p + "/")
-                    for p in SUPER_ADMIN_MENU_PATHS
-                )
-            ]
-        else:
-            rows = MenuDao.filter_by_scopes(rows, scopes)
+        rows = MenuDao.filter_by_scopes(rows, list(scopes or []))
         return MenuDao.build_tree(rows)
 
     @staticmethod
@@ -153,3 +144,13 @@ class MenuDao:
             if child_count:
                 raise BizException(ErrCode.PARAM_ERROR, "该菜单含子菜单，请先处理子菜单")
             return await execute_write(session, _DELETE_MENU, {"id": menu_id})
+
+    @staticmethod
+    async def set_visible(menu_id: int, visible: bool) -> int:
+        """仅切换菜单显隐（status 端点用），其余列不变。"""
+        async with session_scope() as session:
+            return await execute_write(
+                session,
+                text("UPDATE agent_menu SET visible=:visible WHERE id=:id"),
+                {"id": menu_id, "visible": visible},
+            )

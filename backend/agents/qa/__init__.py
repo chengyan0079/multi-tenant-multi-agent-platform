@@ -1,4 +1,4 @@
-"""智能问答 Agent 包（RAG 图，复用 rag-ultra）。"""
+"""智能问答 Agent 包（RAG 图，复用 RAG 检索）。"""
 from backend.agents.qa.graph import build_qa_graph
 from backend.agents.qa.agent import QAAgent
 

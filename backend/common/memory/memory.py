@@ -83,7 +83,7 @@ class MemoryStore:
             agent_id=agent_id,
             block=block,
             content=content,
-            created_at=datetime.now().isoformat(timespec="seconds"),
+            created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
 
     async def stop(self) -> None:

@@ -25,15 +25,18 @@ from backend.api.v1 import health as health_api
 from backend.api.v1.admin import agents as admin_agents
 from backend.api.v1.admin import audit as admin_audit
 from backend.api.v1.admin import config_center as admin_config
+from backend.api.v1.admin import files as admin_files
 from backend.api.v1.admin import models as admin_models
 from backend.api.v1.admin import plugins as admin_plugins
 from backend.api.v1.admin import menu as admin_menu
+from backend.api.v1.admin import messages as admin_messages
 from backend.api.v1.admin import rbac as admin_rbac
 from backend.api.v1.admin import tenant as admin_tenant
 from backend.api.v1.auth import router as auth_router
 from backend.api.v1.tenant.agent import orchestrator
 from backend.api.v1.tenant.chat import escalations, threads, unified
 from backend.api.v1.tenant import audit as tenant_audit
+from backend.api.v1.tenant import messages as tenant_messages
 from backend.api.v1.tenant import roles as tenant_roles
 from backend.api.v1.tenant import users as tenant_users
 from backend.security.security import (
@@ -46,15 +49,17 @@ API_PREFIX = "/api/v1"
 ADMIN_PREFIX = f"{API_PREFIX}/admin"
 TENANT_PREFIX = f"{API_PREFIX}/tenant"
 
-# 基建域：Agent 定义与开通策略、插件清单、配置中心审批流、模型注册表、租户/RBAC/审计
+# 基建域：Agent 定义与开通策略、插件清单、模型注册表、租户/RBAC/审计
 # （后续 tenants/users 也归这组），整组 require_super_admin。
+# 注：rbac.router / messages.router 不在此组——读接口对超管+租户管理员开放，写接口仅超管，
+# 鉴权混用，单独挂载、由端点自行声明（见 admin/rbac.py / admin/messages.py）。
+# config_center.router 同样单独挂载：配置中心为协同流程（所有角色可提交/撤回，
+# 仅超管/租户管理员可复核/执行/删除），端点各自 require_scope，不挂整组超管。
 _ADMIN = (
     admin_agents.router,
     admin_plugins.router,
-    admin_config.router,
     admin_models.router,
     admin_tenant.router,
-    admin_rbac.router,
     admin_menu.router,
     admin_audit.router,
 )
@@ -73,6 +78,7 @@ _BUSINESS = (
     tenant_users.router,
     tenant_roles.router,
     tenant_audit.router,
+    tenant_messages.router,
 )
 
 
@@ -91,6 +97,30 @@ def build_api_router() -> APIRouter:
         _bundle(_ADMIN),
         prefix=ADMIN_PREFIX,
         dependencies=[Depends(require_super_admin())],
+    )
+    # RBAC 端点鉴权混用：读接口（角色目录）对超管+租户管理员开放，写接口（覆盖权限点/
+    # 新建/删除角色、改任意租户用户角色）仅超管。不挂整组依赖，由各端点显式声明，
+    # 否则整组 require_super_admin 会先于接口级依赖执行、把租户管理员挡在角色目录之外。
+    api.include_router(
+        admin_rbac.router,
+        prefix=ADMIN_PREFIX,
+    )
+    # 消息管理：超管 + 租户管理员（message:view）；端点级 require_scope，不挂整组超管
+    api.include_router(
+        admin_messages.router,
+        prefix=ADMIN_PREFIX,
+    )
+    # 配置中心：协同流程，端点各自 require_scope（page/view/add/update 所有角色；
+    # review/execute/delete 仅超管/租户管理员），不挂整组超管
+    api.include_router(
+        admin_config.router,
+        prefix=ADMIN_PREFIX,
+    )
+    # 文件管理：按租户开放（所有持 file:* scope 的用户；超管查全部），
+    # 端点级 require_scope，不挂整组超管
+    api.include_router(
+        admin_files.router,
+        prefix=ADMIN_PREFIX,
     )
     for router in _BUSINESS:
         api.include_router(

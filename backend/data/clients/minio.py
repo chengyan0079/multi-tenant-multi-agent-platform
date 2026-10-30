@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from backend.data.clients.base import BaseClient, ClientError
@@ -75,6 +76,11 @@ class MinioClient(BaseClient):
             raise ClientError("MinioClient 未连接，请先 await connect()")
         return self._client
 
+    @property
+    def bucket(self) -> str:
+        """默认桶名（构造时传入）。"""
+        return self._bucket
+
     def ensure_bucket(self, bucket: str | None = None) -> None:
         """确保桶存在（不存在则创建）。"""
         name = bucket or self._bucket
@@ -83,3 +89,59 @@ class MinioClient(BaseClient):
         client = self.raw
         if not client.bucket_exists(name):
             client.make_bucket(name)
+
+    # ---------- 对象读写（SDK 同步接口，调用方用 asyncio.to_thread 包装） ----------
+    def put_bytes(
+        self, key: str, data: bytes, *, content_type: str | None = None,
+        bucket: str | None = None,
+    ) -> None:
+        """上传字节到对象存储。"""
+        name = bucket or self._bucket
+        if not name:
+            raise ClientError("未指定 bucket")
+        from io import BytesIO
+
+        self.raw.put_object(
+            name,
+            key,
+            BytesIO(data),
+            length=len(data),
+            content_type=content_type or "application/octet-stream",
+        )
+
+    def stat_object(self, key: str, *, bucket: str | None = None) -> Any:
+        """取对象元信息（size / content_type 等）。"""
+        return self.raw.stat_object(bucket or self._bucket, key)
+
+    def get_bytes(self, key: str, *, bucket: str | None = None) -> bytes:
+        """读取对象全部字节。"""
+        resp = self.raw.get_object(bucket or self._bucket, key)
+        try:
+            return resp.read()
+        finally:
+            resp.close()
+            # urllib3 v2 的 HTTPResponse 没有 release()，存在才调用
+            release = getattr(resp, "release", None)
+            if callable(release):
+                release()
+
+
+# 进程内懒加载单例：首次使用时建连并确保桶存在（避免启动期强依赖 MinIO）
+_storage: MinioClient | None = None
+_storage_lock = asyncio.Lock()
+
+
+async def get_storage() -> MinioClient:
+    """取 MinIO 客户端（懒加载 + 确保桶存在）。"""
+    global _storage
+    if _storage is not None:
+        return _storage
+    async with _storage_lock:
+        if _storage is None:
+            from backend.config import config
+
+            client = MinioClient.from_settings(config.minio)
+            await client.connect()
+            await asyncio.to_thread(client.ensure_bucket)
+            _storage = client
+    return _storage

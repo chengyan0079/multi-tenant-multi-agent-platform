@@ -77,6 +77,8 @@ async def dashboard(
     ),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    # 角色准入由装配处 require_admin_or_tenant_admin 保证：超管看全平台，
+    # 租户管理员只看本租户（下面的 tenant_id 校验兜住越权）
     if current.is_super_admin:
         scope_tenant = tenant_id
     else:

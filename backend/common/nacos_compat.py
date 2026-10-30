@@ -1,5 +1,5 @@
 """
-nacos_compat - Nacos 版本适配助手（服务发现 / 配置中心共用，对齐 RAG-Ultra）
+nacos_compat - Nacos 版本适配助手（服务发现 / 配置中心共用）
 
 服务端为 Nacos 3.x，统一用 nacos-sdk-python 2.0+（导入路径 v2.nacos，全异步 API）；
 1.x 的 import nacos + NacosClient 已不可用（3.x 移除其 v1 注册接口）。

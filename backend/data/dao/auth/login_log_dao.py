@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from backend.app_state import app_state
 from backend.common.logger import logger
+from backend.data.sql import fetch_all, fetch_value, session_scope
 
 _INSERT = text("""
 INSERT INTO agent_login_log (
@@ -26,7 +27,12 @@ SELECT id, user_id, username, tenant_id, login_type, success, fail_reason,
 FROM agent_login_log
 WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
 ORDER BY create_at DESC
-LIMIT :limit
+LIMIT :limit OFFSET :offset
+""")
+
+_COUNT = text("""
+SELECT count(*) FROM agent_login_log
+WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
 """)
 
 
@@ -51,8 +57,6 @@ class LoginLogDao:
         if app_state.db_engine is None:
             return  # 单测/降级场景没有数据库，跳过
         try:
-            from backend.data.sql import session_scope
-
             async with session_scope() as session:
                 await session.execute(_INSERT, {
                     "user_id": user_id,
@@ -72,12 +76,13 @@ class LoginLogDao:
 
     @staticmethod
     async def query(
-        tenant_id: Optional[int] = None, limit: int = 200
-    ) -> list[dict[str, Any]]:
-        """按租户过滤查询（tenant_id=None 查全量，仅超管），时间倒序。"""
-        from backend.data.sql import fetch_all, session_scope
-
+        tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """按租户过滤分页查询（tenant_id=None 查全量，仅超管），时间倒序。"""
         async with session_scope() as session:
-            return await fetch_all(
-                session, _LIST, {"tenant_id": tenant_id, "limit": limit}
+            rows = await fetch_all(
+                session, _LIST,
+                {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size},
             )
+            total = await fetch_value(session, _COUNT, {"tenant_id": tenant_id})
+            return rows, int(total)

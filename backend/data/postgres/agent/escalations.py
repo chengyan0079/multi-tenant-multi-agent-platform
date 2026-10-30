@@ -29,3 +29,7 @@ class AgentEscalation(TimestampMixin, Base):
         BigInteger, nullable=True, index=True, comment="处理人ID（user_id，未分配为空）"
     )
     resolved_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, comment="解决时间")
+    # 超时提醒：定时协程扫超时 pending 发 notify 后写此处，避免重复提醒（见 docs §10）
+    last_reminder_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, comment="最近一次超时提醒时间"
+    )

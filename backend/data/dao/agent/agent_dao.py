@@ -8,12 +8,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, session_scope
-from backend.data.sql.audit import audit_on_insert
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _LIST_AGENTS = text("""
 SELECT id, agent_type, name, description, input_schema, enabled, version, updated_at
@@ -65,6 +65,28 @@ SET enabled = EXCLUDED.enabled,
     update_user_id = EXCLUDED.update_user_id,
     update_tenant_id = EXCLUDED.update_tenant_id
 """)
+
+_INSERT_AGENT = text("""
+INSERT INTO agent (
+    agent_type, name, description, input_schema, enabled, version,
+    create_user_id, update_user_id
+) VALUES (
+    :agent_type, :name, :description, :input_schema, :enabled, :version,
+    :create_user_id, :update_user_id
+)
+RETURNING id
+""")
+
+_UPDATE_AGENT = text("""
+UPDATE agent SET
+    name = :name, description = :description, input_schema = :input_schema,
+    enabled = :enabled, version = :version, update_user_id = :update_user_id
+WHERE agent_type = :agent_type
+""")
+
+_DELETE_AGENT = text("DELETE FROM agent WHERE agent_type = :agent_type")
+
+_GET_ID = text("SELECT id FROM agent WHERE agent_type = :agent_type")
 
 
 def _decode_input_schema(row: dict[str, Any]) -> dict[str, Any]:
@@ -147,3 +169,69 @@ class AgentDao:
                 )
             await session.commit()
         return affected
+
+    @staticmethod
+    async def get_id(agent_type: str) -> int | None:
+        """按业务键取主键 id，未登记返回 None。"""
+        async with session_scope() as session:
+            row = await fetch_one(session, _GET_ID, {"agent_type": agent_type})
+        return row["id"] if row is not None else None
+
+    @staticmethod
+    async def create(
+        *,
+        agent_type: str,
+        name: str,
+        description: str,
+        version: str,
+        enabled: bool,
+        input_schema: Optional[str] = None,
+    ) -> int:
+        """新增一条 Agent 目录行（纯目录维护，允许代码未注册的 agent_type）。"""
+        async with session_scope() as session:
+            new_id = await fetch_value(
+                session,
+                _INSERT_AGENT,
+                {
+                    "agent_type": agent_type,
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                    "enabled": enabled,
+                    "version": version,
+                    **audit_on_insert(with_tenant=False),
+                },
+            )
+            return new_id  # type: ignore[return-value]
+
+    @staticmethod
+    async def update(
+        agent_type: str,
+        *,
+        name: str,
+        description: str,
+        version: str,
+        enabled: bool,
+        input_schema: Optional[str] = None,
+    ) -> int:
+        """更新 Agent 元数据（input_schema 传入则为新 JSON 文本，None 表示不动）。"""
+        async with session_scope() as session:
+            return await execute_write(
+                session,
+                _UPDATE_AGENT,
+                {
+                    "agent_type": agent_type,
+                    "name": name,
+                    "description": description,
+                    "input_schema": input_schema,
+                    "enabled": enabled,
+                    "version": version,
+                    **audit_on_update(with_tenant=False),
+                },
+            )
+
+    @staticmethod
+    async def delete(agent_type: str) -> int:
+        """物理删除 Agent 目录行（绑定清理由调用方在删前校验）。"""
+        async with session_scope() as session:
+            return await execute_write(session, _DELETE_AGENT, {"agent_type": agent_type})

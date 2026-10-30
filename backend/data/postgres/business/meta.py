@@ -1,8 +1,8 @@
 """
-业务元数据表（EduAgent 业务域：知识库待补充、试卷批改、简历审查、模拟面试、问答）。
+业务元数据表（业务域：知识库待补充、试卷批改、简历审查、模拟面试、问答）。
 
-字段结构设计对齐参考项目 thy-edu-agent/scripts/init_db.sql，但遵循本平台框架：
-- id 统一 UUID（server_default=uuid_generate_v4()），对齐参考项目
+字段结构设计遵循本平台框架：
+- id 统一 UUID（server_default=uuid_generate_v4()）
 - 每张表继承 AuditMixin（create_at/updated_at/create_user_id/update_user_id/create_tenant_id/update_tenant_id）
 - tenant_id VARCHAR(64) 隔离（用户以登录 token 里的 user_id 标识）
 - 跨表引用（exam_id/question_id/submission_id/user_id/thread_id 等）用普通 UUID/VARCHAR 列 + 索引，

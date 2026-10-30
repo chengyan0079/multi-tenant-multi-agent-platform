@@ -1,5 +1,5 @@
 """
-MilvusManager（order=40）：启动时确保数据库与语义记忆集合就绪（参照 RAG-Ultra）。
+MilvusManager（order=40）：启动时确保数据库与语义记忆集合就绪。
 
 幂等：缺失则创建（数据库 → 集合 + 索引），已存在则直接加载；无需单独初始化脚本。
 向量化依赖 LLMFactory（bge-m3），故该 Manager 排在 Model(50) 之前、LLMFactory 预热后即可建集合。

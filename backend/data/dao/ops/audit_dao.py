@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from sqlalchemy import text
 
-from backend.data.sql import execute_write, fetch_all, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
 
 _INSERT = text(
     "INSERT INTO agent_audit_log (tenant_id, user_id, action, target, detail, result, trace_id, ip) "
@@ -20,7 +20,11 @@ _LIST = text(
     "SELECT id, tenant_id, user_id, action, target, detail, result, trace_id, ip, create_at "
     "FROM agent_audit_log "
     "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT)) "
-    "ORDER BY create_at DESC LIMIT :limit"
+    "ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
+)
+_COUNT = text(
+    "SELECT count(*) FROM agent_audit_log "
+    "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))"
 )
 
 
@@ -30,7 +34,7 @@ class AuditDao:
     @staticmethod
     async def write(
         *,
-        tenant_id: int,
+        tenant_id: Optional[int],
         user_id: int,
         action: str,
         target: str,
@@ -43,6 +47,9 @@ class AuditDao:
 
         result / trace_id / ip 是后补的展示字段：前端「最近活动」要显示结果，
         排障时要能从审计直接跳到链路日志。默认「成功」兼容既有调用点。
+
+        tenant_id 允许为空：超管不挂任何租户，其操作在审计里就是 NULL 租户
+        （列已放开 NOT NULL），用 user_id 定位操作人。
         """
         async with session_scope() as session:
             await execute_write(
@@ -63,10 +70,26 @@ class AuditDao:
 
     @staticmethod
     async def query(
-        tenant_id: Optional[int] = None, limit: int = 200
-    ) -> list[dict[str, Any]]:
-        """按租户过滤查询（tenant_id=None 查全量，仅超管），按时间倒序。"""
+        tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """按租户过滤分页查询（tenant_id=None 查全量，仅超管），按时间倒序。"""
         async with session_scope() as session:
-            return await fetch_all(
-                session, _LIST, {"tenant_id": tenant_id, "limit": limit}
+            rows = await fetch_all(
+                session, _LIST,
+                {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size},
+            )
+            total = await fetch_value(session, _COUNT, {"tenant_id": tenant_id})
+            return rows, int(total)
+
+    @staticmethod
+    async def get(log_id: str) -> Optional[dict[str, Any]]:
+        """按主键取单条审计详情。"""
+        async with session_scope() as session:
+            return await fetch_one(
+                session,
+                text(
+                    "SELECT id, tenant_id, user_id, action, target, detail, result, "
+                    "trace_id, ip, create_at FROM agent_audit_log WHERE id = :id"
+                ),
+                {"id": log_id},
             )

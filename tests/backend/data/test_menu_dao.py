@@ -45,10 +45,15 @@ def fake_rows(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_super_admin_sees_children_but_not_business(fake_rows):
-    tree = await MenuDao.build(scopes=[], is_super_admin=True)
+    # 超管按 scope 过滤：scopes 含基建域权限点（agent/model/config/tenant/rbac/audit/auth），
+    # 不含业务域（qa），故业务菜单被排除，基建菜单及其子项可见
+    tree = await MenuDao.build(
+        scopes=["audit:read", "config:read", "agent:read", "model:read",
+                "tenant:read", "rbac:read", "menu:manage", "auth:read", "auth:login"],
+    )
     paths = set(_all_paths(tree))
 
-    # 业务菜单被白名单挡掉（超管不看业务数据）
+    # 业务菜单（qa:read 不在超管 scopes 内）被排除
     assert "/qa" not in paths and "/sessions" not in paths
     # 白名单顶层 + 其下子菜单均可见
     assert "/audit" in paths and "/audit/operation" in paths
@@ -62,10 +67,7 @@ async def test_super_admin_sees_children_but_not_business(fake_rows):
 
 @pytest.mark.asyncio
 async def test_tenant_admin_sees_by_scope(fake_rows):
-    tree = await MenuDao.build(
-        scopes=["audit:read", "rbac:read", "tenant:read", "qa:read"],
-        is_super_admin=False,
-    )
+    tree = await MenuDao.build(scopes=["audit:read", "rbac:read", "tenant:read", "qa:read"])
     paths = set(_all_paths(tree))
     assert "/audit/operation" in paths   # 有 audit:read
     assert "/qa" in paths                # 有 qa:read（业务菜单对租户管理员可见）

@@ -8,9 +8,11 @@ schemas - 配置 schema 定义（pydantic-settings v2）
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote, urlunparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 _ENV_FILE = str(BASE_DIR / ".env")
@@ -38,11 +40,27 @@ class PostgresSettings(BaseSettings):
     # server_settings 设置 search_path，否则 ORM/DAO 裸 SQL 找不到表。
     # 可用环境变量 POSTGRES_SEARCH_PATH 覆盖。
     search_path: str = "agent_platform"
+    # SQL 调试日志（POSTGRES_SQL_DEBUG）：开启后把实际执行的 SQL（参数内联成可执行语句）
+    # 打到 DEBUG 日志；仅排查用，默认关，避免生产泄露参数与性能开销。
+    sql_debug: bool = False
 
     @property
     def async_url(self) -> str:
-        """拼出 SQLAlchemy asyncpg 连接串（search_path 由 server_settings 注入）。"""
-        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.db}"
+        """拼出 SQLAlchemy asyncpg 连接串（search_path 由 server_settings 注入）。
+
+        用 sqlalchemy.URL.create 构造，用户名/密码里的 @、: 会被自动转义，
+        避免裸字符串拼接受特殊字符密码影响。
+        """
+        # render_as_string(hide_password=False)：str(URL) 默认会把密码打成 ***，
+        # 连接串一旦脱敏，create_async_engine 就拿不到真密码，必须关掉。
+        return URL.create(
+            "postgresql+asyncpg",
+            username=self.user,
+            password=self.password,
+            host=self.host,
+            port=self.port,
+            database=self.db,
+        ).render_as_string(hide_password=False)
 
 
 class RedisSettings(BaseSettings):
@@ -57,8 +75,48 @@ class RedisSettings(BaseSettings):
 
     @property
     def url(self) -> str:
-        auth = f":{self.password}@" if self.password else ""
-        return f"redis://{auth}{self.host}:{self.port}/{self.db}"
+        """拼出 Redis 连接串；密码经 quote 转义，含 @ / : 也不破坏格式。
+
+        无密码时省略认证段（redis://host:port/db）。
+        """
+        if self.password:
+            netloc = f":{quote(self.password, safe='')}@{self.host}:{self.port}"
+        else:
+            netloc = f"{self.host}:{self.port}"
+        return urlunparse(("redis", netloc, f"/{self.db}", "", "", ""))
+
+
+class BrokerSettings(BaseSettings):
+    """RabbitMQ（消息队列 broker；独立中间件部署，见 docs/消息队列对接设计）。
+
+    启用开关默认 False：无 broker 时不注册 Manager，避免阻断启动（fail-fast 回滚）。
+    """
+
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="RABBITMQ_")
+
+    enabled: bool = False
+    host: str = "localhost"
+    port: int = 5672
+    user: str = "agent"
+    password: str = "agent"
+    vhost: str = "agent_platform"
+
+    @property
+    def url(self) -> str:
+        """拼出 AMQP 连接串；密码经 quote 转义。"""
+        from urllib.parse import quote, urlunparse
+
+        netloc = f"{quote(self.user, safe='')}:{quote(self.password, safe='')}@{self.host}:{self.port}"
+        return urlunparse(("amqp", netloc, f"/{self.vhost}", "", "", ""))
+
+
+class SchedulerSettings(BaseSettings):
+    """定时任务（HITL 超时扫描；与 broker 同启用）。"""
+
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="SCHEDULER_")
+
+    escalation_timeout_min: int = 30  # 超时阈值（分钟），可调
+    scan_interval: int = 60  # 扫描间隔（秒），可调
 
 
 class MilvusSettings(BaseSettings):
@@ -77,11 +135,16 @@ class MilvusSettings(BaseSettings):
     rrf_k: int = 60                # RRF 融合常数
 
 
-class RagUltraSettings(BaseSettings):
-    """rag-ultra 适配层接入方式（包导入优先，HTTP 兜底）。"""
+class RagSettings(BaseSettings):
+    """RAG 适配层接入方式（MCP 优先，包导入 / HTTP 兜底）。
 
-    model_config = SettingsConfigDict(**_COMMON, env_prefix="RAG_ULTRA_")
+    mcp_url：对外暴露的 MCP 服务地址（FastMCP streamable-http，默认
+        http://127.0.0.1:8766/mcp）。配置后检索走 MCP 工具，不再依赖本仓库内代码。
+    """
 
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="RAG_")
+
+    mcp_url: str = ""
     import_path: str = ""
     http_base: str = ""
 
@@ -98,6 +161,8 @@ class SecuritySettings(BaseSettings):
     jwt_secret: str = Field(default="", validation_alias="JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
     jwt_expire_minutes: int = Field(default=1440, validation_alias="JWT_EXPIRE_MINUTES")
+    # 登录会话在 Redis 的 TTL（秒）；超过该时长无任何请求即失效，每次请求滑动续期
+    session_ttl_seconds: int = Field(default=900, validation_alias="SESSION_TTL_SECONDS")
 
 
 class ObservabilitySettings(BaseSettings):
@@ -196,13 +261,22 @@ class ApiLogSettings(BaseSettings):
     save_body: bool = False       # 是否采集请求/响应体（关闭后中间件不缓冲 body）
     max_body: int = 8192          # 采集体时的上限（字节），超出截断；save_body=False 时不生效
     # .env 用逗号分隔字符串（/docs,/redoc,...）；这里存原始串，由 exclude 属性解析为列表。
-    # 健康检查在 /api/v1/health（免鉴权，探针高频调用），不落库
-    exclude_raw: str = "/docs,/redoc,/openapi.json,/api/v1/health"
+    # 健康检查在 /api/v1/health（免鉴权，探针高频调用），不落库；
+    # API 调用日志查询端点自身不落库（自查询无意义，且污染日志表）。
+    exclude_raw: str = "/docs,/redoc,/openapi.json,/api/v1/health,/api/v1/admin/audit/api-logs"
 
     @property
     def exclude(self) -> list[str]:
         """逗号分隔的高频路径前缀列表（这些路径不记录 API 日志）。"""
         return [x.strip() for x in self.exclude_raw.split(",") if x.strip()]
+
+
+class FileSettings(BaseSettings):
+    """文件上传限制（可通过 .env 的 FILE_MAX_UPLOAD_MB 覆盖）。"""
+
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="FILE_")
+
+    max_upload_mb: int = 200  # 单文件大小上限（MB）
 
 
 class AppSettings(BaseSettings):
@@ -225,8 +299,11 @@ class AppSettings(BaseSettings):
     api_log: ApiLogSettings = Field(default_factory=ApiLogSettings)
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
+    broker: BrokerSettings = Field(default_factory=BrokerSettings)
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     milvus: MilvusSettings = Field(default_factory=MilvusSettings)
     minio: MinioSettings = Field(default_factory=MinioSettings)
-    rag_ultra: RagUltraSettings = Field(default_factory=RagUltraSettings)
+    file: FileSettings = Field(default_factory=FileSettings)
+    rag: RagSettings = Field(default_factory=RagSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)

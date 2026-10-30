@@ -5,17 +5,16 @@
 - 只带用户审计列（全局表，如 agent_role）：`with_tenant=False`；
 - 只有 create_at / updated_at：不需要本模块。
 
-DDL 不给审计列建 DEFAULT：漏填要在写库前报错，而不是静默落到 1001/100 让审计失真。
+DDL 不给审计列建 DEFAULT：漏填要在写库前报错，而不是静默落到占位值让审计失真。
 - 请求期：从 app_state 的上下文取当前操作者；
-- 非请求期（启动期种子、修数脚本）：调用方显式传 SYSTEM_USER_ID。
+- 非请求期（启动期种子、修数脚本）：调用方显式传 SYSTEM_USER_ID 作为审计操作者占位。
 """
 from __future__ import annotations
 
 from backend.app_state import get_tenant_id, get_user_id
 
-# 非请求期写入系统数据时显式使用的操作者（主租户超管）
+# 非请求期写入系统数据时显式使用的操作者占位（不代表真实超管身份，仅用于种子/脚本的审计列填充）
 SYSTEM_USER_ID = 1001
-SYSTEM_TENANT_ID = 100
 
 
 def _pick(explicit: int | None, from_ctx: int | None, field: str) -> int:
@@ -35,16 +34,18 @@ def audit_on_insert(
     user_id: int | None = None,
     tenant_id: int | None = None,
     with_tenant: bool = True,
-) -> dict[str, int]:
+) -> dict[str, int | None]:
     """INSERT 用的审计列参数：创建人与更新人一致，创建租户与更新租户一致。
 
     返回值直接与业务参数合并后传给 session.execute，例如：
         params = {"tenant_id": 200, **audit_on_insert()}
+
+    操作者必须能确定（否则报错）；租户可以为空——超管不挂租户，其操作记 NULL。
     """
     actor = _pick(user_id, get_user_id(), "create_user_id")
-    params: dict[str, int] = {"create_user_id": actor, "update_user_id": actor}
+    params: dict[str, int | None] = {"create_user_id": actor, "update_user_id": actor}
     if with_tenant:
-        tenant = _pick(tenant_id, get_tenant_id(), "create_tenant_id")
+        tenant = tenant_id if tenant_id is not None else get_tenant_id()
         params["create_tenant_id"] = tenant
         params["update_tenant_id"] = tenant
     return params
@@ -72,7 +73,6 @@ def audit_on_update(
 
 
 __all__ = [
-    "SYSTEM_TENANT_ID",
     "SYSTEM_USER_ID",
     "audit_on_insert",
     "audit_on_update",

@@ -1,5 +1,5 @@
 """
-prompts_cache - 提示词缓存（先 Redis 再 Nacos，对齐 RAG-Ultra）
+prompts_cache - 提示词缓存（先 Redis 再 Nacos）
 
 读取链路：1) Redis（进程外共享，启动预热写入）；2) Nacos 配置中心（PROMPT 组，命名空间 agent-platform）。
 Nacos 不可达/缺失时，调用方应回退到内置模板。Redis 不可用时自动降级直连 Nacos，不阻断业务。

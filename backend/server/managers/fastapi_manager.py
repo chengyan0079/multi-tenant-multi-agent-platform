@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from backend.api.router import api_router
 from backend.api.exceptions import register_exception_handlers
 from backend.app_state import app_state
+from backend.common.response import DatetimeJSONResponse
 from backend.middleware.api_log import ApiLogMiddleware
 from backend.middleware.rate_limit import limiter
 from backend.middleware.trace_id import TraceIdMiddleware
@@ -15,6 +16,9 @@ from backend.server.base_manager import BaseManager, HealthInfo
 
 
 def _build_app() -> FastAPI:
+    # 故意留空：资源启动/停机由 AppServer 按 order 编排各 Manager（start_all/stop_all），
+    # 不在 FastAPI lifespan 里做。此处仅占位，避免 uvicorn 触发默认 startup 时与 AppServer
+    # 的 manager 编排重复或竞争。因此本服务只能由 `python backend/main.py` 启动。
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
@@ -32,6 +36,7 @@ def _build_app() -> FastAPI:
         docs_url=docs_url,
         redoc_url=redoc_url,
         openapi_url=openapi_url,
+        default_response_class=DatetimeJSONResponse,
     )
     app.state.limiter = limiter
     app.add_middleware(ApiLogMiddleware)

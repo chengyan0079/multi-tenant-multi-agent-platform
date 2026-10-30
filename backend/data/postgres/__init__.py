@@ -35,6 +35,7 @@ from backend.data.postgres.agent import (
     ModelRegistry,
 )
 from backend.data.postgres.business import (
+    AgentFile,
     Exam,
     ExamReview,
     ExamSubmission,
@@ -49,7 +50,7 @@ from backend.data.postgres.business import (
 from backend.data.postgres.ops import (
     AgentAuditLog,
     ApiCallLog,
-    ConfigChangeRequest,
+    ConfigApproval,
     ConfigReview,
 )
 
@@ -87,8 +88,9 @@ __all__ = [
     "InterviewQuestion",
     "InterviewSession",
     "QaSession",
+    "AgentFile",
     # ops
-    "ConfigChangeRequest",
+    "ConfigApproval",
     "ConfigReview",
     "ApiCallLog",
     "AgentAuditLog",

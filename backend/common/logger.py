@@ -2,13 +2,16 @@
 logger - 日志配置（基于 loguru）
 
 全程 trace_id 注入每条日志（由中间件写入 contextvars，patcher 读取），便于按链路收集。
-控制台 + 文件双写；文件按日期切片、压缩归档、超期清理。get_logger 返回 loguru 单例。
+控制台 + 文件双写；文件按日期切片，超过保留天数的旧切片由后台任务打包为 zip 归档。
+get_logger 返回 loguru 单例。
 日志文件路径若配成相对路径，按项目根目录解析，不受启动时 cwd 影响。
 """
 from __future__ import annotations
 
 import sys
-import uuid
+import time
+import uuid6
+import zipfile
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -32,7 +35,7 @@ def ensure_trace_id() -> str:
     """
     tid = trace_id_ctx.get()
     if not tid:
-        tid = uuid.uuid4().hex
+        tid = uuid6.uuid7().hex
         trace_id_ctx.set(tid)
     return tid
 
@@ -81,12 +84,50 @@ def setup_logging(*, level: str | None = None) -> None:
         str(_log_path(config.logging.file)),
         level=lvl,
         rotation="00:00",            # 每天零点切片
-        retention=f"{config.logging.days} days",
-        compression="zip",          # 旧日志压缩归档
+        # 不在切片时立即压缩：近 N 天保留明文便于 tail/grep，更早的由 archive_old_logs 打包；
+        # retention 留 N+7 天缓冲，避免后台归档还没来得及打包就被 loguru 删掉。
+        retention=f"{config.logging.days + 7} days",
         enqueue=True,               # 异步写入，避免阻塞主逻辑
         encoding="utf-8",
         format=LOG_FORMAT,
     )
+
+
+def archive_old_logs(
+    *, days: int | None = None, log_file: str | None = None
+) -> list[Path]:
+    """把超过 `days` 天的切片日志打包成 zip 并删除原文件。
+
+    loguru 的 compression 会在每次切片时立即压缩，做不到「近 N 天保留明文、
+    更早的再归档」。这里改为按文件 mtime 判定：切片日志在当天零点后不再写入，
+    mtime 超过 N 天才打包，天然不会碰到正在写入的 app.log。
+
+    返回本次新生成的 zip 路径列表；无文件需要归档时返回空列表。
+    """
+    from backend.config import config
+
+    target = _log_path(log_file or config.logging.file)
+    log_dir = target.parent
+    archive_dir = log_dir / "archive"
+    keep_days = config.logging.days if days is None else days
+    cutoff = time.time() - keep_days * 86400
+    created: list[Path] = []
+    if not log_dir.is_dir():
+        return created
+
+    # 只归档按日期切出的 `app.*.log`，不碰当前正在写的 app.log，也不碰历史 zip。
+    for f in sorted(log_dir.glob(f"{target.stem}.*{target.suffix}")):
+        if not f.is_file() or f == target:
+            continue
+        if f.stat().st_mtime >= cutoff:
+            continue
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = archive_dir / f"{f.stem}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(f, arcname=f.name)
+        f.unlink()
+        created.append(zip_path)
+    return created
 
 
 def get_logger(name: str | None = None) -> Any:
@@ -101,6 +142,7 @@ def get_logger(name: str | None = None) -> Any:
 __all__ = [
     "logger",
     "setup_logging",
+    "archive_old_logs",
     "get_logger",
     "ensure_trace_id",
     "trace_id_ctx",

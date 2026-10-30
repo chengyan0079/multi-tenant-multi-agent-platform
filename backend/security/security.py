@@ -11,13 +11,13 @@ import re
 from functools import wraps
 from typing import Callable, Iterable, List, Set
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
 
 from backend.middleware.auth import CurrentUser, get_current_user
-from backend.security.rbac import Scope
+from backend.security.rbac import VALID_SCOPES
 from backend.observability.exception import GuardrailError, TenantError
 
-# 占位违禁词字典；真实清单走配置/外部审核插件挂载（见 plugins 设计 §15.2）
+# //todo 占位违禁词字典；真实清单走配置/外部审核插件挂载（见 plugins 设计 §15.2）
 _FORBIDDEN: Set[str] = set()
 _INJECT_HINT = re.compile(r"(ignore\s+(previous|above|all)\s+instructions|disregard\s+(the\s+)?system)", re.I)
 
@@ -47,11 +47,15 @@ def check_output(text: str) -> str:
 
 
 def require_role(*roles: str) -> Callable:
-    """依赖工厂：要求 request.state.roles 含任一指定角色，否则 403。"""
+    """依赖工厂：要求 current.roles 含任一指定角色，否则 403。
+
+    直接依赖 get_current_user（FastAPI 同请求内缓存，不会重复查库），不再读
+    request.state——router 级依赖先于路由函数执行，那时 state 还没写入。
+    """
     allowed: Set[str] = set(roles)
 
-    async def _dep(request: Request) -> None:
-        user_roles = set(getattr(request.state, "roles", []) or [])
+    async def _dep(current: CurrentUser = Depends(get_current_user)) -> None:
+        user_roles = set(current.roles or [])
         if not allowed & user_roles:
             raise TenantError(f"需要角色 {sorted(allowed)}，当前 {sorted(user_roles)}")
 
@@ -115,19 +119,20 @@ def require_admin_or_tenant_admin() -> Callable:
 
 
 def require_scope(*scopes: str) -> Callable:
-    """依赖工厂：要求 request.state.scopes 含全部指定 scope（最小权限）。"*" 表示全部。
+    """依赖工厂：要求 current.scopes 含全部指定 scope（最小权限）。
 
-    声明的 scope 必须是 Scope 枚举成员（否则立即报错），防止笔误绕过鉴权。
+    直接依赖 get_current_user（FastAPI 同请求内缓存，不会重复查库），不再读
+    request.state——router 级依赖先于路由函数执行，那时 state 还没写入。
     """
     required: Set[str] = set(scopes)
     # 校验声明合法：拼写错误的 scope 在依赖注册期即暴露
     for s in required:
-        Scope(s)  # 不在枚举则抛 ValueError
+        # Scope 不再是 Enum，用合法权限点集合校验声明合法性（防笔误绕过鉴权）
+        if s not in VALID_SCOPES:
+            raise ValueError(f"未知 scope: {s}")
 
-    async def _dep(request: Request) -> None:
-        user_scopes = set(getattr(request.state, "scopes", []) or [])
-        if "*" in user_scopes:
-            return
+    async def _dep(current: CurrentUser = Depends(get_current_user)) -> None:
+        user_scopes = set(current.scopes or [])
         if not required <= user_scopes:
             raise TenantError(f"缺少 scope {sorted(required - user_scopes)}")
 

@@ -25,7 +25,7 @@ class QAAgent(Agent):
 
     def metadata(self) -> Dict[str, Any]:
         return {
-            "description": "智能问答：意图分类→检索(rag-ultra)→生成→低置信Web兜底",
+            "description": "智能问答：意图分类→检索(RAG)→生成→低置信Web兜底",
             "pattern": "rag",
             "capabilities": ["rag_retrieve", "web_search"],
         }

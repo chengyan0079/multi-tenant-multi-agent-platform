@@ -1,11 +1,11 @@
 """
-nacos_config - Nacos 3.x 配置中心客户端（直连 Open API，对齐 RAG-Ultra）
+nacos_config - Nacos 3.x 配置中心客户端（直连 Open API）
 
 与服务发现（namespace=public）完全独立：本客户端用 config.NACOS_CONFIG_NAMESPACE（默认 agent-platform）。
 Nacos 3.x 约定（仅 3.x）：前缀 /nacos/v3，读/写/列/历史走 admin 路径；参数驼峰；
 响应包裹在 data 字段，成功码 code=0（不存在返回 code=20004）。
 
-设计要点（对应 RAG-Ultra 配置中心对接）：
+设计要点（对应配置中心对接）：
 - 读类（命名空间/配置列表/详情/历史）直连 Nacos，无副作用。
 - 写类（publish/remove/rollback）仅在审批通过后调用，带 casMd5 乐观锁防 lost update。
 - 历史/当前态以 Nacos 为准，不本地冗余。
@@ -13,6 +13,7 @@ Nacos 3.x 约定（仅 3.x）：前缀 /nacos/v3，读/写/列/历史走 admin �
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any
 
@@ -126,8 +127,11 @@ class ConfigCenterClient:
         return data
 
     # ---------- 读类 ----------
-    def get_config(self, data_id: str, group: str | None = None) -> str | None:
-        """获取当前配置内容；不存在返回 None。"""
+    def get_config_info(self, data_id: str, group: str | None = None) -> dict | None:
+        """获取配置元信息（content/type/md5/createTime/modifyTime）；不存在返回 None。
+
+        列表接口多数版本不返回创建/修改时间，列表页需要时逐条回查本接口补齐。
+        """
         params = self._query({"dataId": data_id, "groupName": group or self.group})
         resp = requests.get(self._path("get"), params=params,
                             headers=self._auth_header(), timeout=self.timeout)
@@ -136,27 +140,65 @@ class ConfigCenterClient:
         try:
             j = resp.json()
         except ValueError:
-            return resp.text.strip() or None
+            text = resp.text.strip()
+            return {"content": text} if text else None
         if isinstance(j, dict) and "code" in j:
             if j.get("code") == 0:
                 d = j.get("data")
-                if isinstance(d, str):
-                    return d
                 if isinstance(d, dict):
-                    return d.get("content")
-                return resp.text.strip() or None
+                    return d
+                if isinstance(d, str):
+                    return {"content": d}
+                return None
             if j.get("code") == 20004:
                 return None
             raise ConfigCenterError(f"Nacos 查询失败: {j.get('message')} (code={j.get('code')})")
-        return resp.text.strip() or None
+        text = resp.text.strip()
+        return {"content": text} if text else None
+
+    def get_config(self, data_id: str, group: str | None = None) -> str | None:
+        """获取当前配置内容；不存在返回 None。"""
+        info = self.get_config_info(data_id, group)
+        content = info.get("content") if isinstance(info, dict) else None
+        return content if isinstance(content, str) else None
 
     def list_configs(self, data_id: str | None = None, group: str | None = None,
-                     page_no: int = 1, page_size: int = 100) -> dict:
+                     page_no: int = 1, page_size: int = 100,
+                     with_meta: bool = False) -> dict:
+        """配置列表。
+
+        with_meta=True 时对本页每条配置回查详情，补齐创建/修改时间与 type/md5——
+        Nacos 各版本的列表接口普遍不返回这些字段。列表页才需要，分组聚合不必传。
+        """
         resp = requests.get(self._path("list"), params=self._query({
             "pageNo": page_no, "pageSize": page_size,
-            "groupName": group or self.group, "dataId": data_id or "",
+            # group 为空表示跨全部分组（与 dataId 空=全部一致）；不能回落到 self.group，
+            # 否则只查默认分组，导致其它 group 的配置在列表里“消失”。
+            "groupName": group or "", "dataId": data_id or "",
         }), headers=self._auth_header(), timeout=self.timeout)
-        return self._check(resp) or {}
+        data = self._check(resp) or {}
+        if with_meta and isinstance(data, dict):
+            for it in (data.get("pageItems") or []):
+                if isinstance(it, dict):
+                    self._fill_config_meta(it)
+        return data
+
+    def _fill_config_meta(self, item: dict) -> None:
+        """列表项补齐 createTime/modifyTime/type/md5，并统一出 lastModified。"""
+        if not (item.get("createTime") and item.get("modifyTime")):
+            try:
+                info = self.get_config_info(
+                    item.get("dataId") or "", item.get("groupName") or self.group
+                )
+            except Exception:  # noqa: BLE001 - 单条回查失败不影响整个列表
+                info = None
+            if isinstance(info, dict):
+                for key in ("createTime", "modifyTime", "type", "md5", "appName"):
+                    if item.get(key) is None and info.get(key) is not None:
+                        item[key] = info[key]
+        # 前端统一按 lastModified 渲染更新时间；缺失时回落到 modifyTime/createTime
+        if not item.get("lastModified"):
+            item["lastModified"] = item.get("modifyTime") or item.get("createTime")
 
     def list_history(self, data_id: str, group: str | None = None,
                      page_no: int = 1, page_size: int = 100) -> dict:
@@ -166,8 +208,34 @@ class ConfigCenterClient:
         }), headers=self._auth_header(), timeout=self.timeout)
         data = self._check(resp) or {}
         for it in (data.get("pageItems") or []):
-            if isinstance(it, dict) and "nid" not in it and "id" in it:
+            if not isinstance(it, dict):
+                continue
+            # nid：不同 Nacos 版本返回 id 或 nid
+            if "nid" not in it and "id" in it:
                 it["nid"] = it["id"]
+            # 时间：历史列表常见 lastModifiedTime，部分版本为 createdTime
+            if not it.get("createdTime"):
+                for key in ("lastModifiedTime", "gmtModified", "createTime", "timestamp"):
+                    if it.get(key) is not None:
+                        it["createdTime"] = it[key]
+                        break
+            # md5：列表接口通常不返回，用详情补齐；详情无 md5 时按内容计算
+            if not it.get("md5"):
+                nid = it.get("nid")
+                detail = None
+                if nid is not None:
+                    try:
+                        detail = self.get_history(data_id, int(nid), group)
+                    except Exception:  # noqa: BLE001 - 单条失败不影响整个列表
+                        detail = None
+                if isinstance(detail, dict):
+                    content = detail.get("content")
+                    if detail.get("md5"):
+                        it["md5"] = detail["md5"]
+                    elif isinstance(content, str) and content:
+                        it["md5"] = hashlib.md5(content.encode("utf-8")).hexdigest()
+                    if not it.get("createdTime"):
+                        it["createdTime"] = detail.get("createdTime") or detail.get("lastModifiedTime")
         return data
 
     def get_history(self, data_id: str, nid: int, group: str | None = None) -> dict | None:
@@ -176,16 +244,28 @@ class ConfigCenterClient:
         }), headers=self._auth_header(), timeout=self.timeout)
         data = self._check(resp)
         if isinstance(data, dict):
-            return data.get("data") or data
+            obj = data.get("data") or data
+            # 归一化：详情接口字段名与列表不一致，前端按 nid/createdTime 渲染
+            if isinstance(obj, dict):
+                if "nid" not in obj and "id" in obj:
+                    obj["nid"] = obj["id"]
+                if not obj.get("createdTime"):
+                    for key in ("lastModifiedTime", "modifyTime", "gmtModified", "createTime", "timestamp"):
+                        if obj.get(key) is not None:
+                            obj["createdTime"] = obj[key]
+                            break
+            return obj
         return data
 
     # ---------- 写类（仅审批通过后调用，带 CAS） ----------
     def publish_config(self, data_id: str, content: str,
-                       group: str | None = None, cas_md5: str | None = None) -> bool:
+                       group: str | None = None, content_format: str = "text",
+                       cas_md5: str | None = None) -> bool:
+        # content_format 透传为 Nacos type，不做枚举校验（后续新增 toml/ini 等无需改这里）
         data = {
             "namespaceId": self._ns_id(),
             "groupName": group or self.group,
-            "dataId": data_id, "content": content, "type": "text",
+            "dataId": data_id, "content": content, "type": content_format,
         }
         if cas_md5:
             data["casMd5"] = cas_md5
@@ -209,7 +289,7 @@ class ConfigCenterClient:
         return str(result).strip().lower() == "true"
 
     def rollback(self, data_id: str, nid: int, group: str | None = None) -> bool:
-        """按历史 nid 回滚（3.2.x 无 rollback 端点，改为取内容重新发布）。"""
+        """已废弃：回滚改在 service.execute_request 内用申请单已存内容直接发布，便于带 CAS 与记录类型。"""
         hist = self.get_history(data_id, nid, group)
         content = hist.get("content") if isinstance(hist, dict) else None
         if not content:

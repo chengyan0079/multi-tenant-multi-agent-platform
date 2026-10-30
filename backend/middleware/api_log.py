@@ -1,15 +1,18 @@
 """
-api_log - API 调用日志中间件（纯 ASGI，对齐 RAG-Ultra）
+api_log - API 调用日志中间件（纯 ASGI）
 
 记录每次 API 调用的调用方 / 请求头 / 方法 / 路由 / 状态 / 耗时，
 "请求"与"响应"各打一条日志（便于按时间线排障），并合并落一行到 agent_api_call_log。
-默认只记元数据，不采集请求体与响应体（`API_LOG_SAVE_BODY=true` 才开启）：
-  - 记录体需要缓冲整个请求/响应，大 body 会把表撑大，是列表膨胀的主因；
-  - 开启时请求体仅对 POST/PUT/PATCH 的 JSON/文本且长度可控者捕获，捕获后原样重放给下游；
-    multipart（文件上传）与超大体不消费、不记录；
-  - 开启时响应体逐块透传的同时按上限累积（不阻塞 SSE 流式），超限截断。
+x-trace-id 的强制传播与生成由外层 TraceIdMiddleware 负责：登录接口（获取 token）允许为空
+（后端生成），其余接口必须携带 x-trace-id（来自同一操作链上游），缺失即拒绝（400）且不重新
+生成；本中间件仅读取 TraceIdMiddleware 已确定的 trace_id 写日志。
+请求参数默认就记录：GET/DELETE 解析 query 为结构化 params 打印，POST/PUT/PATCH 取 body，
+两者敏感字段（password/token/secret...）均脱敏为 ***，
+避免明文凭据落到 DEBUG 日志（需 LOG_LEVEL=DEBUG 才打印）；body 仅对 POST/PUT/PATCH 且长度可控者捕获并重放给下游，
+multipart 与超大体不消费、不记录。
+响应体受 `API_LOG_SAVE_BODY` 控制（默认不记录，开启时按上限截断、同样脱敏）。
 实现要点（不用 BaseHTTPMiddleware，纯 ASGI 不吃大文件）：
-  - 敏感头（authorization/cookie/...）脱敏为 ***。
+  - 敏感头（authorization/cookie/...）与敏感 body 字段均脱敏为 ***。
 """
 from __future__ import annotations
 
@@ -17,12 +20,13 @@ import json
 import time
 from datetime import datetime
 from typing import Any, Callable
+from urllib.parse import parse_qsl
 
 from starlette.requests import Request
 
 from backend.app_state import app_state, get_tenant_id, get_user_id, trace_id_ctx
 from backend.config import config
-from backend.common.logger import logger
+from backend.common.logger import ensure_trace_id, logger
 
 _SENSITIVE_HEADERS = frozenset({
     "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key",
@@ -30,9 +34,55 @@ _SENSITIVE_HEADERS = frozenset({
 })
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
+# 请求/响应体里需脱敏的字段（避免明文密码/token/secret 落到 DEBUG 日志）
+_SENSITIVE_BODY_KEYS = frozenset({
+    "password", "pwd", "passwd", "old_password", "new_password",
+    "token", "access_token", "refresh_token", "secret", "api_key",
+    "authorization", "auth_sign", "code", "captcha",
+})
+
+
+def _safe_json(text: str) -> Any:
+    """尽量把 body 文本解析成对象；失败（非 JSON / form）原样返回。"""
+    text = text.strip()
+    if not text:
+        return text
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return text
+
+
+def _mask_body(data: Any) -> Any:
+    """递归把敏感字段值替换成 ***（仅对解析后的 dict/list 生效）。"""
+    if isinstance(data, dict):
+        return {
+            k: ("***" if k.lower() in _SENSITIVE_BODY_KEYS else _mask_body(v))
+            for k, v in data.items()
+        }
+    if isinstance(data, list):
+        return [_mask_body(v) for v in data]
+    return data
+
 
 def _excluded(path: str, prefixes: list[str] | None) -> bool:
     return any(path.startswith(p) for p in (prefixes or []))
+
+
+def _full_route(path: str, pattern: str | None) -> str | None:
+    """把路由模板补成完整 API 路径。
+
+    include_router 的 prefix（如 /api/v1/admin）不一定体现在 scope["route"].path 中，
+    这里用实际请求路径按段对齐补齐前缀；模板已含前缀时保持原样。
+    """
+    if not pattern:
+        return pattern
+    req_segments = [s for s in path.split("/") if s]
+    tpl_segments = [s for s in pattern.split("/") if s]
+    if not tpl_segments or len(tpl_segments) > len(req_segments):
+        return pattern
+    prefix = req_segments[: len(req_segments) - len(tpl_segments)]
+    return "/" + "/".join(prefix + tpl_segments)
 
 
 def _compact(v: Any) -> str:
@@ -117,20 +167,26 @@ class ApiLogMiddleware:
         method = scope.get("method", "").upper()
         headers = _headers_dict(scope)
         caller = _caller(scope, headers)
-        tid = headers.get("x-trace-id") or trace_id_ctx.get()
+        # trace_id 由外层 TraceIdMiddleware 注入（含强制传播与豁免）；此处直接取，
+        # 未注入时兜底生成（仅当 TraceIdMiddleware 未装配，正常不应触发）。
+        tid = trace_id_ctx.get() or ensure_trace_id()
         query = scope.get("query_string", b"").decode("utf-8", "replace")
         req_at = datetime.now()
-        # 默认不采集 body：省掉缓冲整个请求体的开销，也避免日志/表被大 body 撑爆
+        # 请求参数默认记录，敏感字段脱敏：
+        # - POST/PUT/PATCH 取 body（JSON 解析后结构化）；
+        # - GET 等无 body，解析 query_string 为 dict 结构化打印（同样脱敏）。
+        # 统一用 params= 字段，GET/POST 都有清晰的请求参数。
         save_body = config.api_log.save_body
-        if save_body:
-            req_body, receive = await _capture_request_body(scope, receive)
-        else:
-            req_body = ""
+        req_body, receive = await _capture_request_body(scope, receive)
+        req_params = _compact(_mask_body(_safe_json(req_body))) if req_body else ""
+        if not req_params and query:
+            qd = dict(parse_qsl(query))
+            req_params = _compact(_mask_body(qd)) if qd else ""
 
-        logger.info(
+        logger.debug(
             f"API 请求 trace={tid} {method} {path} caller={caller} "
-            f"query={query} headers={_compact(headers)}"
-            + (f" body={req_body}" if save_body else "")
+            f"headers={_compact(headers)}"
+            + (f" params={req_params}" if req_params else "")
         )
 
         status: dict[str, Any] = {}
@@ -159,13 +215,14 @@ class ApiLogMiddleware:
 
             resp_body = ""
             if save_body:
-                resp_body = b"".join(chunks)[:max_body].decode("utf-8", "replace")
+                raw_resp = b"".join(chunks)[:max_body].decode("utf-8", "replace")
                 if total >= max_body:
-                    resp_body += "...<截断>"
+                    raw_resp += "...<截断>"
+                resp_body = _compact(_mask_body(_safe_json(raw_resp)))
 
             user_id = get_user_id()
             tenant_id = get_tenant_id()
-            logger.info(
+            logger.debug(
                 f"API 响应 trace={tid} {method} {path} status={status_code} "
                 f"tenant={tenant_id or ''} user={user_id or ''} cost_ms={cost_ms}"
                 + (f" body={resp_body}" if save_body else "")
@@ -181,7 +238,7 @@ class ApiLogMiddleware:
                     "tenant_id": tenant_id,
                     "method": method,
                     "path": path,
-                    "route": getattr(scope.get("route"), "path", None),
+                    "route": _full_route(path, getattr(scope.get("route"), "path", None)),
                     "query_string": query,
                     "req_headers": headers,
                     "req_time": req_at,

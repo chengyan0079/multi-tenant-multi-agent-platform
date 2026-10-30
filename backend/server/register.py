@@ -32,6 +32,9 @@ from backend.server.managers.postgres_manager import PostgreSQLManager
 from backend.server.managers.rag_adapter_manager import RagAdapterManager
 from backend.server.managers.redis_manager import RedisManager
 from backend.server.managers.security_manager import SecurityManager
+from backend.server.managers.broker_manager import BrokerManager
+from backend.server.managers.scheduler_manager import SchedulerManager
+from backend.config import config
 
 
 def build_server() -> AppServer:
@@ -49,6 +52,12 @@ def build_server() -> AppServer:
     # server.register(RagAdapterManager(), 20)    // todo
     # server.register(ObservabilityManager(), 20)   // todo
     server.register(SecurityManager(), 20)
+
+    # 消息队列：默认不启用（RABBITMQ_ENABLED=false），启用才注册，避免无 broker 阻断启动
+    if config.broker.enabled:
+        server.register(BrokerManager(), 20)
+        # 定时任务（HITL 超时提醒）与 broker 同启用：提醒经 Outbox → MQ 外发
+        server.register(SchedulerManager(), 30)
 
     # 阶段 3：依赖上阶段产物（Milvus 需 Model 预热；Checkpointer 需 PG；Memory 需 Redis+Milvus）
     server.register(MilvusManager(), 30)

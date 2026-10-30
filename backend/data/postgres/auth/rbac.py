@@ -43,7 +43,7 @@ class AgentRolePermission(Base):
 class AgentUserTenant(Base):
     """用户-租户-角色分配；PK=(user_id, tenant_id) 强制单租户内只任一角色。
 
-    角色口径：1/2 普通用户、3 超管（仅主租户、全局唯一）、5 租户管理员（每租户唯一）。
+    角色口径：role_id 含义以 agent_role 为准；超管（admin）不写此表，其身份由 agent_user.is_super_admin 标记；普通用户/租户管理员按角色名关联。
     两个部分唯一索引在库层兜住「超管唯一」与「每租户一个管理员」。
     """
 
@@ -53,11 +53,6 @@ class AgentUserTenant(Base):
         Index(
             "uk_aut_tenant_admin", "tenant_id",
             unique=True, postgresql_where=text("role_id = 5"),
-        ),
-        # 全局至多 1 个超管（3）；是否落在主租户由应用层校验
-        Index(
-            "uk_aut_super_admin", "role_id",
-            unique=True, postgresql_where=text("role_id = 3"),
         ),
         {"comment": "用户-租户-角色分配（多对多中间表）"},
     )
@@ -70,6 +65,6 @@ class AgentUserTenant(Base):
     )
     role_id: Mapped[int] = mapped_column(
         Integer, nullable=False,
-        comment="该用户在租户内的唯一角色：1/2 普通用户、3 超管（仅主租户且全局唯一）、5 租户管理员（每租户唯一）",
+        comment="该用户在租户内的唯一角色：1/2 普通用户、5 租户管理员（每租户唯一）；超管不写本表",
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, comment="分配时间")

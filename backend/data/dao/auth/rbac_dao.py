@@ -21,6 +21,15 @@ VALUES (:role_id, :name, :description, :create_user_id, :update_user_id)
 ON CONFLICT (role_id) DO NOTHING
 """)
 
+_UPDATE_ROLE = text("""
+UPDATE agent_role
+SET name = :name,
+    description = :description,
+    update_user_id = :update_user_id,
+    updated_at = now()
+WHERE role_id = :role_id
+""")
+
 _INSERT_PERMISSION = text("""
 INSERT INTO agent_role_permission (role_id, scope)
 VALUES (:role_id, :scope)
@@ -30,7 +39,6 @@ ON CONFLICT (role_id, scope) DO NOTHING
 # 一次 join 拿全身份快照：分配不存在 / 角色不存在 / 租户停用 都退化成「无行」
 _GET_IDENTITY = text("""
 SELECT r.name AS role_name,
-       t.is_primary AS tenant_is_primary,
        COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
 FROM agent_user_tenant aut
 JOIN agent_role r ON r.role_id = aut.role_id
@@ -39,7 +47,7 @@ LEFT JOIN agent_role_permission p ON p.role_id = aut.role_id
 WHERE aut.user_id = :user_id
   AND aut.tenant_id = :tenant_id
   AND t.enabled
-GROUP BY r.name, t.is_primary
+GROUP BY r.name
 """)
 
 # created_at 在 DDL 里没有 DEFAULT，必须显式给值
@@ -49,27 +57,22 @@ VALUES (:user_id, :tenant_id, :role_id, now())
 ON CONFLICT (user_id, tenant_id) DO UPDATE SET role_id = EXCLUDED.role_id
 """)
 
-# 超管分支：token 不含 tenant_id，只按 user_id + 主租户 + admin 角色判定。
-# 命中返回 admin 角色名 + is_primary=true；否则无行（视为非超管）。
+# 超管分支：身份只认 agent_user.is_super_admin 标记，与租户表无关；
+# scopes 取 admin 角色权限点，超管本身不挂任何租户。
 _GET_SUPER_ADMIN = text("""
-SELECT r.name AS role_name,
-       t.is_primary AS tenant_is_primary,
-       COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
-FROM agent_user_tenant aut
-JOIN agent_role r ON r.role_id = aut.role_id
-JOIN agent_tenant t ON t.id = aut.tenant_id
-LEFT JOIN agent_role_permission p ON p.role_id = aut.role_id
-WHERE aut.user_id = :user_id
-  AND t.is_primary
-  AND t.enabled
-  AND r.name = 'admin'
-GROUP BY r.name, t.is_primary
+SELECT
+  COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
+FROM agent_user u
+CROSS JOIN agent_role r
+LEFT JOIN agent_role_permission p ON p.role_id = r.role_id
+WHERE u.id = :user_id AND u.is_super_admin AND r.name = 'admin'
+GROUP BY u.id
 """)
 
-# 登录选租户：列出用户在各个租户（含停用）的分配，主租户优先
+# 登录选租户：列出用户在各个租户（含停用）的分配
 _GET_USER_ASSIGNMENTS = text("""
 SELECT aut.tenant_id AS tenant_id, t.name AS tenant_name,
-       t.is_primary AS tenant_is_primary, t.enabled AS tenant_enabled,
+       t.enabled AS tenant_enabled,
        r.name AS role_name,
        COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
 FROM agent_user_tenant aut
@@ -77,8 +80,8 @@ JOIN agent_tenant t ON t.id = aut.tenant_id
 JOIN agent_role r ON r.role_id = aut.role_id
 LEFT JOIN agent_role_permission p ON p.role_id = aut.role_id
 WHERE aut.user_id = :user_id
-GROUP BY aut.tenant_id, t.name, t.is_primary, t.enabled, r.name
-ORDER BY t.is_primary DESC, aut.tenant_id
+GROUP BY aut.tenant_id, t.name, t.enabled, r.name
+ORDER BY aut.tenant_id
 """)
 
 # 角色目录 + 权限点（GET /admin/roles）
@@ -93,7 +96,8 @@ ORDER BY r.role_id
 
 # 本租户成员（GET /tenant/users，管理员排前）
 _LIST_TENANT_MEMBERS = text("""
-SELECT u.id AS user_id, u.username, u.name, r.name AS role_name
+SELECT u.id AS id, u.username, u.name, aut.tenant_id, u.create_at, u.updated_at,
+       r.name AS role_name
 FROM agent_user_tenant aut
 JOIN "agent_user" u ON u.id = aut.user_id
 JOIN agent_role r ON r.role_id = aut.role_id
@@ -114,14 +118,6 @@ _GET_ROLE_ID = text("SELECT role_id FROM agent_role WHERE name = :name")
 
 # 覆盖写角色权限点前清空
 _DELETE_ROLE_PERMS = text("DELETE FROM agent_role_permission WHERE role_id = :role_id")
-# 禁止删除的内置角色（业务键 1/2/3/5；4 已废弃不在此列）
-_BUILTIN_ROLE_IDS = frozenset({1, 2, 3, 5})
-
-# 原租户管理员降级为 student（更换管理员事务内）
-_SET_TENANT_ADMIN_DEMOTE = text("""
-UPDATE agent_user_tenant SET role_id = :student_role_id
-WHERE tenant_id = :tenant_id AND role_id = :admin_role_id
-""")
 
 
 class RbacDao:
@@ -141,6 +137,15 @@ class RbacDao:
         """
         audit = audit_on_insert(user_id=user_id, with_tenant=False)
         async with session_scope() as session:
+            # 先清空内置角色旧权限，再按 DEFAULT_ROLES 当前定义全覆盖写入，
+            # 保证库里权限点与代码定义「同步」（缺的补、多的删）。
+            role_ids = [r[0] for r in roles]
+            if role_ids:
+                await execute_write(
+                    session,
+                    text("DELETE FROM agent_role_permission WHERE role_id = ANY(:role_ids)"),
+                    {"role_ids": role_ids},
+                )
             created_roles = 0
             for role_id, name, description in roles:
                 created_roles += await execute_write(
@@ -163,7 +168,7 @@ class RbacDao:
 
     @staticmethod
     async def get_identity(user_id: int, tenant_id: int) -> dict[str, Any] | None:
-        """取用户在某租户的身份快照（角色名、是否主租户、权限点）。
+        """取用户在某租户的身份快照（角色名、权限点）。
 
         分配不存在、角色缺失、租户不存在或已停用，统一返回 None。
         """
@@ -193,10 +198,9 @@ class RbacDao:
 
     @staticmethod
     async def get_super_admin_identity(user_id: int) -> dict[str, Any] | None:
-        """超管分支身份快照：用户在主租户且角色名为 admin 时返回，否则 None。
+        """超管分支身份快照：agent_user.is_super_admin=true 的用户返回，否则 None。
 
-        返回 role_name='admin'、tenant_is_primary=True、该角色的权限点列表
-        （具体 scope；上层 RbacService 会将其收敛为超管口径 scopes=["*"]）。
+        只返回 admin 角色的权限点列表，不带任何租户：超管全程无租户上下文。
         """
         async with session_scope() as session:
             row = await fetch_one(
@@ -212,7 +216,7 @@ class RbacDao:
 
     @staticmethod
     async def get_user_assignments(user_id: int) -> list[dict[str, Any]]:
-            """登录选租户用：列出用户在各租户（含停用）的分配（租户名/主标记/启用/角色/权限点）。"""
+            """登录选租户用：列出用户在各租户（含停用）的分配（租户名/启用/角色/权限点）。"""
             async with session_scope() as session:
                 rows = await fetch_all(
                     session, _GET_USER_ASSIGNMENTS, {"user_id": user_id}
@@ -254,6 +258,45 @@ class RbacDao:
                 await session.commit()
 
     @staticmethod
+    async def update_role(
+        role_id: int, name: str, description: str | None, *, user_id: int
+    ) -> None:
+        """改角色名称/说明（权限点走 set_role_permissions，不在此处）。
+
+        两条业务约束：
+        - admin 为内置锚点，鉴权按 name 判定，不允许改名（改后超管身份失效）；
+        - agent_role.name 在库里没有唯一约束，重复名会让人分不清角色，这里显式拦。
+        """
+        async with session_scope() as session:
+            row = await fetch_one(
+                session,
+                text("SELECT name FROM agent_role WHERE role_id = :role_id"),
+                {"role_id": role_id},
+            )
+            if row is None:
+                raise BizException(ErrCode.NOT_FOUND, "角色不存在")
+            if row["name"] == "admin" and name != "admin":
+                raise BizException(ErrCode.PARAM_ERROR, "内置角色 admin 不可改名")
+            dup = await fetch_one(
+                session,
+                text("SELECT role_id FROM agent_role WHERE name = :name AND role_id <> :role_id"),
+                {"name": name, "role_id": role_id},
+            )
+            if dup is not None:
+                raise BizException(ErrCode.PARAM_ERROR, f"角色名已存在: {name}")
+            await execute_write(
+                session,
+                _UPDATE_ROLE,
+                {
+                    "role_id": role_id,
+                    "name": name,
+                    "description": description or "",
+                    "update_user_id": user_id,
+                },
+            )
+            await session.commit()
+
+    @staticmethod
     async def next_role_id() -> int:
         """取 agent_role 当前最大 role_id + 1（业务键自增，非序列）。"""
         async with session_scope() as session:
@@ -283,10 +326,20 @@ class RbacDao:
 
     @staticmethod
     async def delete_role(role_id: int) -> None:
-        """删除角色（含权限点）；内置角色（1/2/3/5）不可删。"""
-        if role_id in _BUILTIN_ROLE_IDS:
-            raise BizException(ErrCode.PARAM_ERROR, f"内置角色 {role_id} 不可删除")
+        """删除角色（含权限点）；admin 为内置角色不可删，其余角色由前端创建均可删。
+
+        按角色名判定（不用 role_id 数字）：admin 是平台超管锚点，删除会破坏授权体系。
+        """
         async with session_scope() as session:
+            row = await fetch_one(
+                session,
+                text("SELECT name FROM agent_role WHERE role_id = :role_id"),
+                {"role_id": role_id},
+            )
+            if row is None:
+                raise BizException(ErrCode.NOT_FOUND, "角色不存在")
+            if row["name"] == "admin":
+                raise BizException(ErrCode.PARAM_ERROR, "内置角色 admin 不可删除")
             await execute_write(session, _DELETE_ROLE_PERMS, {"role_id": role_id})
             await execute_write(
                 session,
@@ -334,36 +387,40 @@ class RbacDao:
 
     @staticmethod
     async def set_tenant_admin(tenant_id: int, user_id: int) -> int | None:
-            """原子更换租户管理员：原管理员降 student，再写入新 tenant_admin。
+        """原子更换租户管理员：移除原管理员，再写入新 tenant_admin（不再降级为 student，
+        避免依赖 student 角色——角色体系仅保留 admin，其余由前端创建）。
 
-            返回被降级的原管理员 user_id（无则 None）。同一事务保证不出现 0 或 2 个管理员的中间态。
-            """
-            student_id = await RbacDao.get_role_id("student")
-            admin_id = await RbacDao.get_role_id("tenant_admin")
-            async with session_scope() as session:
-                old = await fetch_one(
+        返回被移除的原管理员 user_id（无则 None）。同一事务保证不出现 0 或 2 个管理员的中间态。
+        """
+        admin_id = await RbacDao.get_role_id("tenant_admin")
+        if admin_id is None:
+            raise BizException(
+                ErrCode.PARAM_ERROR,
+                "租户管理员角色(tenant_admin)不存在，请先在角色管理创建该角色",
+            )
+        async with session_scope() as session:
+            old = await fetch_one(
+                session,
+                text(
+                    "SELECT user_id FROM agent_user_tenant "
+                    "WHERE tenant_id = :tenant_id AND role_id = :admin_role_id"
+                ),
+                {"tenant_id": tenant_id, "admin_role_id": admin_id},
+            )
+            replaced = old["user_id"] if old else None
+            if replaced is not None and replaced != user_id:
+                await execute_write(
                     session,
                     text(
-                        "SELECT user_id FROM agent_user_tenant "
+                        "DELETE FROM agent_user_tenant "
                         "WHERE tenant_id = :tenant_id AND role_id = :admin_role_id"
                     ),
                     {"tenant_id": tenant_id, "admin_role_id": admin_id},
                 )
-                replaced = old["user_id"] if old else None
-                if replaced is not None and replaced != user_id:
-                    await execute_write(
-                        session,
-                        _SET_TENANT_ADMIN_DEMOTE,
-                        {
-                            "tenant_id": tenant_id,
-                            "student_role_id": student_id,
-                            "admin_role_id": admin_id,
-                        },
-                    )
                 await execute_write(
                     session,
                     _UPSERT_MEMBERSHIP,
                     {"user_id": user_id, "tenant_id": tenant_id, "role_id": admin_id},
                 )
-                await session.commit()
-            return replaced
+            await session.commit()
+        return replaced

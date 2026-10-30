@@ -15,7 +15,6 @@ from backend.data.dao.agent import agent_dao, thread_dao
 from backend.data.dao.auth import login_log_dao, rbac_dao
 from backend.data.dao.ops import api_log_dao, audit_dao, config_dao
 from backend.data.sql.audit import (
-    SYSTEM_TENANT_ID,
     SYSTEM_USER_ID,
     audit_on_insert,
     audit_on_update,
@@ -95,12 +94,27 @@ def test_insert_without_context_raises(clear_identity: None) -> None:
         audit_on_insert()
 
 
+def test_insert_allows_null_tenant_for_super_admin() -> None:
+    """超管不挂租户：上下文有用户、无租户时，租户审计列写 NULL 而不是报错。"""
+    u = user_id_ctx.set(2001)
+    t = tenant_id_ctx.set(None)
+    try:
+        params = audit_on_insert()
+    finally:
+        user_id_ctx.reset(u)
+        tenant_id_ctx.reset(t)
+
+    assert params["create_user_id"] == 2001
+    assert params["create_tenant_id"] is None
+    assert params["update_tenant_id"] is None
+
+
 def test_insert_explicit_value_wins(clear_identity: None) -> None:
     """启动期写入：显式传值即可。"""
-    params = audit_on_insert(user_id=SYSTEM_USER_ID, tenant_id=SYSTEM_TENANT_ID)
+    params = audit_on_insert(user_id=SYSTEM_USER_ID, tenant_id=200)
 
     assert params["create_user_id"] == SYSTEM_USER_ID
-    assert params["create_tenant_id"] == SYSTEM_TENANT_ID
+    assert params["create_tenant_id"] == 200
 
 
 def test_update_refreshes_operator(request_identity: None) -> None:
@@ -125,7 +139,7 @@ _INSERT_STATEMENTS = [
     (login_log_dao._INSERT, "agent_login_log"),
     (agent_dao._UPSERT_AGENT, "agent"),
     (agent_dao._UPSERT_POLICY, "agent_capability_policy"),
-    (config_dao._INSERT_REQUEST, "agent_config_change_request"),
+    (config_dao._INSERT_REQUEST, "agent_config_approval"),
     (config_dao._INSERT_REVIEW, "agent_config_review"),
     (rbac_dao._INSERT_ROLE, "agent_role"),
     (rbac_dao._INSERT_PERMISSION, "agent_role_permission"),
@@ -157,15 +171,21 @@ def test_insert_params_cover_all_columns(stmt: object, _table: str) -> None:
     assert columns - params <= _SQL_FILLED_COLUMNS, f"列缺少绑定参数: {columns - params - _SQL_FILLED_COLUMNS}"
 
 
-@pytest.mark.parametrize(
-    "column",
-    ["create_user_id", "update_user_id", "create_tenant_id", "update_tenant_id"],
-)
-def test_audit_columns_stay_not_null_without_default(column: str) -> None:
-    """审计列不许加 DEFAULT：漏填必须报错，而不是静默落到 1001/100。"""
+@pytest.mark.parametrize("column", ["create_user_id", "update_user_id"])
+def test_user_audit_columns_stay_not_null_without_default(column: str) -> None:
+    """操作人审计列不许加 DEFAULT：漏填必须报错，而不是静默落到 1001。"""
     ddl = SCHEMA.read_text(encoding="utf-8")
 
     assert re.search(rf"{column} BIGINT NOT NULL", ddl), f"{column} 应为 NOT NULL"
+    assert not re.search(rf"{column} BIGINT[^,\n]*DEFAULT", ddl), f"{column} 不应有 DEFAULT"
+
+
+@pytest.mark.parametrize("column", ["create_tenant_id", "update_tenant_id"])
+def test_tenant_audit_columns_nullable_without_default(column: str) -> None:
+    """租户审计列允许为空（超管不挂租户），但仍不许有 DEFAULT 静默兜底。"""
+    ddl = SCHEMA.read_text(encoding="utf-8")
+
+    assert not re.search(rf"{column} BIGINT NOT NULL", ddl), f"{column} 应为可空"
     assert not re.search(rf"{column} BIGINT[^,\n]*DEFAULT", ddl), f"{column} 不应有 DEFAULT"
 
 
@@ -175,7 +195,7 @@ def test_audit_columns_stay_not_null_without_default(column: str) -> None:
 def test_build_filters_without_conditions() -> None:
     """无条件时不生成 WHERE，参数为空。"""
     where, params = config_dao._build_filters(
-        status=None, domain=None, applicant_user_id=None
+        status=None, group_id=None, applicant_user_id=None
     )
 
     assert where == ""
@@ -185,10 +205,10 @@ def test_build_filters_without_conditions() -> None:
 def test_build_filters_combines_conditions() -> None:
     """多个条件下条件用 AND 串联，值全部走绑定参数。"""
     where, params = config_dao._build_filters(
-        status=1, domain="prompt", applicant_user_id="2001"
+        status=1, group_id="prompt", applicant_user_id="2001"
     )
 
     assert where == (
-        " WHERE status = :status AND domain = :domain AND applicant_user_id = :applicant_user_id"
+        " WHERE status = :status AND group_id = :group_id AND applicant_user_id = :applicant_user_id"
     )
-    assert params == {"status": 1, "domain": "prompt", "applicant_user_id": "2001"}
+    assert params == {"status": 1, "group_id": "prompt", "applicant_user_id": "2001"}

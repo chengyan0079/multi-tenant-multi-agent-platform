@@ -1,14 +1,14 @@
-# 多 Agent 系统架构设计方案
+# 多租户多智能体协作平台 · 架构设计方案
 
 > 版本：v2.3 ｜ 日期：2026-10-22 ｜ 作者：CTO 助手（hm-cto）
-> 业务蓝本：EduAgent —— 教育场景的 AI 多智能体辅助平台（参考 `F:\heima\黑马课程文件\...\02.EduAgent\官方文档`）
-> 范围：以 EduAgent 业务场景为蓝本，设计一套**多模块、单应用**的多 Agent 编排系统；覆盖 LangGraph 图编排、插件化能力缝隙、分层记忆与 RAG 复用、状态外置与水平扩展。本方案与《智能体平台 · 问答系统（FAQ+RAG）架构设计 v6.2》互为补充：RAG 能力直接复用既有 **rag-ultra** 项目，不重复造轮子。
+> 业务示例：教育场景的 AI 多智能体辅助平台（内置 简历审查 / 智能问答 / 试卷批改 / 模拟面试 四大业务 Agent）。
+> 范围：设计一套**多模块、单应用**的多租户多智能体协作平台；覆盖 LangGraph 图编排、插件化能力缝隙、分层记忆与 RAG 复用、状态外置与水平扩展。RAG 检索/索引/精排能力直接复用既有实现，不重复造轮子。
 
 ---
 
 ## 0. 背景、约束与关键决策
 
-### 0.1 业务场景（EduAgent 四大 Agent）
+### 0.1 业务场景（四大业务 Agent）
 
 | Agent | 范式 | 核心流程 | 原课程入口 |
 |---|---|---|---|
@@ -26,7 +26,7 @@
 | ① 形态 | **多模块、单应用**（非多服务） | 一个 FastAPI 应用 `backend/`，内部按 `server/core/agents/api/rag/plugins/config/models/middleware` 分包；不再拆 `ap-ingress`/`ap-agent`/`ap-rag` 等多服务。开发/部署/调试简单，契合课程单体结构，且仍保留水平扩展能力（无状态 + 外置状态） |
 | ② 向量库 | **Milvus**（不用 PGVector） | BGE-M3 dense+sparse 同集合、Hybrid（WeightedRanker）召回、bge-reranker-v2-m3 精排；partition key 做租户隔离。初期即上 Milvus，不再以 PGVector 过渡 |
 | ③ 模型 | **bge-m3 + bge-reranker-v2-m3 + bert-chinese + LLM** | bge-m3 向量化、bge-reranker-v2-m3 重排、bert-chinese 做中文意图/文本分类（替代原 google-bert / Query Classifier）、LLM 负责生成与复杂路由 |
-| ④ RAG | **复用 rag-ultra，不重建** | RAG 检索/索引/精排能力直接来自既有 `RAG-Ultra` 工程（`E:\cywork\python\project\RAG-Ultra`），本系统仅提供**集成适配层**将其暴露为工具/能力，不重写检索管线 |
+| ④ RAG | **复用既有 RAG 能力，不重建** | RAG 检索/索引/精排能力直接复用既有实现，多租户多智能体协作平台仅提供**集成适配层**将其暴露为工具/能力，不重写检索管线 |
 
 ### 0.3 其余已确认约束
 
@@ -45,7 +45,7 @@
 - **图编排**：每个 Agent 用 LangGraph 的 State/Node/Edge/Checkpointer 四要素实现受控工作流；支持分支、并行（fan-out/fan-in）、循环、HITL 暂停恢复。
 - **插件化能力缝隙**：工具/能力以协议驱动注册，单能力故障不影响整体；新增能力=新增模块，不改编排核心。
 - **模型分工明确**：bge-m3（向量）、bge-reranker-v2-m3（精排）、bert-chinese（中文意图/分类快路径）、LLM（生成 + 复杂路由）。
-- **RAG 复用**：直接接入 rag-ultra，避免重复建设检索/索引/精排。
+- **RAG 复用**：直接接入既有 RAG 实现，避免重复建设检索/索引/精排。
 - **状态外置 + 无状态**：PostgreSQL（checkpointer + 业务 + 记忆元数据）+ Milvus（向量）+ Redis（会话/缓存/队列/HITL）；应用无本地状态 → 多副本水平扩展。
 - **安全与多租户**：输入护栏（注入/违禁词）、输出护栏、认证、租户隔离贯穿全链路；HITL 转人工不幻觉、不越权。
 
@@ -54,7 +54,7 @@
 ## 2. 总体架构（多模块单应用 + 分层）
 
 ```
-                    多 Agent 系统（EduAgent 业务蓝本）
+                    多租户多智能体协作平台（EduAgent 业务蓝本）
         ┌──────────────────────────────────────────────────────────┐
         │  接入层  backend/api/v1                                   │
         │   unified_chat(统一入口: 前置拦截→意图路由→SSE分发)         │
@@ -75,7 +75,7 @@
    └──────┬──────┘ └──────┬──────┘     └──────┬───────┘  └───────┬────────┘
           │ 工具/能力调用    │                  │                  │
         ┌─▼─────────────────▼──────────────────▼──────────────────▼─┐
-        │  能力缝隙层  backend/plugins + backend/rag(adapter→rag-ultra)│
+        │  能力缝隙层  backend/plugins + backend/rag(适配 RAG 检索)│
         │  rag_retrieve │ web_search │ code_exec │ pdf/word_parse     │
         └───────────────────────────┬──────────────────────────────┘
                                      │
@@ -99,10 +99,10 @@
 | `backend/config` | `ConfigManager`：env/YAML + Pydantic 校验 → `app_state.settings`；全应用配置唯一来源 | Pydantic v2、pydantic-settings |
 | `backend/core` | 编排内核：Orchestrator（单 Agent 直达 / 多 Agent 串联）、AgentRegistry、LLM 工厂、记忆抽象、安全护栏、异常体系、trace 封装 | LangGraph、LLM Factory |
 | `backend/agents/resume` | 简历审查 Agent（六维度并行 fan-out/fan-in 图） | LangGraph、PDF 解析、bert-chinese 维度标注 |
-| `backend/agents/qa` | 智能问答 Agent（RAG 图，复用 rag-ultra） | LangGraph、rag 适配层、记忆 |
+| `backend/agents/qa` | 智能问答 Agent（RAG 图，复用既有 RAG 实现） | LangGraph、rag 适配层、记忆 |
 | `backend/agents/exam` | 试卷批改 Agent（三轨并行 + HITL 图） | LangGraph、Word 解析、规则引擎 |
 | `backend/agents/interview` | 模拟面试 Agent（状态机 + SSE 图） | LangGraph、状态机、LLM 生成 |
-| `backend/rag` | **rag-ultra 集成适配层**（不重建，仅适配）：`adapter.py` 暴露 `rag_retrieve()`，`client.py` 接入 RAG-Ultra | 调用/导入 RAG-Ultra 检索与索引能力 |
+| `backend/rag` | **RAG 集成适配层**（不重建，仅适配）：`adapter.py` 暴露 `rag_retrieve()`，`client.py` 接入 RAG 实现 | 调用/导入 RAG 检索与索引能力 |
 | `backend/plugins` | **插件管理**：能力缝隙。`protocol.py`(AgentPlugin 协议)、`registry.py`(运行时注册表)、`loader.py`(扫描 `backend/plugins` + entry-points)、`builtin/`(web_search/code_exec 等，每插件含 `manifest.yaml`)、`external/`(外部插件挂载点) | Protocol + Registry + BaseTool、错误边界 |
 | `backend/data/postgres` | 表结构模型：按 `auth` / `agent` / `business` / `ops` 分域，含 thread/run/message/plugin/tool/escalation/memory/audit 及 `business/` 各 Agent 元数据。**仅供 `scripts/gen_schema.py` 生成 DDL，运行期不加载** | SQLAlchemy 2.x async（仅 DDL） |
 | `backend/data/sql` + `backend/data/dao` | 运行时数据访问：`session_scope`、`fetch_*` 助手、审计列注入；DAO 里 SQL 全部 `text()` 手写，结果映射为 dict | SQLAlchemy 2.x async + `text()` |
@@ -121,7 +121,7 @@
 | 向量 | **Milvus 2.4+**（BGE-M3 dense 1024 + sparse，Hybrid/WeightedRanker，partition key 隔离） |
 | 缓存/会话/队列/HITL | Redis |
 | 模型 | LLM（平台网关/OpenAI 兼容）；**bge-m3**（嵌入）；**bge-reranker-v2-m3**（重排）；**bert-chinese**（中文意图/文本分类） |
-| RAG | **复用 rag-ultra**（BGE-M3 + Milvus + WeightedRanker + Reranker + Memory） |
+| RAG | **复用既有 RAG 实现**（BGE-M3 + Milvus + WeightedRanker + Reranker + Memory） |
 | 可观测 | Langfuse（自托管）、Prometheus、JSON 日志（trace_id） |
 
 ---
@@ -139,7 +139,7 @@
 
 ### 3.2 Orchestrator（编排器，单应用内）
 
-`backend/core/orchestrator.py` 是系统「前台 + 调度员」，不亲自干活，但知道每件事该找谁：
+`backend/core/orchestrator.py` 是多租户多智能体协作平台「前台 + 调度员」，不亲自干活，但知道每件事该找谁：
 
 - **单 Agent 直达**：识别意图 → 直调对应 Agent 图（`build_resume_graph` / `build_qa_graph` / `build_exam_graph` / `build_interview_graph`）。
 - **多 Agent 串联 Pipeline**：复杂场景把多个 Agent 串成流水线（如「简历审查 → 模拟面试」：简历输出作为面试上下文；「问答 → 试卷批改」跨能力协作），前一个输出作为后一个输入。
@@ -215,7 +215,7 @@ AgentAuditLog        审计
     id / tenant_id / user_id / action / target / detail(JSON) / create_at / updated_at
 ```
 
-> 业务表（简历/问答/批改/面试各自的元数据）按 EduAgent 第 3 章建表规范落地，与上式共用同一 PostgreSQL 实例、按 `tenant_id` 行级隔离。
+> 业务表（简历/问答/批改/面试各自的元数据）按建表规范落地，与上式共用同一 PostgreSQL 实例、按 `tenant_id` 行级隔离。
 
 ---
 
@@ -231,12 +231,12 @@ AgentAuditLog        审计
 
 ### 6.2 RAG 复用（关键：不重建）
 
-`backend/rag/` 是 **rag-ultra 的集成适配层**，不重写检索管线：
+`backend/rag/` 是 **RAG 集成适配层**，不重写检索管线：
 
-- **索引/写入侧**：复用 rag-ultra 的文档读取、智能分块、BGE-M3 嵌入、Milvus 写入（Hybrid/WeightedRanker）能力；本系统仅在做「建库」类任务时调用其索引接口。
-- **查询侧**：适配层暴露 `rag_retrieve(query, tenant_id, top_k) -> List[Chunk]` 工具，内部调用 rag-ultra 的混合召回 + bge-reranker-v2-m3 精排；qa Agent 的 `retrieve` 节点直接消费该工具。
-- **记忆联动**：qa Agent 的 Memory（5.9）与 rag-ultra 的对话记忆解耦——本系统负责会话级短期/长期记忆，rag-ultra 负责知识库检索；两者通过适配层协作，互不侵入。
-- **依赖边界**：rag-ultra 为独立工程（`E:\cywork\python\project\RAG-Ultra`），本系统通过包导入或 HTTP 调用接入，禁止把其检索代码复制进本仓库（避免双份维护）。
+- **索引/写入侧**：复用既有 RAG 实现的文档读取、智能分块、BGE-M3 嵌入、Milvus 写入（Hybrid/WeightedRanker）能力；多租户多智能体协作平台仅在做「建库」类任务时调用其索引接口。
+- **查询侧**：适配层暴露 `rag_retrieve(query, tenant_id, top_k) -> List[Chunk]` 工具，内部调用既有 RAG 实现的混合召回 + bge-reranker-v2-m3 精排；qa Agent 的 `retrieve` 节点直接消费该工具。
+- **记忆联动**：qa Agent 的 Memory（5.9）与 RAG 实现的对话记忆解耦——多租户多智能体协作平台负责会话级短期/长期记忆，RAG 实现负责知识库检索；两者通过适配层协作，互不侵入。
+- **依赖边界**：RAG 检索为独立实现，多租户多智能体协作平台通过包导入或 HTTP 调用接入，禁止把其检索代码复制进本仓库（避免双份维护）。
 
 ---
 
@@ -296,13 +296,13 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 | 审计 | 工具调用、HITL、租户开关变更写入 `agent_audit_log` |
 | 防幻觉/越权 | 低置信度/高风险 → `interrupt()` 转人工，不自动执行 |
 
-### 9.0 租户模型与业务语义（在 EduAgent 蓝本中怎么理解）
+### 9.0 租户模型与业务语义（以教育业务为例）
 
-**一句话**：在本蓝图中，**租户（Tenant）= 一个独立的教育组织**（学校 / 培训机构 / 企业大学 / 院系），是系统内**数据、配置、用户与资源的最高隔离边界**。同一套代码实例服务 N 个租户，彼此互不可见——这正是「多租户」作为平台级能力的意义。
+**一句话**：在本蓝图中，**租户（Tenant）= 一个独立的教育组织**（学校 / 培训机构 / 企业大学 / 院系），是多租户多智能体协作平台内**数据、配置、用户与资源的最高隔离边界**。同一套代码实例服务 N 个租户，彼此互不可见——这正是「多租户」作为平台级能力的意义。
 
 **① 三层概念：租户 vs 用户 vs 角色**
 
-| 概念 | 含义 | EduAgent 示例 |
+| 概念 | 含义 | 教育业务示例 |
 |---|---|---|
 | **租户 Tenant** | 组织单位（隔离边界） | 「成都七中」「新东方雅思部」「某公司企业大学」各为一个租户 |
 | **用户 User** | 具体的人，归属于某租户 | 学生张三、教师李老师 |
@@ -333,11 +333,11 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 - **配置隔离**：某租户未开通「模拟面试」→ `agent_capability_policy` 关闭，Orchestrator 路由直接拒答（§9.1 ④）；模型配额 / 提示词模板 / 评分 rubric / HITL 策略均按租户存读，互不串台。
 - 效果：**一套部署同时服务多所机构，每家看到的是完全私有的空间**，且功能开通、配额、话术风格均可按机构定制。
 
-**⑤ 与 rag-ultra 的关系**
+**⑤ 与 RAG 实现的关系**
 
-- rag-ultra 自身已具备 Milvus partition key 的租户隔离；本系统复用其检索能力时，把 `tenant_id` 透传为 partition key，保证问答知识不跨租户外泄（§12）。
+- RAG 实现自身已具备 Milvus partition key 的租户隔离；多租户多智能体协作平台复用 RAG 实现的检索能力时，把 `tenant_id` 透传为 partition key，保证问答知识不跨租户外泄（§12）。
 
-> **业务含义总结**：租户不是「用户分组」那么简单，而是「一个机构在该平台上的完整私有实例」——人、班、知识、题库、配置全部自洽闭环，是权限与隔离的顶层设计单位。
+> **业务含义总结**：租户不是「用户分组」那么简单，而是「一个机构在多租户多智能体协作平台上的完整私有实例」——人、班、知识、题库、配置全部自洽闭环，是权限与隔离的顶层设计单位。
 
 ### 9.1 权限控制实现（认证 → 租户隔离 → RBAC → 能力开关 → 资源级 → 审计）
 
@@ -353,7 +353,7 @@ SSE 事件类型：`routing_decision` / `progress` / `token` / `guidance` / `pip
 - 跨租户访问在存储层即被拦截，是权限的**不可绕过底线**。
 
 **③ 角色与授权（RBAC）— 你能调哪些能力**
-- EduAgent 场景角色 4 个（`agent_role.name` 为准，不读 `role_id` 数字）：`student` / `teacher` / `tenant_admin` / `admin`。角色经 `agent_role_permission` 映射到 scopes，scopes 决定可调用的 Agent / 工具 / 端点：
+- 业务场景角色 4 个（`agent_role.name` 为准，不读 `role_id` 数字）：`student` / `teacher` / `tenant_admin` / `admin`。角色经 `agent_role_permission` 映射到 scopes，scopes 决定可调用的 Agent / 工具 / 端点：
   - `student`：问答、模拟面试、简历审查（仅本人）、查看本人轨迹。
   - `teacher`：上述 + 试卷批改、HITL 审批（`/api/v1/escalations` resume）、查看本班数据。
   - `tenant_admin`：本租户用户与角色（`rbac:*`）、本租户审计（`audit:read`）；**不含** `agent:*` / `model:*` / `config:*` / `tenant:*`。
@@ -433,21 +433,21 @@ server.register(FastAPIManager(app),     100)
 
 - **无状态运行时**：应用不持有会话状态，状态全在 PG/Milvus/Redis → 副本数随负载上调，无会话粘连。
 - **外置状态**：LangGraph `AsyncPostgresSaver` 持久化 checkpoints；任意副本可接管任意 thread。
-- **RAG 外置**：rag-ultra 独立部署/导入，本系统通过适配层调用，检索压力不压在主应用。
+- **RAG 外置**：RAG 实现独立部署/导入，多租户多智能体协作平台通过适配层调用，检索压力不压在主应用。
 - **多租户**：partition key + Redis 前缀 + PG 行级隔离三件套。
 
 ---
 
-## 12. 与 rag-ultra 的边界（不重复造轮子）
+## 12. 与 RAG 实现的边界（不重复造轮子）
 
-| 能力 | 归属 | 本系统动作 |
+| 能力 | 归属 | 本平台动作 |
 |---|---|---|
-| 文档读取 / 智能分块 / BGE-M3 嵌入 / Milvus 写入 | **rag-ultra** | 直接复用，本系统调用其索引接口 |
-| Hybrid 召回（WeightedRanker）/ bge-reranker-v2-m3 精排 | **rag-ultra** | 通过 `backend/rag` 适配层暴露为 `rag_retrieve` 工具 |
-| 问答图编排 / 意图分类 / 记忆 / SSE / HITL | **本系统** | 自己实现（LangGraph + bert-chinese + memory） |
-| 简历/批改/面试 Agent | **本系统** | 自己实现（与 RAG 解耦，仅按需调用 `rag_retrieve`） |
+| 文档读取 / 智能分块 / BGE-M3 嵌入 / Milvus 写入 | **RAG 实现** | 直接复用，本平台调用其索引接口 |
+| Hybrid 召回（WeightedRanker）/ bge-reranker-v2-m3 精排 | **RAG 实现** | 通过 `backend/rag` 适配层暴露为 `rag_retrieve` 工具 |
+| 问答图编排 / 意图分类 / 记忆 / SSE / HITL | **多租户多智能体协作平台** | 自己实现（LangGraph + bert-chinese + memory） |
+| 简历/批改/面试 Agent | **多租户多智能体协作平台** | 自己实现（与 RAG 解耦，仅按需调用 `rag_retrieve`） |
 
-> 设计原则：**检索是平台的一种能力，由 rag-ultra 提供；Agent 编排是另一种（更上层的）能力，由本系统提供**。两者通过适配层解耦，未来替换检索底座不影响 Agent 逻辑。
+> 设计原则：**检索是平台的一种能力，由 RAG 实现提供；Agent 编排是另一种（更上层的）能力，由多租户多智能体协作平台提供**。两者通过适配层解耦，未来替换检索底座不影响 Agent 逻辑。
 
 ---
 
@@ -478,12 +478,10 @@ server.register(FastAPIManager(app),     100)
 | **langgenius/dify** | 企业级平台壳（多租户/RBAC/工作流） | 多租户/RBAC/分层范式（§9） |
 | **deepseek-ai/deepseek-harness**（Cordis） | 一切皆插件、append-only tracing | 插件协议（§8）、`agent_messages` 不可变轨迹 |
 | **letta-ai/letta** | PostgreSQL 持久记忆 + 内存分页 | 长期记忆（§6.1） |
-| **run-lama/llama_index** | RAG 管线（混合检索 + rerank） | 经 rag-ultra 复用，不重建（§6.2/§12） |
+| **run-lama/llama_index** | RAG 管线（混合检索 + rerank） | 经既有 RAG 实现复用，不重建（§6.2/§12） |
 | **milvus-io/milvus** | 向量库本体、partition 租户隔离 | **主向量库**（§5.1，无 PGVector 过渡） |
 | **langfuse/langfuse** | 开源 LLM 轨迹追踪、token/成本/复盘 | 可观测层（§10） |
 | **postgres/postgres** | LangGraph 状态 + 业务/审计存储 | 状态真相源（§5） |
-| **EduAgent 官方文档** | 四大 Agent 业务范式、Orchestrator、统一入口 SSE | 业务蓝本与模块划分（§0.1/§2.1/§7） |
-| **rag-ultra（既有）** | RAG 检索/索引/精排实现 | 直接复用，仅做适配层（§6.2/§12） |
 
 ### 14.1 关键结论（沿用参考清单 + 本次约束）
 
@@ -491,7 +489,7 @@ server.register(FastAPIManager(app),     100)
 - **平台骨架抄 Dify**：多租户/RBAC/分层范式借鉴，运行时自控。
 - **向量库用 Milvus**（本次约束）：BGE-M3 + Hybrid(WeightedRanker) + bge-reranker-v2-m3，不再以 PGVector 过渡。
 - **模型四件套**（本次约束）：bge-m3（嵌入）、bge-reranker-v2-m3（重排）、bert-chinese（中文意图/分类快路径）、LLM（生成+复杂路由）。
-- **RAG 复用 rag-ultra**（本次约束）：不重写检索管线，仅做集成适配层。
+- **RAG 复用既有实现**（本次约束）：不重写检索管线，仅做集成适配层。
 - **多模块单应用**（本次约束）：不拆多服务，模块内聚、进程内协作，仍可由 LB 前置做多副本水平扩展。
 
 ---
@@ -518,7 +516,7 @@ server.register(FastAPIManager(app),     100)
 | 12 测试 | `tests/agents/<new>/` 对等单测 + 图集成测试 + 意图路由测试 | `tests/` |
 | 13 开关 | `AgentRegistry` 支持 enable/disable（租户级能力开关），无需改核心 | `core/agent_registry` |
 
-> **关键约束**：Orchestrator 调度、`StateGraph` 编译、Checkpointer 持久化、ConfigManager、AppServer 启动器、认证/租户隔离骨架、SSE 事件协议属**平台内核**，新增 Agent 只在其上挂接，内核保持稳定可预测（呼应「受控工作流」设计哲学）。
+> **关键约束**：Orchestrator 调度、`StateGraph` 编译、Checkpointer 持久化、ConfigManager、AppServer 启动器、认证/租户隔离骨架、SSE 事件协议属**多租户多智能体协作平台内核**，新增 Agent 只在其上挂接，内核保持稳定可预测（呼应「受控工作流」设计哲学）。
 
 ### 15.2 插件设计：哪些功能可以插件化
 
@@ -543,7 +541,7 @@ server.register(FastAPIManager(app),     100)
 
 > **设计收益**：新增能力 = 新增 `backend/plugins/builtin/<cap>/`（含 `manifest.yaml` 声明 name/version/capabilities/dependencies），`PluginManager` 启动时扫描注册；外部生态经 `external/`（entry-points）注入。**单能力故障不影响整体**（错误边界 + 超时 + 熔断），并支持租户级启用/禁用与灰度回滚。
 
-### 15.3 场景化可插件化清单（EduAgent 四大 Agent）
+### 15.3 场景化可插件化清单（四大业务 Agent）
 
 > 在「多模块单应用」前提下，四大 Agent 的具体能力中，凡具备「可独立替换、可 A/B、可租户级开关、可外部注入」特征的，都应抽成插件挂接于 `backend/plugins/`，**而非写死在 Agent 包内**。
 
@@ -584,9 +582,9 @@ server.register(FastAPIManager(app),     100)
 
 ---
 
-## 附录 A · 建议目录结构（多模块单应用 · 项目名 agent-platform）
+## 附录 A · 建议目录结构（多模块单应用 · 多租户多智能体协作平台）
 
-> 运行环境：conda `agent_platform`（Python 3.12）。项目根目录 `agent-platform/`，应用包为 `backend/`（import 命名空间 `backend.*`）；`EduAgent` 仅指业务蓝本，非代码包名。
+> 运行环境：conda `agent_platform`（Python 3.12）。项目根目录 `agent-platform/`，应用包为 `backend/`（import 命名空间 `backend.*`）。
 
 ```
 agent-platform/                              # 项目根（git repo）

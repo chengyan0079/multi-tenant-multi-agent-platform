@@ -37,9 +37,16 @@ def _token(user_id: int, tenant_id: int | None = None) -> str:
     return "Bearer " + jwt.encode(payload, _SECRET, algorithm="HS256")
 
 
-_SA_SCOPES = ["tenant:read", "tenant:write", "rbac:read", "rbac:write", "user:read", "audit:read"]
-_SA_IDENTITY = {"role_name": "admin", "tenant_is_primary": True, "scopes": _SA_SCOPES}
-_SA_USER = {"id": 1001, "username": "admin", "name": "admin", "tenant_id": 1}
+_SA_SCOPES = [
+    "tenant:page", "tenant:update",
+    "rbac:page", "rbac:add", "rbac:update", "rbac:delete",
+    "user:page",
+    "audit:page",
+    "menu:page", "menu:add", "menu:update", "menu:delete",
+    "dashboard:view",
+]
+_SA_IDENTITY = {"role_name": "admin", "scopes": _SA_SCOPES}
+_SA_USER = {"id": 1001, "username": "admin", "name": "admin", "tenant_id": 1, "enabled": True}
 
 
 @pytest.fixture
@@ -115,7 +122,7 @@ def test_menu_create(client):
         "/api/v1/admin/menus",
         headers=_auth(token),
         json={"name": "新菜单", "path": "/new", "icon": "AppOutlined", "parent_id": 0,
-              "sort_order": 9, "visible": True, "scope": "rbac:read"},
+              "sort_order": 9, "visible": True, "scope": "rbac:page"},
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["id"] == 99
@@ -145,7 +152,7 @@ def test_role_create(client):
     resp = client.post(
         "/api/v1/admin/roles",
         headers=_auth(token),
-        json={"name": "custom", "description": "自定义", "scopes": ["qa:read"]},
+        json={"name": "custom", "description": "自定义", "scopes": ["qa:page"]},
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["role_id"] == 10
@@ -173,7 +180,7 @@ def test_role_delete_builtin_rejected(client):
 def test_menu_write_requires_rbac_write(client):
     token = _login(client)
     # 把身份降级为只有 rbac:read，写操作应 403
-    read_only = dict(_SA_IDENTITY, scopes=["rbac:read"])
+    read_only = dict(_SA_IDENTITY, scopes=["rbac:page"])
     with patch(
         "backend.data.dao.auth.rbac_dao.RbacDao.get_super_admin_identity",
         new=AsyncMock(return_value=read_only),

@@ -1,4 +1,4 @@
-"""API 调用日志模型（agent_api_call_log）：一条请求一行，对齐 RAG-Ultra。
+"""API 调用日志模型（agent_api_call_log）：一条请求一行。
 
 由 middleware.api_log.ApiLogMiddleware 写入：请求进入时采集请求侧信息，响应返回后补齐响应侧，
 一次调用在表中只落一行。只记元数据，不存请求体/响应体（需要时用 API_LOG_SAVE_BODY 开）。

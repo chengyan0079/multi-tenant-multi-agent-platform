@@ -1,8 +1,8 @@
 """
 gen_schema - 依据 backend/data/postgres 的 SQLAlchemy ORM 自动生成 PostgreSQL DDL。
 
-设计文档要求复用 RAG-Ultra 的配置中心审批流与 API 日志持久化结构，故表结构与之对齐：
-  - agent_config_change_request / agent_config_review ：配置中心审批流（无 tenant_id）
+设计文档要求复用配置中心审批流与 API 日志持久化结构，故表结构与之对齐：
+  - agent_config_approval / agent_config_review ：配置中心审批流（无 tenant_id）
   - agent_api_call_log ：API 调用日志（一行一请求）
 其余表为 agent-platform 核心/业务模型。审计列（create_user_id 等）不带 DEFAULT，
 由代码写入：请求期由 before_flush 从上下文注入，非请求期显式传值。自增主键用 BIGSERIAL/SERIAL，JSON 用 JSONB。
@@ -28,147 +28,147 @@ from backend.data.postgres.agent.agent_model import AgentModelRel  # noqa: E402
 from backend.data.postgres.agent.model_registry import ModelRegistry  # noqa: E402
 from backend.data.postgres.auth.menu import Menu  # noqa: E402
 from backend.data.postgres.auth.users import User, Tenant  # noqa: E402
+from backend.data.postgres.ops.outbox import AgentOutbox, AgentDeadLetter  # noqa: E402
 
-# RBAC 默认数据（角色 / 权限点 / 用户-租户分配）；role_id 为整数业务键。
-# 与 backend/security/rbac.py 的 DEFAULT_ROLES 保持一致，幂等可重复执行。
+# RBAC 默认数据（角色 / 权限点）；role_id 为整数业务键，但代码一律按 role.name 判定。
+# 只预置平台超管 admin 一个固定角色：超管身份以 agent_user.is_super_admin 为准，
+# 不依赖 agent_role 记录；其余角色（student/teacher/tenant_admin 等）由超管在前端创建，
+# 运行期权限点完全以 agent_role_permission 表为准。
+# scope 格式：资源:动作，新增权限点须在 backend/security/rbac.py 的 Scope 登记，
+# 散落的字符串字面量会在 require_scope 校验时立即报错。
+# 幂等可重复执行（ON CONFLICT DO NOTHING）。
 SEED_RBAC = (
     "-- ============================================================\n"
-    "-- 默认数据：RBAC 种子（角色 / 权限点 / 用户-租户分配）\n"
-    "-- role_id 为整数业务键：1=student / 2=teacher / 3=admin / 5=tenant_admin\n"
-    "-- 4 已废弃（原 analyst 角色无实际职责，已删除）；编号不重排，避免已有分配数据错位；\n"
-    "-- 角色判定一律按 agent_role.name，代码不读这些数字；\n"
-    "-- 3=admin 只允许出现在主租户（tenant.is_primary=true），全局唯一；\n"
-    "-- 每个租户有且只有一个 5=tenant_admin，只能由超管指定（PUT /admin/tenants/{id}/manager）。\n"
-    "-- scope 格式：资源:动作（资源=agent/基础设施名，动作=create/read/update/delete/upload/download/ask）\n"
+    "-- 默认数据：RBAC 种子（仅 admin 角色 + 超管权限点）\n"
+    "-- 角色判定一律按 agent_role.name，代码不读 role_id 数字；\n"
+    "-- 超管身份以 agent_user.is_super_admin 标记为准（不依赖本表记录）；\n"
+    "-- 其余角色（含 tenant_admin）不在此预置，由超管在前端手动创建；\n"
+    "-- scope 格式：资源:动作（资源=agent/基础设施名，动作=ask/page/update/add/delete/upload/download/review/status）\n"
     "-- 幂等可重复执行（ON CONFLICT DO NOTHING）。\n"
     "-- ============================================================\n\n"
     "INSERT INTO agent_role (role_id, name, description, create_at, create_user_id, update_user_id) VALUES\n"
-    "(1, 'student', '学员角色', now(), (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin')),\n"
-    "(2, 'teacher', '教师角色', now(), (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin')),\n"
-    "(3, 'admin', '平台超管（仅主租户，全局唯一）', now(), (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin')),\n"
-    "(5, 'tenant_admin', '租户管理员（每租户一个，由超管指定）', now(), (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin'))\n"
+    "(1, 'admin', '平台超管（全局唯一，以 agent_user.is_super_admin 为准）', now(), (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin'))\n"
     "ON CONFLICT (role_id) DO NOTHING;\n\n"
     "INSERT INTO agent_role_permission (role_id, scope) VALUES\n"
-    "(1, 'qa:ask'),\n"
-    "(1, 'qa:read'),\n"
-    "(1, 'interview:ask'),\n"
-    "(1, 'interview:read'),\n"
-    "(1, 'resume:ask'),\n"
-    "(1, 'resume:upload'),\n"
-    "(1, 'resume:read'),\n"
-    "(1, 'exam:ask'),\n"
-    "(1, 'exam:read'),\n"
-    "(1, 'knowledge:ask'),\n"
-    "(1, 'knowledge:read'),\n"
-    "(2, 'qa:ask'),\n"
-    "(2, 'qa:read'),\n"
-    "(2, 'interview:ask'),\n"
-    "(2, 'resume:upload'),\n"
-    "(2, 'resume:read'),\n"
-    "(2, 'exam:create'),\n"
-    "(2, 'exam:read'),\n"
-    "(2, 'exam:update'),\n"
-    "(2, 'knowledge:ask'),\n"
-    "(2, 'knowledge:read'),\n"
-    "(2, 'knowledge:upload'),\n"
-    "(2, 'knowledge:download'),\n"
-    "-- 3=平台超管：权限收敛为 agent域 + 登录鉴权域 + 配置中心审核域；不含任何业务域（qa/exam/interview/resume/knowledge）\n"
-    "--   登录鉴权域含 rbac/user/tenant 管理；配置中心审核域含 config/audit 只读\n"
-    "(3, 'agent:read'),\n"
-    "(3, 'agent:write'),\n"
-    "(3, 'agent:create'),\n"
-    "(3, 'agent:delete'),\n"
-    "(3, 'model:read'),\n"
-    "(3, 'model:write'),\n"
-    "(3, 'model:create'),\n"
-    "(3, 'model:delete'),\n"
-    "(3, 'model:update'),\n"
-    "(3, 'auth:login'),\n"
-    "(3, 'auth:read'),\n"
-    "(3, 'auth:write'),\n"
-    "(3, 'rbac:read'),\n"
-    "(3, 'rbac:write'),\n"
-    "(3, 'user:read'),\n"
-    "(3, 'user:write'),\n"
-    "(3, 'user:create'),\n"
-    "(3, 'user:delete'),\n"
-    "(3, 'tenant:read'),\n"
-    "(3, 'tenant:write'),\n"
-    "(3, 'tenant:create'),\n"
-    "(3, 'tenant:delete'),\n"
-    "(3, 'config:read'),\n"
-    "(3, 'config:write'),\n"
-    "(3, 'config:review'),\n"
-    "(3, 'audit:read'),\n"
-    "-- 5=租户管理员：本租户用户与角色 + 本租户审计（读）\n"
-    "-- 不含 config:* / agent:* / model:* / tenant:*：配置中心与 agent 域只归超管\n"
-    "(5, 'qa:read'),\n"
-    "(5, 'audit:read'),\n"
-    "(5, 'rbac:read'),\n"
-    "(5, 'rbac:write')\n"
+    "-- 1=平台超管：基建域 config/agent/model + 平台域 audit/message/auth/user/rbac/menu/tenant 全权限；不含任何业务域（qa/exam/interview/resume/knowledge）\n"
+    "--   权限点按 list/page/view/add/update/delete/status/review 拆分，菜单可见性与接口访问一致；\n"
+    "--   配置中心复核用 config:execute（无 config:review 这一权限点，Scope 未登记）。\n"
+    "(1, 'dashboard:view'),\n"
+    "(1, 'config:page'),\n"
+    "(1, 'config:view'),\n"
+    "(1, 'config:add'),\n"
+    "(1, 'config:update'),\n"
+    "(1, 'config:execute'),\n"
+    "(1, 'config:delete'),\n"
+    "(1, 'agent:page'),\n"
+    "(1, 'agent:list'),\n"
+    "(1, 'agent:view'),\n"
+    "(1, 'agent:add'),\n"
+    "(1, 'agent:update'),\n"
+    "(1, 'agent:delete'),\n"
+    "(1, 'agent:status'),\n"
+    "(1, 'model:page'),\n"
+    "(1, 'model:view'),\n"
+    "(1, 'model:add'),\n"
+    "(1, 'model:update'),\n"
+    "(1, 'model:delete'),\n"
+    "(1, 'model:status'),\n"
+    "(1, 'auth:page'),\n"
+    "(1, 'auth:update'),\n"
+    "(1, 'rbac:page'),\n"
+    "(1, 'rbac:add'),\n"
+    "(1, 'rbac:update'),\n"
+    "(1, 'rbac:delete'),\n"
+    "(1, 'user:page'),\n"
+    "(1, 'user:view'),\n"
+    "(1, 'user:add'),\n"
+    "(1, 'user:update'),\n"
+    "(1, 'user:delete'),\n"
+    "(1, 'user:status'),\n"
+    "(1, 'tenant:page'),\n"
+    "(1, 'tenant:view'),\n"
+    "(1, 'tenant:add'),\n"
+    "(1, 'tenant:update'),\n"
+    "(1, 'tenant:delete'),\n"
+    "(1, 'tenant:status'),\n"
+    "(1, 'audit:page'),\n"
+    "(1, 'audit:view'),\n"
+    "(1, 'message:page'),\n"
+    "(1, 'message:view'),\n"
+    "(1, 'message:status'),\n"
+    "(1, 'menu:page'),\n"
+    "(1, 'menu:add'),\n"
+    "(1, 'menu:update'),\n"
+    "(1, 'menu:delete'),\n"
+    "(1, 'file:page'),\n"
+    "(1, 'file:view'),\n"
+    "(1, 'file:upload'),\n"
+    "(1, 'file:download'),\n"
+    "(1, 'menu:status')\n"
     "ON CONFLICT (role_id, scope) DO NOTHING;\n"
 )
 
-# 默认数据：tenant / user 只预置主租户与超管账号。
-# 登录查 user.username，租户边界来自 tenant；密码为明文占位，仅本地开发使用。
-# 超管必须落在 is_primary=true 的租户里，否则判定拿不到超管身份。
+# 默认数据：只预置平台超管账号。
+# 登录查 user.username；密码为明文占位，仅本地开发使用。
+# 超管身份只认 agent_user.is_super_admin，不挂租户（tenant_id 为 NULL）。
 SEED_DEV = (
     "-- ============================================================\n"
-    "-- 默认数据：tenant / user（登录认证主表与租户边界）\n"
-    "-- 只保留主租户与超管账号；密码 123456，明文存储；登录只查 user.username。\n"
-    "-- 超管必须落在 is_primary=true 的租户里，否则判定拿不到超管身份。\n"
-    "-- 其余租户、账号、Agent 目录与开通策略由接口按需创建，脚本不预置。\n"
+    "-- 默认数据：平台超管账号（登录认证主表）\n"
+    "-- 超管身份只认 agent_user.is_super_admin，不挂租户（tenant_id 为 NULL）；\n"
+    "-- 租户、其他账号、角色/权限分配一律由超管在前端手动创建，脚本不预置。\n"
+    "-- 密码 123456，明文存储；登录只查 user.username。\n"
     "-- ============================================================\n\n"
-    "INSERT INTO \"agent_tenant\" (name, enabled, is_primary) VALUES\n"
-    "('主租户', true, true)\n"
-    "ON CONFLICT (is_primary) WHERE is_primary DO NOTHING;\n\n"
-    "INSERT INTO \"agent_user\" (username, name, password, tenant_id) VALUES\n"
-    "('admin', 'admin', '123456', (SELECT id FROM agent_tenant WHERE is_primary))\n"
-    "ON CONFLICT (username) DO NOTHING;\n\n"
-    "-- 用户-租户-角色：只预置主租户唯一超管；user/tenant 的 id 由序列分配，此处用子查询关联\n"
-    "INSERT INTO agent_user_tenant (user_id, tenant_id, role_id, created_at) VALUES\n"
-    "((SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM agent_tenant WHERE is_primary), 3, now())\n"
-    "ON CONFLICT (user_id, tenant_id) DO NOTHING;\n"
+    "INSERT INTO \"agent_user\" (username, name, password, tenant_id, is_super_admin) VALUES\n"
+    "('admin', 'admin', '123456', NULL, true)\n"
+    "ON CONFLICT (username) DO NOTHING;\n"
 )
 
 # 默认数据：menu（按 scope 下发）。scope=NULL 表示登录即可见，
-# 其余按角色权限点过滤；/agents /tools /models /config 仅超管可见。
+# 其余按角色权限点过滤；/agents /tools /models 仅超管可见，/config 为协同流程所有角色可见。
 SEED_MENU = (
     "-- ============================================================\n"
     "-- 默认数据：menu（菜单按 scope 下发）\n"
     "-- scope=NULL 表示登录即可见；\n"
-    "-- /agents /tools /models /config 只授予超管角色，/audit 授予超管与 tenant_admin。\n"
+    "-- /agents /tools /models 只授予超管角色；/config 为协同流程（所有角色可见）；\n"
+    "-- /audit 授予超管与 tenant_admin。\n"
     "-- 审计日志/配置中心/权限中心下设子菜单；租户管理已移入权限中心。\n"
     "-- ============================================================\n\n"
     "CREATE UNIQUE INDEX IF NOT EXISTS uk_menu_path ON agent_menu (path);\n\n"
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES\n"
-    "('监控概览', '/dashboard', 'DashboardOutlined', 0, 1, true, NULL),\n"
-    "('会话运行', '/sessions', 'MessageOutlined', 0, 2, true, 'qa:read'),\n"
-    "('智能体管理', '/agents', 'RobotOutlined', 0, 3, true, 'agent:read'),\n"
-    "('工具与插件', '/tools', 'ToolOutlined', 0, 4, true, 'agent:write'),\n"
-    "('模型配置', '/models', 'DeploymentUnitOutlined', 0, 5, true, 'model:read'),\n"
-    "('配置中心', '/config', 'SettingOutlined', 0, 6, true, 'config:read'),\n"
-    "('审计日志', '/audit', 'FileSearchOutlined', 0, 7, true, 'audit:read'),\n"
-    "('权限中心', '/rbac', 'SafetyCertificateOutlined', 0, 8, true, 'rbac:read'),\n"
-    "('咨询问答', '/qa', 'CommentOutlined', 0, 9, true, 'qa:read')\n"
+    "('监控概览', '/dashboard', 'DashboardOutlined', 0, 1, true, 'dashboard:view'),\n"
+    "('会话运行', '/sessions', 'MessageOutlined', 0, 2, true, 'qa:page'),\n"
+    "('智能体管理', '/agents', 'RobotOutlined', 0, 3, true, 'agent:page'),\n"
+    "('工具与插件', '/tools', 'ToolOutlined', 0, 4, true, 'agent:update'),\n"
+    "('模型配置', '/models', 'DeploymentUnitOutlined', 0, 5, true, 'model:page'),\n"
+    "('配置中心', '/config', 'SettingOutlined', 0, 6, true, 'config:page'),\n"
+    "('审计日志', '/audit', 'FileSearchOutlined', 0, 7, true, 'audit:page'),\n"
+    "('权限中心', '/rbac', 'SafetyCertificateOutlined', 0, 8, true, 'rbac:page'),\n"
+    "('咨询问答', '/qa', 'CommentOutlined', 0, 9, true, 'qa:page')\n"
     "ON CONFLICT (path) DO NOTHING;\n\n"
     "-- 审计日志：三个审计表的分页查询/过滤（业务审计 / 登录日志 / API 调用日志）\n"
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES\n"
-    "('业务审计', '/audit/operation', 'FileTextOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 1, true, 'audit:read'),\n"
-    "('登录日志', '/audit/login', 'LoginOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 2, true, 'audit:read'),\n"
-    "('调用日志', '/audit/api', 'ApiOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 3, true, 'audit:read')\n"
+    "('业务审计', '/audit/operation', 'FileTextOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 1, true, 'audit:page'),\n"
+    "('登录日志', '/audit/login', 'LoginOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 2, true, 'audit:page'),\n"
+    "('调用日志', '/audit/api', 'ApiOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 3, true, 'audit:page')\n"
     "ON CONFLICT (path) DO NOTHING;\n\n"
     "-- 配置中心：配置申请 / 配置审核\n"
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES\n"
-    "('配置申请', '/config/request', 'FormOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 1, true, 'config:read'),\n"
-    "('配置审核', '/config/review', 'AuditOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 2, true, 'config:read')\n"
+    "('配置列表', '/config/request', 'FormOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 1, true, 'config:page'),\n"
+    "('配置审核', '/config/review', 'AuditOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 2, true, 'config:page')\n"
     "ON CONFLICT (path) DO NOTHING;\n\n"
     "-- 权限中心：租户管理（从顶级移入） + 用户管理 + 角色管理 + 菜单管理\n"
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES\n"
-    "('租户管理', '/tenants', 'TeamOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 1, true, 'tenant:read'),\n"
-    "('用户管理', '/users', 'UserOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 2, true, 'rbac:read'),\n"
-    "('角色管理', '/roles', 'KeyOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 3, true, 'rbac:read'),\n"
-    "('菜单管理', '/menus', 'MenuOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 4, true, 'rbac:read')\n"
+    "('租户管理', '/tenants', 'TeamOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 1, true, 'tenant:page'),\n"
+    "('用户管理', '/users', 'UserOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 2, true, 'rbac:page'),\n"
+    "('角色管理', '/roles', 'KeyOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 3, true, 'rbac:page'),\n"
+    "('菜单管理', '/menus', 'MenuOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 4, true, 'rbac:page')\n"
+    "ON CONFLICT (path) DO NOTHING;\n\n"
+    "-- 文件管理：文件列表（分页 / 详情 / 上传 / 下载），按租户隔离，超管查全部\n"
+    "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES\n"
+    "('文件管理', '/files', 'FolderOpenOutlined', 0, 10, true, 'file:page')\n"
+    "ON CONFLICT (path) DO NOTHING;\n\n"
+    "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES\n"
+    "('文件列表', '/files/list', 'FileOutlined', (SELECT id FROM agent_menu WHERE path='/files'), 1, true, 'file:page')\n"
     "ON CONFLICT (path) DO NOTHING;\n"
 )
 
@@ -187,9 +187,9 @@ SEED_MODEL = (
     "    create_user_id, update_user_id) VALUES\n"
     "('llm', 'deepseek-chat', 'openai', 'http://localhost:8000/v1', NULL, NULL,\n"
     "    0.2, 60, 2, true, 1, '默认 LLM（DeepSeek，经 OpenAI 兼容网关）', (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin')),\n"
-    "('embedding', 'bge-m3', 'local', NULL, NULL, NULL,\n"
+    "('embedding', 'bge-m3', 'local', NULL, NULL, 'models/BAAI/bge-m3',\n"
     "    NULL, NULL, NULL, true, 1, 'BGE-M3 向量化（本地 FlagEmbedding）', (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin')),\n"
-    "('reranker', 'bge-reranker-v2-m3', 'local', NULL, NULL, NULL,\n"
+    "('reranker', 'bge-reranker-v2-m3', 'local', NULL, NULL, 'models/BAAI/bge-reranker-v2-m3',\n"
     "    NULL, NULL, NULL, true, 1, 'BGE-Reranker-v2-m3 精排（本地）', (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin')),\n"
     "('classifier', 'bert-intent-zh', 'local', NULL, NULL, 'models/bert-intent-recognition-model',\n"
     "    NULL, NULL, NULL, true, 1, '中文意图分类（离线训练产物）', (SELECT id FROM \"agent_user\" WHERE username='admin'), (SELECT id FROM \"agent_user\" WHERE username='admin'))\n"
@@ -316,13 +316,31 @@ def _ddl() -> str:
     return "\n".join(lines)
 
 
+def _normalize_timestamp_precision(sql: str) -> str:
+    """统一所有时间列为秒级（TIMESTAMP(0)）。
+
+    ORM 里通用的是 DateTime（PostgreSQL 默认精度 6 位微秒），这里在产出阶段统一收敛，
+    保证 schema.sql 与重生成结果一致：
+      - 列类型      TIMESTAMP WITHOUT TIME ZONE  -> TIMESTAMP(0) WITHOUT TIME ZONE
+      - 列默认值    DEFAULT now()                -> DEFAULT date_trunc('second', now())
+      - 触发器      NEW.updated_at = NOW()       -> date_trunc('second', NOW())
+      - 种子显式值  now(),                       -> date_trunc('second', now()),
+    应用日志（loguru 的 {time:...SSS} 毫秒）不在此范围，仍然保留毫秒。
+    """
+    sql = sql.replace("TIMESTAMP WITHOUT TIME ZONE", "TIMESTAMP(0) WITHOUT TIME ZONE")
+    sql = sql.replace("DEFAULT now()", "DEFAULT date_trunc('second', now())")
+    sql = sql.replace("NEW.updated_at = NOW()", "NEW.updated_at = date_trunc('second', NOW())")
+    sql = sql.replace("now(),", "date_trunc('second', now()),")
+    return sql
+
+
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else (ROOT / "scripts" / "schema.sql")
-    out.write_text(
+    content = (
         _ddl() + "\n\n" + SEED_DEV + "\n\n" + SEED_RBAC + "\n\n" + SEED_MENU
-        + "\n\n" + SEED_AGENT + "\n\n" + SEED_MODEL,
-        encoding="utf-8",
+        + "\n\n" + SEED_AGENT + "\n\n" + SEED_MODEL
     )
+    out.write_text(_normalize_timestamp_precision(content), encoding="utf-8")
     print(
         f"已生成 schema: {out} ({len(Base.metadata.sorted_tables)} 张表，"
         f"默认数据含角色、超管账号、菜单、agent 与模型)"
