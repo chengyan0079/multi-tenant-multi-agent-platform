@@ -4,27 +4,50 @@ import {
   Button,
   Drawer,
   Form,
+  Input,
+  Modal,
   Popconfirm,
   Select,
+  Space,
   Typography,
 } from 'antd';
 import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
 import dayjs from 'dayjs';
-import { listTenants, listUsers, changeUserRole, getUser, type TenantItem, type UserItem } from '../../services/rbac';
+import { hasScope, isTenantContext } from '../../services/auth';
+import {
+  listTenants,
+  listUsers,
+  changeUserRole,
+  getUser,
+  createTenantUser,
+  deleteTenantUser,
+  listAssignableRoles,
+  type TenantItem,
+  type UserItem,
+} from '../../services/rbac';
 import { sortByTimeThenId } from '../../utils/sort';
-
-const ROLE_OPTIONS = [
-  { value: 'student', label: 'student' },
-  { value: 'teacher', label: 'teacher' },
-  { value: 'tenant_admin', label: 'tenant_admin' },
-];
 
 export default function UserList() {
   const { message } = AntdApp.useApp();
   const actionRef = useRef<ActionType>();
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
+  const [roleOptions, setRoleOptions] = useState<{ value: string; label: string }[]>([]);
   const [drawerUser, setDrawerUser] = useState<(UserItem & { enabled?: boolean }) | null>(null);
   const [roleForm] = Form.useForm();
+
+  useEffect(() => {
+    listAssignableRoles()
+      .then((names) => setRoleOptions(names.map((name) => ({ value: name, label: name }))))
+      .catch(() => {});
+  }, []);
+
+  const canAdd = hasScope('user:add');
+  const canDelete = hasScope('user:delete');
+  const canUpdateRole = hasScope('user:update');
+
+  const [createUserOpen, setCreateUserOpen] = useState(false);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [createUserForm] = Form.useForm();
 
   const tenantValueEnum = useMemo(
     () => Object.fromEntries(tenantOptions.map((o) => [o.value, o.label])),
@@ -81,9 +104,23 @@ export default function UserList() {
       key: 'action',
       search: false,
       render: (_, record) => (
-        <Button type="link" onClick={() => openDetail(record)}>
-          详情
-        </Button>
+        <Space>
+          <Button type="link" onClick={() => openDetail(record)}>
+            详情
+          </Button>
+          {canDelete && isTenantContext() && (
+            <Popconfirm
+              title="确认解绑该用户？"
+              onConfirm={() => onDeleteUser(record.id)}
+              okText="确认"
+              cancelText="取消"
+            >
+              <Button type="link" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
       ),
     },
   ];
@@ -94,6 +131,31 @@ export default function UserList() {
       await changeUserRole(drawerUser.id, values.tenant_id, values.role);
       message.success('角色已更新');
       setDrawerUser(null);
+      actionRef.current?.reload();
+    } catch (e) {
+      message.error((e as Error).message);
+    }
+  };
+
+  const onCreateUser = async (values: { username: string; name?: string; password: string; role: string }) => {
+    setCreatingUser(true);
+    try {
+      await createTenantUser(values);
+      message.success('用户已创建');
+      setCreateUserOpen(false);
+      createUserForm.resetFields();
+      actionRef.current?.reload();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setCreatingUser(false);
+    }
+  };
+
+  const onDeleteUser = async (userId: number) => {
+    try {
+      await deleteTenantUser(userId);
+      message.success('用户已解绑');
       actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
@@ -119,6 +181,13 @@ export default function UserList() {
         request={request}
         search={{ labelWidth: 'auto' }}
         options={{ fullScreen: true, setting: true, density: true, reload: true }}
+        toolBarRender={() => [
+          canAdd && isTenantContext() ? (
+            <Button key="add" type="primary" onClick={() => setCreateUserOpen(true)}>
+              新建用户
+            </Button>
+          ) : null,
+        ]}
         pagination={{ pageSize: 20, showSizeChanger: true }}
         scroll={{ x: 'max-content' }}
       />
@@ -150,32 +219,64 @@ export default function UserList() {
               <b>创建时间：</b>
               {drawerUser.create_at ? dayjs(drawerUser.create_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
             </p>
-            <Typography.Title level={5}>修改角色</Typography.Title>
-            <Form
-              form={roleForm}
-              layout="vertical"
-              initialValues={{ role: 'student', tenant_id: drawerUser.tenant_id }}
-              onFinish={onRoleSubmit}
-            >
-              <Form.Item name="tenant_id" label="目标租户" rules={[{ required: true }]}>
-                <Select options={tenantOptions} />
-              </Form.Item>
-              <Form.Item name="role" label="角色" rules={[{ required: true }]}>
-                <Select options={ROLE_OPTIONS} />
-              </Form.Item>
-              <Popconfirm
-                title="确认修改用户角色？"
-                description="角色变更立即生效，影响该用户权限"
-                onConfirm={() => roleForm.submit()}
-                okText="提交"
-                cancelText="取消"
-              >
-                <Button type="primary">提交</Button>
-              </Popconfirm>
-            </Form>
+            {canUpdateRole && (
+              <>
+                <Typography.Title level={5}>修改角色</Typography.Title>
+                <Form
+                  form={roleForm}
+                  layout="vertical"
+                  initialValues={{ role: 'student', tenant_id: drawerUser.tenant_id }}
+                  onFinish={onRoleSubmit}
+                >
+                  <Form.Item name="tenant_id" label="目标租户" rules={[{ required: true }]}>
+                    <Select options={tenantOptions} />
+                  </Form.Item>
+                  <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+                    <Select options={roleOptions} />
+                  </Form.Item>
+                  <Popconfirm
+                    title="确认修改用户角色？"
+                    description="角色变更立即生效，影响该用户权限"
+                    onConfirm={() => roleForm.submit()}
+                    okText="提交"
+                    cancelText="取消"
+                  >
+                    <Button type="primary">提交</Button>
+                  </Popconfirm>
+                </Form>
+              </>
+            )}
           </>
         )}
       </Drawer>
+      <Modal
+        title="新建用户"
+        open={createUserOpen}
+        onCancel={() => setCreateUserOpen(false)}
+        onOk={() => createUserForm.submit()}
+        confirmLoading={creatingUser}
+        destroyOnClose
+      >
+        <Form
+          form={createUserForm}
+          layout="vertical"
+          onFinish={onCreateUser}
+          initialValues={{ role: 'student' }}
+        >
+          <Form.Item name="username" label="登录名" rules={[{ required: true, message: '请输入登录名' }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="name" label="显示名">
+            <Input />
+          </Form.Item>
+          <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
+            <Input.Password />
+          </Form.Item>
+          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+            <Select options={roleOptions} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

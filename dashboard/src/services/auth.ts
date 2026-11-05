@@ -144,3 +144,26 @@ export function getUser(): UserInfo {
     tenantName: session.tenant?.name ?? '',
   };
 }
+
+/** 当前会话的权限点列表（未登录/无 scope 返回空数组）。 */
+export function getScopes(): string[] {
+  return getSession()?.scopes ?? [];
+}
+
+/** 是否拥有某权限点（scopes 含 '*' 视为全通，与后端菜单过滤一致）。 */
+export function hasScope(scope: string): boolean {
+  const s = getScopes();
+  return s.includes('*') || s.includes(scope);
+}
+
+/** 是否同时拥有全部给定权限点。 */
+export function hasAllScopes(...scopes: string[]): boolean {
+  const s = getScopes();
+  return s.includes('*') || scopes.every((x) => s.includes(x));
+}
+
+/** 是否拥有任一给定权限点。 */
+export function hasAnyScopes(...scopes: string[]): boolean {
+  const s = getScopes();
+  return s.includes('*') || scopes.some((x) => s.includes(x));
+}

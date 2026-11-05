@@ -10,6 +10,7 @@ import {
   updateRolePermissions,
   type RoleItem,
 } from '../../services/rbac';
+import { hasScope } from '../../services/auth';
 import { sortByTimeThenId } from '../../utils/sort';
 
 /** 权限点下拉选项：按资源（冒号前）分组，值即后端 Scope 原文 */
@@ -148,17 +149,19 @@ export default function RoleList() {
       render: (_, record) => (
         <Space>
           <a onClick={() => openDetail(record)}>详情</a>
-          <a onClick={() => openEdit(record)}>编辑</a>
-          <a onClick={() => openPerms(record)}>配置权限</a>
-          <Popconfirm
-            title="确认删除该角色？"
-            description="删除后该角色下用户的角色关联将失效"
-            onConfirm={() => onDelete(record.role_id)}
-            okText="删除"
-            cancelText="取消"
-          >
-            <a>删除</a>
-          </Popconfirm>
+          {hasScope('role:update') && <a onClick={() => openEdit(record)}>编辑</a>}
+          {hasScope('role:update') && <a onClick={() => openPerms(record)}>配置权限</a>}
+          {hasScope('role:delete') && (
+            <Popconfirm
+              title="确认删除该角色？"
+              description="删除后该角色下用户的角色关联将失效"
+              onConfirm={() => onDelete(record.role_id)}
+              okText="删除"
+              cancelText="取消"
+            >
+              <a>删除</a>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -169,11 +172,15 @@ export default function RoleList() {
       <ProTable<RoleItem>
         headerTitle="角色管理"
         actionRef={actionRef}
-        toolBarRender={() => [
-          <Button key="add" type="primary" onClick={() => setModalOpen(true)}>
-            新建角色
-          </Button>,
-        ]}
+        toolBarRender={() =>
+          hasScope('role:add')
+            ? [
+                <Button key="add" type="primary" onClick={() => setModalOpen(true)}>
+                  新建角色
+                </Button>,
+              ]
+            : []
+        }
         rowKey="role_id"
         columns={columns}
         request={request}

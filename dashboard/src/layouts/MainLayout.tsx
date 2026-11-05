@@ -25,7 +25,10 @@ import {
   SettingOutlined,
   TeamOutlined,
   ToolOutlined,
+  UnorderedListOutlined,
+  UploadOutlined,
   UserOutlined,
+  ProfileOutlined,
 } from '@ant-design/icons';
 
 import { getSession, getUser, logout, type MenuNode } from '../services/auth';
@@ -59,6 +62,9 @@ const ICONS: Record<string, ReactNode> = {
   ApiOutlined: <ApiOutlined />,
   FormOutlined: <FormOutlined />,
   AuditOutlined: <AuditOutlined />,
+  ProfileOutlined: <ProfileOutlined />,
+  UploadOutlined: <UploadOutlined />,
+  UnorderedListOutlined: <UnorderedListOutlined />,
 };
 
 /** 由后端下发的菜单树构建 ProLayout 的 route（菜单已按当前身份 scope 过滤，显隐自动贴合权限）。 */

@@ -20,10 +20,15 @@ import {
   updateMenu,
   type MenuNode,
 } from '../../services/rbac';
+import { hasScope } from '../../services/auth';
 import { sortByTimeThenId } from '../../utils/sort';
 
 export default function MenuList() {
   const { message } = AntdApp.useApp();
+  const canAdd = hasScope('menu:add');
+  const canUpdate = hasScope('menu:update');
+  const canDelete = hasScope('menu:delete');
+  const canStatus = hasScope('menu:status');
   const actionRef = useRef<ActionType>();
   const [parentItems, setParentItems] = useState<MenuNode[]>([]);
   const [togglingId, setTogglingId] = useState<number | null>(null);
@@ -149,13 +154,16 @@ export default function MenuList() {
       key: 'visible',
       width: 90,
       search: false,
-      render: (value: any, row: MenuNode) => (
-        <Switch
-          checked={value}
-          loading={togglingId === row.id}
-          onChange={(checked) => toggleVisible(row, checked)}
-        />
-      ),
+      render: (value: any, row: MenuNode) =>
+        canStatus ? (
+          <Switch
+            checked={value}
+            loading={togglingId === row.id}
+            onChange={(checked) => toggleVisible(row, checked)}
+          />
+        ) : (
+          <span>{value ? '显示' : '隐藏'}</span>
+        ),
     },
     {
       title: '操作',
@@ -163,23 +171,29 @@ export default function MenuList() {
       search: false,
       render: (_, row) => (
         <Space size={4}>
-          <Button type="link" size="small" onClick={() => openCreate(row.id)}>
-            加子项
-          </Button>
-          <Button type="link" size="small" onClick={() => openEdit(row)}>
-            编辑
-          </Button>
-          <Popconfirm
-            title="确认删除该菜单？"
-            description="删除后其子菜单也会一并移除"
-            onConfirm={() => onDelete(row.id)}
-            okText="删除"
-            cancelText="取消"
-          >
-            <Button type="link" size="small" danger>
-              删除
+          {canAdd && (
+            <Button type="link" size="small" onClick={() => openCreate(row.id)}>
+              加子项
             </Button>
-          </Popconfirm>
+          )}
+          {canUpdate && (
+            <Button type="link" size="small" onClick={() => openEdit(row)}>
+              编辑
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm
+              title="确认删除该菜单？"
+              description="删除后其子菜单也会一并移除"
+              onConfirm={() => onDelete(row.id)}
+              okText="删除"
+              cancelText="取消"
+            >
+              <Button type="link" size="small" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -196,11 +210,15 @@ export default function MenuList() {
       <ProTable<MenuNode>
         headerTitle="菜单管理"
         actionRef={actionRef}
-        toolBarRender={() => [
-          <Button key="add" type="primary" onClick={() => openCreate(0)}>
-            新建顶级菜单
-          </Button>,
-        ]}
+        toolBarRender={() =>
+          canAdd
+            ? [
+                <Button key="add" type="primary" onClick={() => openCreate(0)}>
+                  新建顶级菜单
+                </Button>,
+              ]
+            : []
+        }
         rowKey="id"
         columns={columns}
         request={request}

@@ -2,6 +2,18 @@
 
 import { http } from './http';
 
+export interface PagedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface PageParams {
+  page?: number;
+  page_size?: number;
+}
+
 export interface AgentItem {
   agent_type: string;
   name: string;
@@ -21,7 +33,15 @@ export interface CapabilityItem {
   configured: boolean;
 }
 
-export const listAgents = () => http.get<{ items: AgentItem[]; total: number }>('/api/v1/admin/agents');
+export const listAgents = (params: PageParams & { tenant_id?: number; only_enabled?: boolean } = {}) => {
+  const qs = new URLSearchParams();
+  if (params.page) qs.set('page', String(params.page));
+  if (params.page_size) qs.set('page_size', String(params.page_size));
+  if (params.tenant_id !== undefined) qs.set('tenant_id', String(params.tenant_id));
+  if (params.only_enabled !== undefined) qs.set('only_enabled', String(params.only_enabled));
+  const s = qs.toString();
+  return http.get<PagedResult<AgentItem>>(`/api/v1/admin/agents${s ? '?' + s : ''}`);
+};
 
 export const setAgentEnabled = (agentType: string, enabled: boolean) =>
   http.patch<{ agent_type: string; enabled: boolean }>(
@@ -29,10 +49,15 @@ export const setAgentEnabled = (agentType: string, enabled: boolean) =>
     { enabled },
   );
 
-export const listCapabilities = (tenantId: number) =>
-  http.get<{ items: CapabilityItem[]; total: number }>(
-    `/api/v1/admin/agents/tenants/${tenantId}/capabilities`,
+export const listCapabilities = (tenantId: number, params: PageParams = {}) => {
+  const qs = new URLSearchParams();
+  if (params.page) qs.set('page', String(params.page));
+  if (params.page_size) qs.set('page_size', String(params.page_size));
+  const s = qs.toString();
+  return http.get<PagedResult<CapabilityItem>>(
+    `/api/v1/admin/agents/tenants/${tenantId}/capabilities${s ? '?' + s : ''}`,
   );
+};
 
 export const setCapabilities = (
   tenantId: number,
@@ -79,10 +104,15 @@ export const deleteAgent = (agentType: string) =>
     `/api/v1/admin/agents/${encodeURIComponent(agentType)}`,
   );
 
-export const listAgentModels = (agentType: string) =>
-  http.get<{ items: AgentModelBinding[]; total: number }>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models`,
+export const listAgentModels = (agentType: string, params: PageParams = {}) => {
+  const qs = new URLSearchParams();
+  if (params.page) qs.set('page', String(params.page));
+  if (params.page_size) qs.set('page_size', String(params.page_size));
+  const s = qs.toString();
+  return http.get<PagedResult<AgentModelBinding>>(
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models${s ? '?' + s : ''}`,
   );
+};
 
 export const addAgentModel = (
   agentType: string,

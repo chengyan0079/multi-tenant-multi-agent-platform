@@ -136,17 +136,32 @@ export async function changeUserRole(userId: number, tenantId: number, role: str
   return http.put(`/api/v1/admin/rbac/users/${userId}/role`, { tenant_id: tenantId, role });
 }
 
-export async function updateTenant(tenantId: number, payload: { name?: string; enabled?: boolean }) {
-  return http.put(`/api/v1/admin/tenants/${tenantId}`, payload);
+/** 新建租户并创建主租户用户（后端原子操作：建租户 + 建主用户 + 授权 tenant_admin）。 */
+export async function createTenant(payload: {
+  name: string;
+  manager: { username: string; name?: string; password: string };
+}) {
+  return http.post<{ tenant_id: number; user_id: number }>('/api/v1/admin/tenants', payload);
 }
 
-export async function setTenantManager(tenantId: number, username: string, password?: string) {
-  return http.put(`/api/v1/admin/tenants/${tenantId}/manager`, { username, password });
+/** 租户内新建用户（仅主租户/租户管理员，走 /tenant/users）。 */
+export async function createTenantUser(payload: {
+  username: string;
+  name?: string;
+  password: string;
+  role: string;
+}) {
+  return http.post('/api/v1/tenant/users', payload);
 }
 
-/** 新建租户：只传名称，租户间地位平等 */
-export async function createTenant(name: string) {
-  return http.post<{ id: number }>('/api/v1/admin/tenants', { name });
+/** 本租户可分配角色（含 student/teacher 等普通角色，由数据库返回，非前端硬编码）。 */
+export async function listAssignableRoles() {
+  return http.get<string[]>(`/api/v1/tenant/roles`);
+}
+
+/** 租户内解绑用户（仅主租户/租户管理员）。 */
+export async function deleteTenantUser(userId: number) {
+  return http.delete(`/api/v1/tenant/users/${userId}`);
 }
 
 /** 租户详情（含管理员、用户数、时间）。 */
@@ -161,7 +176,7 @@ export async function getUser(userId: number) {
   if (isTenantContext()) {
     return http.get<UserItem & { enabled?: boolean }>(`/api/v1/tenant/users/${userId}`);
   }
-  return http.get<UserItem & { enabled?: boolean }>(`/api/v1/admin/rbac/users/${userId}`);
+  return http.get<UserItem & { enabled?: boolean }>(`/api/v1/admin/users/${userId}`);
 }
 
 /** 改角色名称/说明（权限点走 updateRolePermissions） */
@@ -190,6 +205,11 @@ export async function setTenantStatus(tenantId: number, enabled: boolean) {
   return http.patch(`/api/v1/admin/tenants/${tenantId}/status`, { enabled });
 }
 
+/** 删除租户（超管，tenant:delete）。 */
+export async function deleteTenant(tenantId: number) {
+  return http.delete(`/api/v1/admin/tenants/${tenantId}`);
+}
+
 /**
  * 权限点目录（经 GET /admin/scopes 拉取后端 Scope 全量）。
  * @deprecated 仅作历史参考，前端下拉已改由 listScopes() 动态加载。
@@ -202,6 +222,9 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'resume:ask', label: 'resume:ask（简历问答）' },
   { value: 'resume:upload', label: 'resume:upload（简历上传）' },
   { value: 'resume:page', label: 'resume:page（简历查询）' },
+  { value: 'resume:view', label: 'resume:view（评审查看）' },
+  { value: 'resume:delete', label: 'resume:delete（评审删除）' },
+  { value: 'resume:menu', label: 'resume:menu（简历评审菜单）' },
   { value: 'exam:ask', label: 'exam:ask（试卷问答）' },
   { value: 'exam:page', label: 'exam:page（试卷查询）' },
   { value: 'exam:add', label: 'exam:add（出卷）' },
@@ -228,12 +251,18 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'auth:login', label: 'auth:login（登录）' },
   { value: 'auth:page', label: 'auth:page（身份查询）' },
   { value: 'auth:update', label: 'auth:update（身份写入）' },
+  { value: 'user:menu', label: 'user:menu（用户管理菜单）' },
   { value: 'user:page', label: 'user:page（用户查询）' },
   { value: 'user:update', label: 'user:update（用户写入）' },
   { value: 'user:add', label: 'user:add（用户新建）' },
   { value: 'user:delete', label: 'user:delete（用户删除）' },
-  { value: 'rbac:page', label: 'rbac:page（角色查询）' },
-  { value: 'rbac:update', label: 'rbac:update（角色写入）' },
+  { value: 'rbac:menu', label: 'rbac:menu（权限中心菜单）' },
+  { value: 'role:menu', label: 'role:menu（角色管理菜单）' },
+  { value: 'role:page', label: 'role:page（角色查询）' },
+  { value: 'role:add', label: 'role:add（角色新建）' },
+  { value: 'role:update', label: 'role:update（角色写入/权限）' },
+  { value: 'role:delete', label: 'role:delete（角色删除）' },
+  { value: 'tenant:menu', label: 'tenant:menu（租户管理菜单）' },
   { value: 'tenant:page', label: 'tenant:page（租户查询）' },
   { value: 'tenant:update', label: 'tenant:update（租户写入）' },
   { value: 'tenant:add', label: 'tenant:add（租户新建）' },
@@ -242,6 +271,17 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'model:status', label: 'model:status（模型启停）' },
   { value: 'tenant:status', label: 'tenant:status（租户启停）' },
   { value: 'menu:status', label: 'menu:status（菜单显隐）' },
+  { value: 'menu:list', label: 'menu:list（菜单管理查询）' },
+  { value: 'menu:page', label: 'menu:page（菜单管理分页）' },
+  { value: 'dashboard:menu', label: 'dashboard:menu（监控概览菜单）' },
+  { value: 'qa:menu', label: 'qa:menu（会话运行/咨询问答菜单）' },
+  { value: 'agent:menu', label: 'agent:menu（智能体/工具菜单）' },
+  { value: 'model:menu', label: 'model:menu（模型配置菜单）' },
+  { value: 'config:menu', label: 'config:menu（配置中心菜单）' },
+  { value: 'audit:menu', label: 'audit:menu（审计日志菜单）' },
+  { value: 'message:menu', label: 'message:menu（消息管理菜单）' },
+  { value: 'file:menu', label: 'file:menu（文件管理菜单）' },
+  { value: 'menu:menu', label: 'menu:menu（菜单管理菜单）' },
 ];
 
 /** 全量权限点：直接取后端 backend/security/rbac.py 的 Scope，前端无需硬编码同步。 */

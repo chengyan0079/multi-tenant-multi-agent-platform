@@ -21,12 +21,23 @@ import MessageQueueList from './pages/MessageQueueList';
 import DeadLetterList from './pages/DeadLetterList';
 import ModelList from './pages/ModelList';
 import FileList from './pages/FileList';
-import { isLogin } from './services/auth';
+import ResumeUpload from './pages/resume/ResumeUpload';
+import ResumeList from './pages/resume/ResumeList';
+import ResumeView from './pages/resume/ResumeView';
+import { hasScope, isLogin } from './services/auth';
 
 /** 登录守卫：未登录跳转登录页 */
 function RequireAuth({ children }: { children: ReactNode }) {
   if (!isLogin()) {
     return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
+
+/** 权限守卫：缺指定 scope 时跳回控制台；菜单隐藏只是入口过滤，直链仍需拦截 */
+function RequireScope({ scope, children }: { scope: string; children: ReactNode }) {
+  if (!hasScope(scope)) {
+    return <Navigate to="/dashboard" replace />;
   }
   return <>{children}</>;
 }
@@ -51,10 +62,38 @@ export default function App() {
         <Route path="models" element={<ModelList />} />
         <Route path="files" element={<Navigate to="/files/list" replace />} />
         <Route path="files/list" element={<FileList />} />
-        <Route path="users" element={<UserList />} />
-        <Route path="tenants" element={<TenantList />} />
-        <Route path="roles" element={<RoleList />} />
-        <Route path="menus" element={<MenuList />} />
+        <Route
+          path="users"
+          element={
+            <RequireScope scope="user:menu">
+              <UserList />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="tenants"
+          element={
+            <RequireScope scope="tenant:menu">
+              <TenantList />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="roles"
+          element={
+            <RequireScope scope="role:menu">
+              <RoleList />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="menus"
+          element={
+            <RequireScope scope="menu:menu">
+              <MenuList />
+            </RequireScope>
+          }
+        />
         <Route path="rbac" element={<Navigate to="/users" replace />} />
         <Route path="config" element={<Navigate to="/config/request" replace />} />
         <Route path="config/request" element={<ConfigList />} />
@@ -67,6 +106,31 @@ export default function App() {
         <Route path="messages" element={<Navigate to="/messages/queue" replace />} />
         <Route path="messages/queue" element={<MessageQueueList />} />
         <Route path="messages/dead-letters" element={<DeadLetterList />} />
+        <Route path="resume" element={<Navigate to="/resume/upload" replace />} />
+        <Route
+          path="resume/upload"
+          element={
+            <RequireScope scope="resume:upload">
+              <ResumeUpload />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="resume/page"
+          element={
+            <RequireScope scope="resume:page">
+              <ResumeList />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="resume/view/:id"
+          element={
+            <RequireScope scope="resume:view">
+              <ResumeView />
+            </RequireScope>
+          }
+        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

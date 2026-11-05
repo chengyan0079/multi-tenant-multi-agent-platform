@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type Key } from 'react';
 import {
   Alert,
   App as AntdApp,
@@ -8,6 +8,7 @@ import {
   Drawer,
   Input,
   Modal,
+  Popconfirm,
   Space,
   Table,
   Tag,
@@ -24,6 +25,7 @@ import {
   getFile,
   getFileConfig,
   listFiles,
+  parseFiles,
   uploadFile,
   type FileDetail,
   type FileItem,
@@ -40,6 +42,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+const PARSE_STATUS_META: Record<string, { text: string; color: string }> = {
+  pending: { text: '未解析', color: 'default' },
+  parsing: { text: '解析中', color: 'processing' },
+  parsed: { text: '已解析', color: 'success' },
+  failed: { text: '解析失败', color: 'error' },
+};
+
 export default function FileList() {
   const { message } = AntdApp.useApp();
   const [data, setData] = useState<FileItem[]>([]);
@@ -50,6 +59,7 @@ export default function FileList() {
   const [pageSize, setPageSize] = useState(20);
   const [keywordInput, setKeywordInput] = useState('');
   const [query, setQuery] = useState('');
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
 
   const [drawerFile, setDrawerFile] = useState<FileDetail | null>(null);
 
@@ -112,8 +122,8 @@ export default function FileList() {
       message.warning('请先选择文件');
       return;
     }
-    if (!f.name.toLowerCase().endsWith('.pdf')) {
-      message.warning('仅支持上传 PDF 文件');
+    if (!/\.(pdf|md|txt)$/i.test(f.name)) {
+      message.warning('仅支持上传 PDF / Markdown / TXT 文件');
       return;
     }
     if (f.size > maxUploadMb * 1024 * 1024) {
@@ -167,6 +177,17 @@ export default function FileList() {
           {record.version_count && record.version_count > 1 ? `（共 ${record.version_count} 版）` : ''}
         </Tag>
       ),
+    },
+    {
+      title: '解析状态',
+      dataIndex: 'parse_status',
+      key: 'parse_status',
+      width: 110,
+      render: (_, record) => {
+        const meta =
+          PARSE_STATUS_META[record.parse_status ?? 'pending'] ?? PARSE_STATUS_META.pending;
+        return <Tag color={meta.color}>{meta.text}</Tag>;
+      },
     },
     {
       title: '租户',
@@ -235,6 +256,28 @@ export default function FileList() {
         <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
           上传文件
         </Button>
+        <Popconfirm
+          title="确认解析选中的文件？"
+          description={`将提交 ${selectedRowKeys.length} 个文件到消息队列进行向量化解析`}
+          okText="确认解析"
+          cancelText="取消"
+          disabled={selectedRowKeys.length === 0}
+          onConfirm={async () => {
+            try {
+              const ids = selectedRowKeys.map((k) => Number(k));
+              await parseFiles(ids);
+              message.success(`已提交 ${ids.length} 个文件解析`);
+              setSelectedRowKeys([]);
+              void load();
+            } catch (e) {
+              message.error(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          <Button disabled={selectedRowKeys.length === 0}>
+            解析{selectedRowKeys.length > 0 ? `（${selectedRowKeys.length}）` : ''}
+          </Button>
+        </Popconfirm>
         <Typography.Text type="secondary">共 {total} 个文件</Typography.Text>
       </Space>
 
@@ -256,6 +299,7 @@ export default function FileList() {
         search={false}
         options={{ fullScreen: true, setting: true, density: true, reload: false }}
         rowKey="id"
+        rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys) }}
         loading={loading}
         columns={columns}
         dataSource={data}
@@ -275,18 +319,40 @@ export default function FileList() {
       <Modal
         title="上传文件"
         open={uploadOpen}
-        onOk={doUpload}
-        confirmLoading={uploading}
         onCancel={() => {
           setUploadOpen(false);
           setFileList([]);
           setRemark('');
         }}
-        okText="上传"
         destroyOnClose
+        footer={[
+          <Button
+            key="cancel"
+            onClick={() => {
+              setUploadOpen(false);
+              setFileList([]);
+              setRemark('');
+            }}
+          >
+            取消
+          </Button>,
+          <Popconfirm
+            key="ok"
+            title="确认上传该文件？"
+            description="上传后将可提交向量化解析任务，是否继续？"
+            okText="确认上传"
+            cancelText="取消"
+            disabled={fileList.length === 0}
+            onConfirm={doUpload}
+          >
+            <Button type="primary" loading={uploading} disabled={fileList.length === 0}>
+              上传
+            </Button>
+          </Popconfirm>,
+        ]}
       >
         <Dragger
-          accept=".pdf"
+          accept=".pdf,.md,.txt"
           beforeUpload={() => false}
           maxCount={1}
           fileList={fileList}
@@ -297,7 +363,7 @@ export default function FileList() {
           </p>
           <p className="ant-upload-text">点击或拖拽文件到此区域</p>
           <p className="ant-upload-hint">
-          仅支持 PDF；单文件上限 {maxUploadMb}MB；同名文件重复上传自动递增版本号，内容与最新版完全一致则拦截
+          仅支持 PDF / Markdown / TXT；单文件上限 {maxUploadMb}MB；同名文件重复上传自动递增版本号，内容与最新版完全一致则拦截
           </p>
         </Dragger>
         <Input.TextArea

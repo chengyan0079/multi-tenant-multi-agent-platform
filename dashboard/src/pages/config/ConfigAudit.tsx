@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   App as AntdApp,
@@ -37,6 +37,13 @@ import ReactDiffViewer from 'react-diff-viewer-continued';
 const TIME_FMT = 'YYYY-MM-DD HH:mm:ss';
 const STATUS_COLOR: Record<number, string> = { 0: 'orange', 1: 'blue', 2: 'red', 3: 'green', 4: 'default' };
 
+/** 时间列统一格式化：空值或无法解析的日期显示 '-'，避免出现 'Invalid Date'。 */
+const fmtTime = (v: string | null | undefined): string => {
+  if (!v) return '-';
+  const d = dayjs(v);
+  return d.isValid() ? d.format(TIME_FMT) : '-';
+};
+
 /** 列表排序：待审核（status=0）置顶，其余按申请时间倒序（最新在前）。 */
 const sortRequests = (rows: ConfigRequestItem[]) =>
   [...rows].sort((a, b) => {
@@ -69,8 +76,9 @@ export default function ConfigAudit() {
   const [reviews, setReviews] = useState<ConfigReviewItem[]>([]);
   const [reviewsLoading, setReviewsLoading] = useState(false);
 
-  /** 当前结果里“待审核”的数量，用于在列表上方高亮提醒（默认已展示全部状态）。 */
-  const pendingCount = items.filter((r) => r.status === 0).length;
+  /** 审核队列：待审核审批单 id 数组（按申请时间升序）。点「去处理」出队一份弹审核窗，主列表展示不动。 */
+  const [reviewQueue, setReviewQueue] = useState<number[]>([]);
+  const queueRef = useRef<number[]>([]); // 同步最新队列，供出队时读取，避免 setState updater 副作用
 
   const loadReviews = useCallback(async (id: number) => {
     setReviewsLoading(true);
@@ -91,6 +99,30 @@ export default function ConfigAudit() {
       setGroups(res?.groups ?? []);
     } catch {
       setGroups([]);
+    }
+  }, []);
+
+  /** 重建审核队列：分页拉全量待审核（status=0）按申请时间升序入队，与主列表展示解耦。
+   * 后端 page_size 上限 100，故按页累加（待审核通常不会很多，循环次数有限）。 */
+  const rebuildQueue = useCallback(async () => {
+    try {
+      const collected: { id: number; create_at: string | null }[] = [];
+      const PAGE = 100;
+      let page = 1;
+      while (true) {
+        const res = await listRequests({ status: 0, page, page_size: PAGE });
+        const items = res?.items ?? [];
+        for (const it of items) {
+          if (it.status === 0) collected.push({ id: it.id, create_at: it.create_at });
+        }
+        const total = res?.total ?? 0;
+        if (items.length < PAGE || page * PAGE >= total) break;
+        page += 1;
+      }
+      collected.sort((a, b) => (dayjs(a.create_at).valueOf() || 0) - (dayjs(b.create_at).valueOf() || 0));
+      setReviewQueue(collected.map((x) => x.id));
+    } catch {
+      setReviewQueue([]);
     }
   }, []);
 
@@ -117,6 +149,15 @@ export default function ConfigAudit() {
     void loadRequests();
   }, [loadRequests]);
 
+  // 页面挂载时构建一次审核队列（独立于主列表展示，筛选/分页不会重置队列进度）
+  useEffect(() => {
+    void rebuildQueue();
+  }, [rebuildQueue]);
+
+  useEffect(() => {
+    queueRef.current = reviewQueue;
+  }, [reviewQueue]);
+
   const loadDetail = useCallback(async (id: number) => {
     setDetailLoading(true);
     try {
@@ -138,6 +179,22 @@ export default function ConfigAudit() {
     void loadReviews(id);
   };
 
+  /** 出队：从审核队列头部取一份弹出审核窗，主列表展示不动。 */
+  const handleProcess = useCallback(() => {
+    const q = queueRef.current;
+    if (q.length === 0) {
+      message.info('当前没有待审核申请');
+      return;
+    }
+    const [id, ...rest] = q;
+    setReviewQueue(rest);
+    setDetailId(id);
+    setDetail(null);
+    setComment('');
+    void loadDetail(id);
+    void loadReviews(id);
+  }, [loadDetail, loadReviews, message]);
+
   const doReview = async (action: number) => {
     if (detailId === null) return;
     if (action === REVIEW_REJECT && !comment.trim()) {
@@ -152,8 +209,11 @@ export default function ConfigAudit() {
         await rejectRequest(detailId, comment.trim() || undefined);
       }
       message.success(action === REVIEW_APPROVE ? '已审批并写入 Nacos' : '已驳回');
-      await loadDetail(detailId);
-      await loadRequests();
+      setDetailId(null);
+      setDetail(null);
+      setComment('');
+      void rebuildQueue(); // 刷新队列（该单已出待审核）
+      void loadRequests(); // 刷新审核列表
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -192,14 +252,14 @@ export default function ConfigAudit() {
       dataIndex: 'create_at',
       key: 'create_at',
       width: 170,
-      render: (v: string | null) => (v ? dayjs(v).format(TIME_FMT) : '-'),
+      render: fmtTime,
     },
     {
       title: '生效时间',
       dataIndex: 'effective_at',
       key: 'effective_at',
       width: 170,
-      render: (v: string | null) => (v ? dayjs(v).format(TIME_FMT) : '-'),
+      render: fmtTime,
     },
     {
       title: '操作',
@@ -247,7 +307,7 @@ export default function ConfigAudit() {
           action={<Button size="small" onClick={() => void loadRequests()}>重试</Button>} />
       )}
 
-      {pendingCount > 0 && (
+      {reviewQueue.length > 0 && (
         <Alert
           className="audit-pending-banner"
           type="warning"
@@ -255,16 +315,16 @@ export default function ConfigAudit() {
           style={{ marginBottom: 16 }}
           message={
             <span>
-              当前有 <b className="audit-pending-num">{pendingCount}</b> 条<b>待审核</b>申请，请尽快复核
+              审核队列还有 <b className="audit-pending-num">{reviewQueue.length}</b> 条待处理（按申请时间排序），点「去处理」逐一审核
             </span>
           }
           action={
             <Button
               size="small"
               type="primary"
-              onClick={() => { setStatus(0); setPage(1); }}
+              onClick={handleProcess}
             >
-              去处理
+              去处理（{reviewQueue.length}）
             </Button>
           }
         />
@@ -313,8 +373,8 @@ export default function ConfigAudit() {
               <div>
                 <b>申请人：</b>{detail.applicant_name ?? detail.applicant_user_id ?? '-'}
                 <b style={{ marginLeft: 16 }}>复核人：</b>{detail.reviewer_name ?? detail.reviewer_user_id ?? '-'}
-                <b style={{ marginLeft: 16 }}>提交时间：</b>{detail.create_at ? dayjs(detail.create_at).format(TIME_FMT) : '-'}
-                <b style={{ marginLeft: 16 }}>生效时间：</b>{detail.effective_at ? dayjs(detail.effective_at).format(TIME_FMT) : '-'}
+                <b style={{ marginLeft: 16 }}>提交时间：</b>{fmtTime(detail.create_at)}
+                <b style={{ marginLeft: 16 }}>生效时间：</b>{fmtTime(detail.effective_at)}
               </div>
               {detail.title ? <div><b>标题：</b>{detail.title}</div> : null}
               {detail.reason ? <div><b>申请原因：</b>{detail.reason}</div> : null}
@@ -342,7 +402,7 @@ export default function ConfigAudit() {
                     { title: '动作', dataIndex: 'action', key: 'action', width: 100, render: (v: number) => <Tag color={v === 1 ? 'green' : 'red'}>{v === 1 ? '通过' : '驳回'}</Tag> },
                     { title: '复核人', dataIndex: 'reviewer_user_id', key: 'reviewer_user_id', width: 120, render: (v: string | null, row: ConfigReviewItem) => row.reviewer_name ?? v ?? '-' },
                     { title: '意见', dataIndex: 'comment', key: 'comment', render: (v: string | null) => v ?? '-' },
-                    { title: '时间', dataIndex: 'create_at', key: 'create_at', width: 200, render: (v: string | null) => (v ? dayjs(v).format(TIME_FMT) : '-') },
+                    { title: '时间', dataIndex: 'create_at', key: 'create_at', width: 200, render: fmtTime },
                   ] as ProColumns<ConfigReviewItem>[]}
                 />
               </Spin>

@@ -40,6 +40,9 @@ import { sortByTimeThenId } from '../utils/sort';
 
 export default function Agents() {
   const [items, setItems] = useState<AgentItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -62,12 +65,13 @@ export default function Agents() {
   const [addLoading, setAddLoading] = useState(false);
   const [bindPending, setBindPending] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = async (targetPage = page, targetPageSize = pageSize) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await listAgents();
+      const res = await listAgents({ page: targetPage, page_size: targetPageSize });
       setItems(sortByTimeThenId(res?.items ?? []));
+      setTotal(res?.total ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -76,8 +80,9 @@ export default function Agents() {
   };
 
   useEffect(() => {
-    void load();
-  }, []);
+    void load(page, pageSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize]);
 
   const toggle = async (agentType: string, enabled: boolean) => {
     setPending(agentType);
@@ -174,8 +179,8 @@ export default function Agents() {
   const doDelete = async (row: AgentItem) => {
     setDeletePending(row.agent_type);
     try {
-      const res = await listAgentModels(row.agent_type);
-      if ((res?.items?.length ?? 0) > 0) {
+      const res = await listAgentModels(row.agent_type, { page_size: 1 });
+      if ((res?.total ?? 0) > 0) {
         message.error('该智能体已绑定模型，请先到「配置」解绑后再删除');
         return;
       }
@@ -193,7 +198,7 @@ export default function Agents() {
   const loadBindings = async (agentType: string) => {
     setBindLoading(true);
     try {
-      const res = await listAgentModels(agentType);
+      const res = await listAgentModels(agentType, { page_size: 200 });
       setBindings(res?.items ?? []);
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
@@ -452,7 +457,16 @@ export default function Agents() {
           columns={columns as ProColumns<AgentItem>[]}
           dataSource={items}
           loading={loading}
-          pagination={false}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            onChange: (next, size) => {
+              setPage(next);
+              setPageSize(size);
+            },
+          }}
           scroll={{ x: 'max-content' }}
         />
       </Space>

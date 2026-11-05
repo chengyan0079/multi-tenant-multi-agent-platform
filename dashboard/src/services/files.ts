@@ -15,6 +15,7 @@ export interface FileItem {
   version_count?: number | null;
   checksum: string | null;
   remark: string | null;
+  parse_status: string | null;
   create_at: string;
   updated_at: string;
 }
@@ -52,6 +53,10 @@ export const getFile = (id: number) => http.get<FileDetail>(`/api/v1/admin/files
 export const getFileConfig = () =>
   http.get<{ max_upload_mb: number }>('/api/v1/admin/files/config');
 
+/** 触发文档解析（向量化入 Milvus，走消息队列）；fileIds 为选中文件 id 列表。 */
+export const parseFiles = (fileIds: number[]) =>
+  http.post<{ queued: number }>('/api/v1/admin/files/parse', { file_ids: fileIds });
+
 /** 上传（multipart/form-data）：不能走 JSON 封装，需 FormData + 自动 boundary。 */
 export async function uploadFile(file: File, remark?: string): Promise<FileItem> {
   const form = new FormData();
@@ -73,6 +78,46 @@ export async function uploadFile(file: File, remark?: string): Promise<FileItem>
     );
   }
   return body.data as FileItem;
+}
+
+export interface BatchUploadItem {
+  ok: boolean;
+  original_name?: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+export interface BatchUploadResult {
+  count: number;
+  items: BatchUploadItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** 批量上传（multipart/form-data）；结果按 page/page_size 返回。 */
+export async function batchUploadFiles(
+  files: File[],
+  params: { remark?: string; page?: number; page_size?: number } = {},
+): Promise<BatchUploadResult> {
+  const form = new FormData();
+  files.forEach((f) => form.append('files', f));
+  if (params.remark) form.append('remark', params.remark);
+
+  const qs = new URLSearchParams();
+  if (params.page) qs.set('page', String(params.page));
+  if (params.page_size) qs.set('page_size', String(params.page_size));
+  const s = qs.toString();
+
+  const res = await fetch(
+    `${API_BASE}/api/v1/admin/files/batch-upload${s ? '?' + s : ''}`,
+    { method: 'POST', headers: authHeaders(), body: form },
+  );
+  const body = (await res.json()) as ApiEnvelope<BatchUploadResult>;
+  if (!res.ok || body.code !== 0) {
+    throw new ApiError(body?.msg || `上传失败：HTTP ${res.status}`, body?.code ?? res.status, res.status);
+  }
+  return body.data as BatchUploadResult;
 }
 
 /** 下载：带鉴权拉 blob，再触发浏览器保存。 */
