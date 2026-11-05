@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import quote, urlunparse
 
+from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
@@ -111,16 +113,17 @@ class BrokerSettings(BaseSettings):
 
 
 class SchedulerSettings(BaseSettings):
-    """定时任务（HITL 超时扫描；与 broker 同启用）。"""
+    """定时任务（通用定时器；默认随应用启动，不依赖 broker）。"""
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="SCHEDULER_")
 
-    escalation_timeout_min: int = 30  # 超时阈值（分钟），可调
-    scan_interval: int = 60  # 扫描间隔（秒），可调
+    escalation_timeout_min: int = 30  # HITL 转人工超时阈值（分钟），可调
+    resume_timeout_min: int = 10  # resume 评审 processing 超时阈值（分钟，=600s），可调
+    scan_interval: int = 60  # 默认扫描间隔（秒），各 job 可独立覆盖
 
 
 class MilvusSettings(BaseSettings):
-    """Milvus（BGE-M3 向量，partition key 租户隔离；语义记忆默认集合）。"""
+    """Milvus（BGE-M3 向量，partition key 租户隔离；RAG 文档向量集合）。"""
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="MILVUS_")
 
@@ -128,7 +131,7 @@ class MilvusSettings(BaseSettings):
     port: int = 19530
     token: str = ""
     db_name: str = "agent_platform"
-    collection: str = "agent_memory"
+    collection: str = "agent_rag_docs"
     dense_dim: int = 1024          # bge-m3 dense 维度
     dense_weight: float = 0.8      # 混合检索 dense 权重（与 sparse_weight 和为 1）
     sparse_weight: float = 0.2     # 混合检索 sparse 权重
@@ -147,6 +150,20 @@ class RagSettings(BaseSettings):
     mcp_url: str = ""
     import_path: str = ""
     http_base: str = ""
+
+
+class QaSettings(BaseSettings):
+    """智能问答 Agent 的检索 / 阈值 / 窗口参数（可用 .env 的 QA_* 覆盖）。"""
+
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="QA_")
+
+    precise_top_k: int = 5               # PRECISE 单路检索召回数
+    vague_top_k: int = 8                 # VAGUE（HyDE）检索召回数
+    broad_per_query_top_k: int = 5       # BROAD 多查询每个子查询召回数
+    merge_top_k: int = 5                 # BROAD 合并后取前 N
+    high_confidence_threshold: float = 0.75  # 高置信度判定阈值
+    web_search_max_results: int = 5      # Web 搜索结果上限
+    summary_trigger_turns: int = 6       # 用户提问轮数达到即触发摘要压缩
 
 
 class SecuritySettings(BaseSettings):
@@ -211,8 +228,20 @@ class ServiceSettings(BaseSettings):
     docs_enabled: bool = Field(default=False, validation_alias="DOCS_ENABLED")
 
 
-class NacosSettings(BaseSettings):
-    """Nacos 服务发现（仅注册发现，单独命名空间，与配置中心分离）。"""
+class NacosAuthMixin:
+    """Nacos 鉴权字段（3.x 默认开启鉴权，需透传；二选一：user/password 或 access_key/secret_key）。"""
+
+    user: str = ""
+    password: str = ""
+    access_key: str = ""
+    secret_key: str = ""
+
+
+class NacosSettings(BaseSettings, NacosAuthMixin):
+    """Nacos 服务发现（仅注册发现，单独命名空间，与配置中心分离）。
+
+    Nacos 3.x 默认开启鉴权，发现侧同样需 user/password（或 access_key/secret_key）。
+    """
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="NACOS_")
 
@@ -223,7 +252,7 @@ class NacosSettings(BaseSettings):
     discover_strict: bool = True  # True=注册失败 fail-fast；False=仅告警继续
 
 
-class NacosConfigSettings(BaseSettings):
+class NacosConfigSettings(BaseSettings, NacosAuthMixin):
     """Nacos 配置中心（独立命名空间 agent-platform，与发现 NACOS_* 分离）。"""
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="NACOS_CONFIG_")
@@ -232,8 +261,48 @@ class NacosConfigSettings(BaseSettings):
     server_addr: str = "http://localhost:8848"
     namespace: str = "3d523e88-a17f-4a90-88c5-d31793405818"
     group: str = "SYSTEM"
-    user: str = ""
-    password: str = ""
+
+
+class NacosAISettings(BaseSettings, NacosAuthMixin):
+    """Nacos AI 客户端（MCP Server / Agent Card / Prompt / Skill）。
+
+    需 Nacos 服务端 >= 3.1.0；AI 资产与配置中心同处 agent-platform 命名空间。
+    """
+
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="NACOS_AI_")
+
+    enabled: bool = True
+    server_addr: str = "http://localhost:8848"
+    namespace: str = "3d523e88-a17f-4a90-88c5-d31793405818"
+    group: str = "DEFAULT_GROUP"
+
+    # ---- 发布本平台 MCP Server 到 Nacos AI（release_mcp_server）----
+    # 需 Nacos 服务端 >= 3.1.0。Agent Card / Prompt / Skill 暂未对接（等 SDK 更新；Prompt 走配置中心）。
+    # publish_mcp 默认开启：启用 Nacos AI 即发布；若要只连不发布设 False。
+    publish_mcp: bool = True
+    mcp_server_name: str = "agent-platform-mcp"
+    mcp_protocol: str = "mcp-streamable"
+    mcp_front_protocol: str = "mcp-streamable"
+    mcp_description: str = "多租户多智能体协作平台 MCP Server"
+    mcp_version: str = "1.0.0"
+    mcp_endpoint_path: str = "/mcp"
+    mcp_capabilities: list[str] = ["TOOL"]
+    mcp_tools: list[dict] = []
+    # True=发布/加载失败 fail-fast（默认阻断启动）；False=仅告警继续
+    strict: bool = True
+
+    # ---- 从 Nacos AI 加载远程资产（Agent Card / MCP Server）----
+    # SDK 仅支持按名查询/订阅（无 list 能力），故用 allow-list 指定名称清单。
+    # subscribe_remote=True 走 subscribe_* 长连接实时更新；False 则启动期 get_* 拉一次快照。
+    # 默认均为空：启用 Nacos AI 也不会自动拉取任何外部资产（安全默认）。
+    load_agent_cards: list[str] = []
+    load_mcp_servers: list[str] = []
+    subscribe_remote: bool = True
+    agent_card_version: Optional[str] = None
+    # 加载远程 MCP Server 时按此版本拉取（None=最新）；与发布版本 mcp_version(默认 1.0.0) 区分，
+    # 避免与上面的发布字段同名导致后者被覆盖为 None。
+    load_mcp_version: Optional[str] = None
+    agent_card_registration_type: str = "service"
 
 
 class LoggingSettings(BaseSettings):
@@ -279,6 +348,14 @@ class FileSettings(BaseSettings):
     max_upload_mb: int = 200  # 单文件大小上限（MB）
 
 
+class ModelSettings(BaseSettings):
+    """本地模型根目录（registry 的 endpoint_path 为相对路径时，拼到此目录下解析）。"""
+
+    model_config = SettingsConfigDict(**_COMMON, env_prefix="MODEL_")
+
+    root: str = str(BASE_DIR)  # 默认项目根；endpoint_path 相对路径以此为基
+
+
 class AppSettings(BaseSettings):
     """顶层配置：组合各分组。
 
@@ -292,9 +369,12 @@ class AppSettings(BaseSettings):
     app_name: str = "agent-platform"
     app_env: str = "dev"
 
+    model: ModelSettings = Field(default_factory=ModelSettings)
+
     service: ServiceSettings = Field(default_factory=ServiceSettings)
     nacos: NacosSettings = Field(default_factory=NacosSettings)
     nacos_config: NacosConfigSettings = Field(default_factory=NacosConfigSettings)
+    nacos_ai: NacosAISettings = Field(default_factory=NacosAISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     api_log: ApiLogSettings = Field(default_factory=ApiLogSettings)
     postgres: PostgresSettings = Field(default_factory=PostgresSettings)
@@ -305,5 +385,6 @@ class AppSettings(BaseSettings):
     minio: MinioSettings = Field(default_factory=MinioSettings)
     file: FileSettings = Field(default_factory=FileSettings)
     rag: RagSettings = Field(default_factory=RagSettings)
+    qa: QaSettings = Field(default_factory=QaSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)

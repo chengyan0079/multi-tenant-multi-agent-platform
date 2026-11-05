@@ -2,6 +2,8 @@
 
 - 发成功 → mark_sent；
 - 发失败 → inc_retry，超限 mark_failed（不再投递，留待排查）；
+- 信封解析失败（结构非法 / 类型未知）→ 直接 mark_failed，不做无意义重试；
+- 目标交换机由 routing.route() 决定，本模块不判断业务 / 广播；
 - 协程随 BrokerManager 启停（broker 未启用则不跑，Outbox 消息留存）。
 """
 from __future__ import annotations
@@ -9,17 +11,18 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from backend.broker.envelope import TaskMessage
+from backend.broker.envelope import MessageFormatError, TaskMessage
+from backend.broker.routing import route
+from backend.broker.topology import MAX_RETRIES
 from backend.common.logger import logger
 from backend.data.dao.ops.outbox_dao import OutboxDao
 
 if TYPE_CHECKING:
     from backend.data.clients.broker import BrokerClient
 
-# 投递节奏与上限（可按需调，见 docs §7）
+# 投递节奏（可按需调，见 docs §7）；重试上限与消费端共用 topology.MAX_RETRIES
 PUBLISH_INTERVAL = 5  # 秒，扫表间隔
 BATCH = 50  # 单次扫描上限
-MAX_RETRIES = 3  # 投递重试上限（与消费重试共用阈值）
 
 
 async def run_publisher(client: "BrokerClient", stop_event: asyncio.Event) -> None:
@@ -42,27 +45,29 @@ async def run_publisher(client: "BrokerClient", stop_event: asyncio.Event) -> No
 
 
 async def _publish_one(client: "BrokerClient", row: dict) -> None:
-    oid = row["id"]
-    p: dict = row["payload"]
-    msg = TaskMessage(
-        message_id=oid,
-        type=p["type"],
-        tenant_id=p.get("tenant_id"),
-        user_id=p["user_id"],
-        payload=p["payload"],
-    )
+    oid = str(row["id"])  # asyncpg 返回 UUID 对象，统一成字符串
+    try:
+        msg = TaskMessage.from_dict(row["payload"])
+    except MessageFormatError as exc:
+        # 信封本身坏了，重试也不会变好，直接置 failed 留待排查
+        await OutboxDao.mark_failed(oid, f"信封非法：{exc}", row["retry_count"])
+        logger.error(f"Outbox 信封非法，标记 failed key={oid}：{exc}")
+        return
+
+    target = route(msg.type)
     try:
         await client.publish(
-            routing_key=row["topic"],
+            routing_key=target.routing_key,
             body=msg.to_json(),
-            message_id=oid,
-            headers={"type": row["topic"]},
+            message_id=msg.key,
+            headers={"type": msg.type.value},
+            exchange=target.exchange,
         )
         await OutboxDao.mark_sent(oid, row["retry_count"])
     except Exception as exc:  # noqa: BLE001
-        rc = await OutboxDao.inc_retry(oid, str(exc))
-        if rc >= MAX_RETRIES:
-            await OutboxDao.mark_failed(oid, str(exc), rc)
-            logger.error(f"Outbox 投递超限，标记 failed id={oid}：{exc}")
+        retry_count = await OutboxDao.inc_retry(oid, str(exc))
+        if retry_count >= MAX_RETRIES:
+            await OutboxDao.mark_failed(oid, str(exc), retry_count)
+            logger.error(f"Outbox 投递超限，标记 failed key={oid}：{exc}")
         else:
-            logger.warning(f"Outbox 投递失败（将重试）id={oid}：{exc}")
+            logger.warning(f"Outbox 投递失败（将重试）key={oid}：{exc}")

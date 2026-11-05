@@ -61,21 +61,89 @@ RabbitMQ 是**项目外独立部署的中间件**（如 `E:\cywork\devsoft\ribbi
 ```
 backend/
   broker/
-    client.py     # aio-pika 连接单例（连接 / 通道）
-    manager.py    # BrokerManager：挂 AppServer，建连 + 声明 + 启消费协程
-    consumer.py   # 消费循环：按消息类型路由到 handler
-    dlq.py        # 重试 / 死信参数（DLX / 队列参数）
-  handlers/
-    agent.py      # run_agent_task（长任务）、reindex_knowledge（重索引）
-    notify.py     # send_notification
-    audit.py      # flush_audit
+    types.py             # TaskType 枚举：消息类型的唯一来源
+    envelope.py          # 消息信封：key / type / header / data + 格式校验
+    topology.py          # 拓扑唯一定义：交换机、QueueSpec、重试与死信链路、声明
+    routing.py           # 消息类型 → 投递目标（业务 / 广播的唯一分流点）
+    publish.py           # 入队入口：只写 Outbox（enqueue_task / publish_config_refresh）
+    outbox_publisher.py  # 扫 Outbox 投递协程
+    security.py          # 消费端零信任鉴权
+    consumer/
+      __init__.py        # 消费装配：按拓扑分三组（业务 / 死信 / 广播）
+      strategies.py      # 三类消费策略（任务 / 广播 / 死信）
+    handlers/            # 各业务类型处理函数 + HANDLERS 注册表
+  data/clients/broker.py             # aio-pika 客户端（连接 / 发布 / 消费原语）
+  server/managers/broker_manager.py  # BrokerManager：启停与健康检查
+  services/                          # 业务实现入口（handler 背后的真实逻辑）
+    agent_run.py                     # 长任务执行（TODO）
+    indexing.py                      # 文档解析 / 知识回流（TODO）
+    notification.py                  # 通知渠道注册表 + 分发
 ```
 
-- `BrokerManager`（新增到 AppServer，order 放在 Redis / PG 之后、FastAPI 之前）：
-  - `start()`：建 aio-pika 连接 → 声明 exchange / 业务 queue / DLX / DLQ（均 durable，幂等）→ `asyncio.create_task(consume_loop())` 启动消费。
-  - `stop()`：取消消费任务 → 关闭连接（同进程优雅停，比 Celery 的 `control.shutdown` 干净）。
-- 生产者：在 service / dao 层 `await exchange.publish(Message(...), routing_key=...)` 即返回。
-- 消费分发：`consume_loop` 按 `message.headers["type"]` 路由到 `handlers/*`；成功 `ack()`，失败 `nack(requeue=False)` 进 DLQ。
+handler 只做三件事：鉴权、从 `data` 取参数、调 `services/` 并让异常上抛。业务实现全部落在 `services/`，补齐时不需要再改 handler。
+
+- `BrokerManager`（AppServer 中 order=20）：
+  - `start()`：建连接 → `topology.declare_all()` → `consumer.start_consumers()` → 启动 Outbox 投递协程。
+  - `stop()`：停投递协程 → 取消消费协程 → 关闭连接。
+  - 任一环节抛错即启动失败（fail-fast），不会带着半套拓扑继续运行。
+- 生产者：业务侧只调 `enqueue_task(TaskType.XXX, ...)` 写 Outbox，不直接操作 broker。
+- 消费分发：`strategies` 先做信封校验，再按 `type` 查 `HANDLERS` 分发；成功 `ack`，失败走重试链路（§7）。
+
+### 5.1 消息信封（key / type / header / data）
+
+所有消息统一四段式，JSON 编码：
+
+```json
+{
+  "key": "01a1a678-903f-763a-85ec-fd603b45c6a3",
+  "type": "doc.parse",
+  "header": {
+    "version": 1,
+    "tenant_id": 1,
+    "user_id": 2,
+    "trace_id": "9f2c...",
+    "issued_at": 1730700000.123,
+    "retry_count": 0
+  },
+  "data": {"file_id": 12, "object_key": "tenant/1/a.pdf"}
+}
+```
+
+| 字段 | 作用 | 消费端怎么用 |
+|---|---|---|
+| `key` | 幂等键，等于 `agent_outbox.id` | 查 `status='done'` 则跳过 |
+| `type` | `TaskType` 枚举值 | 决定路由与 handler 分发 |
+| `header.version` | 信封结构版本 | 不等于当前版本直接拒绝 |
+| `header.tenant_id` / `user_id` | 发起者身份 | 零信任重做鉴权（§6.5） |
+| `header.trace_id` | 链路追踪 | 透传到日志，不参与业务判断 |
+| `header.issued_at` | 入队时间 | 只用于排查延迟 |
+| `header.retry_count` | 重试次数 | 消费端回写 Outbox |
+| `data` | 业务数据 | handler 唯一读取的内容 |
+
+设计取舍：
+
+- **幂等键与业务数据分离**：`key` 只负责"这条消息是否处理过"，业务幂等键（如 `review_id`、`file_id`）仍由 handler 自己判断，两者不混用。
+- **身份放 header 而不是顶层**：业务数据与元数据边界清晰，`data` 可以整块交给 handler。
+- **不做旧格式兼容**：切换时队列为空，直接一次性替换，不留双解析分支。
+- **信封校验前置**：结构、版本、类型三项由 `TaskMessage.from_json` 统一校验，失败按毒消息直接 ack 丢弃。
+
+### 5.2 类型枚举（TaskType）
+
+`backend/broker/types.py` 定义全部消息类型，枚举值同时是队列名、`HANDLERS` 键与 Outbox `topic`：
+
+| 枚举 | 值 | 队列 prefetch |
+|---|---|---|
+| `AGENT_RUN` | `agent.run` | 1 |
+| `DOC_PARSE` | `doc.parse` | 2 |
+| `RESUME_REVIEW` | `resume.review` | 1 |
+| `KNOWLEDGE_REINDEX` | `knowledge.reindex` | 2 |
+| `NOTIFY_SEND` | `notify.send` | 10 |
+| `AUDIT_FLUSH` | `audit.flush` | 20 |
+| `CONFIG_REFRESH` | `config.refresh` | 广播（FANOUT） |
+
+命名约定 `域.动作`（全小写、点分隔）。用枚举而不是字符串 + 运行时正则，是因为拼写错误在编码期就会被类型系统拦住；启动期 `topology.validate_handler_coverage()` 再校验"枚举 / 队列 / handler"三者一致，缺一侧直接启动失败。
+
+新增一类消息三步：加枚举值 → 在 `TASK_QUEUES`（或 `BROADCAST_TYPES`）加声明 → 在 `HANDLERS` 注册处理函数。
 
 ## 6. 消息可靠性与多租户隔离：持久化、手动 ack、幂等、事务、鉴权（重点）
 
@@ -101,7 +169,7 @@ RabbitMQ 的投递语义是 **at-least-once**（不丢，但可能重投）。�
 
 at-least-once 语义下，网络重投、消费者重启、DLX 重试都会让同一业务被消费多次。多租户多智能体协作平台**统一走 Outbox（§6.4）**，幂等由 outbox 状态机天然保证（无需额外 Redis 去重表）：
 
-- **去重依据**：每条消息的 `message_id` 即 `agent_outbox.id`；消费端处理前查 `agent_outbox.status`：
+- **去重依据**：每条消息信封里的 `key` 即 `agent_outbox.id`；消费端处理前查 `agent_outbox.status`：
   - 已是 `done` → 直接 `ack` 跳过（重投 / 死信重试不会重复生效）；
   - 正常处理 → 处理后标 `done`。
 - 这覆盖了 at-least-once 的“重投去重”。生产侧“同业务重复触发”由业务层保证只写一次 outbox（或 payload 带业务唯一键）。
@@ -115,9 +183,9 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| id | UUID PK | 消息唯一 id，同时作为 MQ `message_id` |
-| topic | VARCHAR(64) | 消息 type / routing_key（如 `audit.flush`） |
-| payload | JSONB | 完整消息体（含 `type`/`tenant_id`/`user_id`/`payload`） |
+| id | UUID PK | 消息唯一 id，由应用生成，等于信封 `key` 与 MQ `message_id` |
+| topic | VARCHAR(64) | 消息 type（枚举值，如 `audit.flush`） |
+| payload | JSONB | 四段式信封（`key` / `type` / `header` / `data`），见 §5.1 |
 | status | VARCHAR(16) | `pending`(待投递) \| `sent`(已发 MQ) \| `done`(消费端已处理) \| `failed`(消费失败超限) |
 | retry_count | INT | 投递 / 消费重试次数 |
 | last_error | TEXT | 最近失败原因 |
@@ -127,7 +195,7 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 死信落库表 `agent_dead_letter`（消费重试超限的任务）：`id` / `topic` / `payload` / `origin_queue` / `error` / `retry_count` / `tenant_id`。
 
 **流程**：
-1. 生产者调 `publish_task(...)` → 写 `agent_outbox(pending)` 即返回（不直接连 broker）；
+1. 生产者调 `enqueue_task(...)` → 写 `agent_outbox(pending)` 即返回（不直接连 broker）；
 2. `BrokerManager` 内的 `OutboxPublisher` 协程（每 5s）扫 `pending` → `client.publish(message_id=outbox.id)` → 标 `sent`；发失败 `retry_count++`，超 3 次标 `failed`；
 3. 消费端处理成功 → 标 `done` + `ack`；失败 `retry_count++`，超限落 `agent_dead_letter` + 标 `failed` + `ack`，未超限 `nack` 进重试队列（见 §7）；
 4. **“消费之后改状态”**：`done` 由消费端在处理成功后回写，正是幂等依据（§6.3）。
@@ -138,7 +206,7 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 多租户多智能体协作平台是强租户隔离的多租户系统，消息消费端必须校验“谁发起、操作哪个租户”，防止越权（租户 A 的任务读写租户 B 数据，或普通用户触发超管动作）。broker 本身不做业务鉴权，鉴权在消费端落地。
 
-- **消息携带身份**：每条消息的 body 必须带 `tenant_id`、`user_id`（发起者）；routing_key / topic 也建议带租户维度（如 `agent.run.{tenant_id}`），便于按租户分队列、隔离消费。超管发起的任务 `user_id` 可为 0，但 `tenant_id` 仍按目标租户填。
+- **消息携带身份**：每条消息的 `header` 必须带 `tenant_id`、`user_id`（发起者），见 §5.1；当前不做按租户分队列，租户隔离靠消费端鉴权与 DAO 的 `tenant_id` 过滤（队列数量随租户线性增长，得不偿失）。超管发起的任务 `user_id` 可为 0，但 `tenant_id` 仍按目标租户填。
 - **消费端鉴权（必做，零信任）**：handler 处理前按 `tenant_id` + `user_id` 重新走一遍权限校验，不直接信任消息内容：
   - 查用户角色 / scope，确认其对 `tenant_id` 有对应权限（如重索引需 `knowledge:write`、通知需 `notify:send`）；
   - 确认 `tenant_id` 在用户可见范围内（租户管理员仅本租户，超管跨租户）；
@@ -150,7 +218,7 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 ## 7. 重试与死信（RabbitMQ 原生，不依赖框架）
 
-默认 **3 次重试、重试队列 TTL 30s**（见 `broker/dlq.py` 的 `MAX_RETRIES` / `RETRY_TTL_MS`，可按需调）。
+默认 **3 次重试、重试队列 TTL 30s**（见 `broker/topology.py` 的 `MAX_RETRIES` / `RETRY_TTL_MS`，可按需调）。
 
 - 业务队列 `Q` 声明带 `x-dead-letter-exchange=agent.platform.retry`、`x-dead-letter-routing-key=Q`；
 - 重试队列 `Q.retry` 带 `x-message-ttl=30000`、`x-dead-letter-exchange=agent.platform.dlx`、`x-dead-letter-routing-key=Q`；
@@ -163,13 +231,16 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 ## 8. 功能 → 消息映射
 
-| 功能 | routing_key / type | 处理 |
+| 功能 | type（TaskType） | 处理 |
 |---|---|---|
-| 长任务 | `agent.run` | 执行多 Agent 串联，结果经回传桥推前端 |
-| 重索引 | `knowledge.reindex` | 取补充内容 → 向量化 → 写 Milvus；按 kpq_id 幂等 |
-| 通知 | `notify.send` | 邮件 / 企微 / Webhook；retry + 死信 |
-| 审计 | `audit.flush` | 批量落库削峰 |
-| HITL 超时 | （beat 定时扫 PG 表） | 替代定时轮询，发提醒 |
+| 长任务 | `AGENT_RUN` / `agent.run` | 执行多 Agent 串联，结果经回传桥推前端（待实现） |
+| 文档解析 | `DOC_PARSE` / `doc.parse` | 取 MinIO 文件 → 解析 → 分块 → 向量化写 Milvus（待实现） |
+| 简历评审 | `RESUME_REVIEW` / `resume.review` | 上传后异步跑 LangGraph，结果回写 `agent_resume_reviews` |
+| 重索引 | `KNOWLEDGE_REINDEX` / `knowledge.reindex` | 取补充内容 → 向量化 → 写 Milvus，按 kpq_id 幂等（待实现） |
+| 通知 | `NOTIFY_SEND` / `notify.send` | 邮件 / 企微 / Webhook；retry + 死信（渠道待实现） |
+| 审计 | `AUDIT_FLUSH` / `audit.flush` | 批量落库削峰 |
+| 配置刷新 | `CONFIG_REFRESH` / `config.refresh` | 广播到所有副本，刷新插件 / 模型 / Agent 注册表 |
+| HITL 超时 | `NOTIFY_SEND` | `SchedulerManager` 扫 PG 表发现超时后发提醒（§10） |
 
 ## 9. 结果回传桥（Redis Stream，必补）
 
@@ -182,12 +253,12 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 ## 10. 定时任务（HITL 超时）
 
-用 **asyncio 定时协程**（`SchedulerManager`，不引入 APScheduler 额外依赖，贴合全 async 栈；原设计写 APScheduler，等价替代）。`SchedulerManager` 随 AppServer 启动（与 broker 同启用），每 60s 扫 `agent_escalation` 表中 `status='pending'` 且 `create_at` 超过阈值（默认 30min，见 `ESCALATION_TIMEOUT_MIN`）且 `last_reminder_at IS NULL` 的项，经 `publish_task`（`notify.send`）发超时提醒，发后写 `last_reminder_at=now()` 避免重复提醒。提醒经 Outbox → MQ 由通知 handler 外发（执行逻辑待接入，见 §8/§11）。
+用 **asyncio 定时协程**（`SchedulerManager`，不引入 APScheduler 额外依赖，贴合全 async 栈；原设计写 APScheduler，等价替代）。`SchedulerManager` 随 AppServer 启动（与 broker 同启用），每 60s 扫 `agent_escalation` 表中 `status='pending'` 且 `create_at` 超过阈值（默认 30min，见 `ESCALATION_TIMEOUT_MIN`）且 `last_reminder_at IS NULL` 的项，经 `enqueue_task`（`notify.send`）发超时提醒，发后写 `last_reminder_at=now()` 避免重复提醒。提醒经 Outbox → MQ 由通知 handler 外发（执行逻辑待接入，见 §8/§11）。
 
 ## 11. 迁移路径（从 PG 表轮询 → RabbitMQ）
 
 1. **阶段 1（已完成框架 + 审计落库）**：broker 接入、Outbox、消费端鉴权、审计真实落库；通知 handler 已鉴权 + 结构，外发渠道待接。
-2. **阶段 2（待业务入口改造）**：知识库回流 / 通知 / 审计的**业务入口**改为调 `publish_task`（写 Outbox），替换原有同步写 / 轮询；Outbox + 投递协程已就绪。
+2. **阶段 2（待业务入口改造）**：知识库回流 / 通知 / 审计的**业务入口**改为调 `enqueue_task`（写 Outbox），替换原有同步写 / 轮询；Outbox + 投递协程已就绪。
 3. **阶段 3（最难，待做）**：长任务 worker 执行 + 补 Redis Stream 回传桥（SSE 跨进程推送，见 §9）。
 4. **阶段 4（已完成）**：HITL 超时提醒由 `SchedulerManager` 定时扫描 `agent_escalation` 发 `notify.send`（§10），替代扫表轮询。
 
@@ -195,6 +266,61 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 - 重试 / 死信 / 定时 / 监控需自行实现（量不大，但 Celery 是白送的）。
 - **结果回传桥必补**，否则长任务结果丢失。
-- 消费协程要 `try/except` 隔离，单个消息失败只 `nack`，不能拖垮 `consume_loop`。
-- 幂等：消费端按 `kpq_id` / `thread_id` 做 `SETNX`（Redis）或 PG 唯一约束去重，防重复消费。
+- 消费协程要 `try/except` 隔离，单个消息失败只 `nack`，不能拖垮消费循环。
+- 幂等：消息级由信封 `key` + `agent_outbox.status` 保证（§6.3）；业务级（同一业务对象被重复触发）仍需 handler 自己判断，如 `resume.review` 检查状态非 `processing`、`doc.parse` 检查 `parse_status`。
 - 连接数：worker 与 HTTP 进程各自建池，注意 PG / Milvus 总连接数。
+
+## 13. demo 与验证
+
+`demo/mq/` 下按交换机与拓扑模式各提供一个可独立运行的脚本，连真实 RabbitMQ + PostgreSQL，自带断言，全部通过时退出码为 0：
+
+| 脚本 | 覆盖内容 |
+|---|---|
+| `common.py` | 连接、`demo.` 前缀隔离、断言与清理 |
+| `01_simple_queue.py` | 默认交换机 + 简单队列，FIFO |
+| `02_work_queue.py` | 工作队列，两消费者各自 prefetch=1 时近似均分 |
+| `03_fanout_pubsub.py` | fanout 广播到所有绑定队列，routing_key 被忽略 |
+| `04_direct_routing.py` | direct 精确匹配，未匹配消息被丢弃 |
+| `05_topic_routing.py` | topic 的 `*` 与 `#` 匹配差异 |
+| `06_headers_exchange.py` | headers 的 `x-match=all` / `any` |
+| `07_rpc.py` | reply_to + correlation_id 的请求响应 |
+| `08_delay_dlq.py` | TTL + DLX 延迟重投、`nack(requeue=False)` 进死信 |
+| `09_priority_queue.py` | `x-max-priority` 插队，同级仍 FIFO |
+| `10_project_topology.py` | 项目真实拓扑端到端 |
+
+运行方式：
+
+```bash
+python demo/mq/run_all.py           # 依次运行并汇总
+python demo/mq/03_fanout_pubsub.py  # 单独运行某个
+```
+
+约定：
+
+- 所有 demo 资源统一 `demo.` 前缀，运行结束在 `finally` 中删除，不影响 `agent.*` 真实拓扑；
+- 连接串可用 `MQ_DEMO_URL` 覆盖，默认 `amqp://agent:agent@127.0.0.1:5672/agent_platform`；
+- 队列不使用 `auto_delete`：`basic.qos` 与 consume 取消会触发自动删除，导致同一队列无法二次消费，统一改为显式删除。
+
+`10_project_topology.py` 验证的完整链路：
+
+1. `declare_all()` 在真实 broker 上声明 19 个队列（6 业务 + 6 retry + 6 dlq + 1 广播）；
+2. `enqueue_task(TaskType.NOTIFY_SEND, ...)` 写 Outbox，断言 `payload` 是四段式信封；
+3. `run_publisher()` 扫表投递到业务交换机，状态变 `sent`；
+4. 探测队列收到消息，断言 `key` 与 Outbox 主键一致、`type` 解析为枚举、`header` 与 `data` 各就各位；
+5. `on_task()` 消费（幂等判断 + handler + `mark_done`），状态变 `done`。
+
+用一条绑定相同 routing_key 的临时探测队列接收消息，避免抢占业务队列里的其它消息；业务队列那份消息后续被真实消费者按幂等跳过。
+
+最近一次执行：10 个脚本全部通过，`10_project_topology.py` 13/13 项断言通过。
+
+## 14. 遗留项
+
+| 项 | 现状 | 建议 |
+|---|---|---|
+| 配置刷新去重 | 模块级 `_seen_ts` + 共享 Outbox，多副本各自扫表会 N 倍投递，靠时间戳去重；副本离线错过广播后不会自愈 | 改用 Redis 单调版本号 + 直发 fanout + `SchedulerManager` 定时比对版本兜底 |
+| Outbox 重复投递 | 多副本时每个副本的投递协程都会扫到同一批 `pending`，业务消息靠下游幂等兜住，广播消息靠 `ts` 去重，属于"能对但浪费" | 投递侧用 `SELECT ... FOR UPDATE SKIP LOCKED` 抢占后再发 |
+| 重试无退避 | `RETRY_TTL_MS` 固定 30s，三次重试间隔相同 | 按退避档位拆多个 `.retry` 队列，或引入延迟消息插件 |
+| Quorum 队列 | 业务队列为 classic 队列 | 多节点部署时换 `x-queue-type=quorum`，避免网络分区下双消费 |
+| 业务幂等键 | `key` 仅保证消息级幂等，业务重复提交仍需 handler 自行判断 | 若要统一，给 Outbox 加 `message_key` 唯一索引，入队即冲突 |
+| 信封签名 | `header` 未做 HMAC 防篡改 | 跨团队共用 broker 时再加 |
+| 业务实现未接入 | `agent.run` / `doc.parse` / `knowledge.reindex` / `notify.send` 的 handler 已收缩为"鉴权 + 调 service"，具体逻辑在 `backend/services/` 内为 TODO 桩；`doc.parse` 未实现时回写 `parse_status=failed`，避免文件卡在 `parsing` | 按 `services/` 内 TODO 顺序补齐 |
