@@ -15,7 +15,7 @@ from typing import Optional
 
 from backend.app_state import app_state
 from backend.common.config_center.groups import ConfigGroup
-from backend.common.config_center.nacos_config import ConfigCenterError, get_config_center_client
+from backend.common.config_center import ConfigCenterError, get_config_center_client
 from backend.common.logger import logger
 
 PROMPT_TTL_S = 3600
@@ -37,7 +37,7 @@ async def get_prompt(data_id: str, group: str = ConfigGroup.PROMPT.value) -> Opt
             logger.warning(f"提示词缓存：Redis 读取失败，回退 Nacos: {e}")
 
     try:
-        content = get_config_center_client().get_config(data_id, group)
+        content = await get_config_center_client().get_config(data_id, group)
     except ConfigCenterError as e:
         logger.warning(f"提示词缓存：Nacos 读取失败 data_id={data_id}: {e}")
         content = None
@@ -68,8 +68,11 @@ async def warmup_prompts(group: str = ConfigGroup.PROMPT.value) -> int:
         logger.warning("提示词预热：Redis 不可用，跳过（运行时将直连 Nacos）")
         return 0
     try:
-        items = (get_config_center_client().list_configs(group=group, page_size=200)
-                 .get("pageItems") or [])
+        # 注意：await 优先级低于属性访问 '.'，必须先 await 存到变量，再对结果取 .get，
+        # 否则会解析成 await(list_configs(...).get(...))，即在协程上调用 .get 而报
+        # "coroutine object has no attribute 'get'" 并触发 never awaited 警告。
+        resp = await get_config_center_client().list_configs(group=group, page_size=200)
+        items = resp.get("pageItems") or []
     except ConfigCenterError as e:
         logger.warning(f"提示词预热：Nacos 列举失败: {e}")
         return 0
@@ -79,7 +82,7 @@ async def warmup_prompts(group: str = ConfigGroup.PROMPT.value) -> int:
         if not did:
             continue
         try:
-            content = get_config_center_client().get_config(did, group)
+            content = await get_config_center_client().get_config(did, group)
             if content is None:
                 continue
             await r.set(_cache_key(did), content, ex=PROMPT_TTL_S)
@@ -96,7 +99,7 @@ async def refresh_prompt(data_id: str, group: str = ConfigGroup.PROMPT.value) ->
     if r is None:
         return
     try:
-        content = get_config_center_client().get_config(data_id, group)
+        content = await get_config_center_client().get_config(data_id, group)
         if content is None:
             await r.delete(_cache_key(data_id))
         else:

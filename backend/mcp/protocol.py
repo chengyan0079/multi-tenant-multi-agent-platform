@@ -28,6 +28,8 @@ class AgentPlugin(Protocol):
     @property
     def manifest(self) -> PluginManifest: ...
 
+    def configure(self, config: Dict[str, Any]) -> None: ...
+
     async def register(self) -> None: ...
 
     def get_tools(self) -> List["BaseTool"]: ...
@@ -51,6 +53,10 @@ class BasePlugin(ABC):
     """插件基类，默认实现协议方法，子类填 manifest 与 get_tools。"""
 
     manifest: PluginManifest
+    config: Dict[str, Any] = {}
+
+    def configure(self, config: Dict[str, Any]) -> None:
+        self.config = config
 
     async def register(self) -> None:
         return None

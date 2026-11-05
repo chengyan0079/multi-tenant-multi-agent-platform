@@ -11,6 +11,7 @@ from typing import Optional
 
 from backend.app_state import app_state
 from backend.broker.outbox_publisher import run_publisher
+from backend.broker.topology import declare_all
 from backend.common.logger import logger
 from backend.data.clients.broker import BrokerClient
 from backend.server.base_manager import BaseManager, HealthInfo
@@ -31,8 +32,8 @@ class BrokerManager(BaseManager):
         )
         await client.connect()
         app_state.broker = client
-        await client.declare_infra()
-        # 业务队列 + 死信队列消费协程（handler 按消息 type 路由，见 broker/consumer.py）
+        await declare_all(client)
+        # 业务队列 + 死信队列 + 广播队列消费协程（拓扑见 broker/topology.py）
         self._tasks = await self._start_consumers(client)
         # Outbox 投递协程：扫 agent_outbox(pending) 异步发 MQ（见 §6.4）
         self._stop = asyncio.Event()

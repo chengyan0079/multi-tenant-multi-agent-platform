@@ -6,6 +6,7 @@ main - 入口：装配 AppServer().run()
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import uvicorn
 
@@ -41,6 +42,11 @@ async def _serve() -> None:
 
 
 def main() -> None:
+    # Windows 默认 ProactorEventLoop 与 psycopg(异步) 不兼容：会抛 InterfaceError 并让连接池
+    # 30s 拿不到连接超时。psycopg 要求 SelectorEventLoop；asyncpg(SQLAlchemy) 在 Selector 下同样
+    # 可用，故全局切换策略即可，不影响其他管理器(已验证两者共存)。仅 Windows 需要。
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(_serve())
 
 

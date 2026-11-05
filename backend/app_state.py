@@ -28,10 +28,11 @@ if TYPE_CHECKING:
     from backend.common.config_center.loader import ConfigCenterLoader
     from backend.common.llm.llm_factory import LLMFactory
     from backend.common.memory.memory import MemoryStore
-    from backend.data.milvus.store import MemoryMilvusStore
+    from backend.data.milvus.store import DocumentMilvusStore
     from backend.orchestration.orchestrator import Orchestrator
     from backend.mcp.registry import PluginRegistry
     from backend.server.managers.nacos_discover_manager import NacosDiscoverManager
+    from backend.server.managers.nacos_ai_manager import NacosAIManager
 
 
 class _AppState:
@@ -46,7 +47,7 @@ class _AppState:
         self.broker = None
         self.db_engine: Optional[AsyncEngine] = None
         self.milvus_client = None
-        self.milvus_store: Optional[MemoryMilvusStore] = None
+        self.milvus_store: Optional[DocumentMilvusStore] = None
         self.checkpointer: Optional[AsyncPostgresSaver] = None
         self.llm_factory: Optional[LLMFactory] = None
         self.memory: Optional[MemoryStore] = None
@@ -55,6 +56,7 @@ class _AppState:
         self.orchestrator: Optional[Orchestrator] = None
         self.config_center: Optional[ConfigCenterLoader] = None
         self.nacos_discovery: Optional[NacosDiscoverManager] = None
+        self.nacos_ai: Optional["NacosAIManager"] = None
         self.fastapi_app: Optional[FastAPI] = None
         # 运行期持有的 AppServer 实例（main.py 装配时写入），供 /health 等运维接口汇总组件状态
         self.server = None

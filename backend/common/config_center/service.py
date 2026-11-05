@@ -14,14 +14,13 @@ service - 配置中心审批流服务（ConfigChangeService）
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_center.groups import ConfigGroup
-from backend.common.config_center.nacos_config import ConfigCenterError, get_config_center_client
+from backend.common.config_center import ConfigCenterError, get_config_center_client
 from backend.common.config_center.prompts_cache import refresh_prompt
 from backend.common.logger import logger
 from backend.observability.exception import BizException
@@ -54,8 +53,8 @@ def _operator() -> int | None:
 
 
 async def _nacos_call(fn, *args, **kwargs):
-    """把同步 Nacos 客户端调用丢到线程池，避免阻塞事件循环。"""
-    return await asyncio.to_thread(fn, *args, **kwargs)
+    """调用 Nacos 客户端方法（已为 async，直接 await）。"""
+    return await fn(*args, **kwargs)
 
 
 def _infer_format(data_id: str) -> str | None:

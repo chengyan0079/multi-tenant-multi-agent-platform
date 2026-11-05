@@ -2,7 +2,7 @@
 client - 接入 RAG 检索（设计文档 §6.2 / §12）
 
 三种接入方式：① MCP 服务（mcp_url 指向对外暴露的 MCP 服务，优先）；
-② 包导入（import_path 指向检索工程目录，复用其检索/索引能力）；
+② 包导入（import_path 指向检索工程目录，参考其检索/索引能力实现）；
 ③ HTTP（http_base 指向已部署的检索服务）。优先 MCP，无则降级到包导入 / HTTP。
 禁止把检索代码复制进本仓库（双份维护风险）。
 """
@@ -33,7 +33,7 @@ class RagClient:
             try:
                 if cfg.import_path not in sys.path:
                     sys.path.insert(0, cfg.import_path)
-                # 复用检索工程的检索入口（具体路径按其接口调整）
+                # 参考检索工程的检索入口（具体路径按其接口调整）
                 self._module = __import__("core.rag_retriever.retriever", fromlist=["RagRetriever"])
                 logger.info("RAG 包导入成功")
                 return

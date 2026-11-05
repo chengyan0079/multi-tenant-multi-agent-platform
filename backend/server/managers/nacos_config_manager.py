@@ -24,18 +24,14 @@ class NacosConfigManager(BaseManager):
         )
         loader = client.loader
         app_state.config_center = loader
-        try:
-            await loader.start()
-        except Exception as e:  # 配置中心不阻断启动
-            logger.warning(f"配置中心热加载启动失败，运行时将直连 Nacos 兜底: {e}")
+        # 配置中心启动失败即视为启动失败（fail-fast），交由 AppServer 终止启动
+        await loader.start()
 
         if not app_config.nacos_config.enabled:
             logger.info("配置中心未启用（NACOS_CONFIG_ENABLED=False），跳过提示词预热")
             return
-        try:
-            await warmup_prompts()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"提示词预热失败，运行时将直连 Nacos 兜底: {e}")
+        # 提示词预热失败同样 fail-fast（不再静默兜底）
+        await warmup_prompts()
 
     async def stop(self) -> None:
         if app_state.clients.has("nacos"):
