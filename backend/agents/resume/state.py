@@ -1,6 +1,8 @@
 """
 state - 简历评审相关数据结构
 
+Author: 骆昊
+Version: 0.0.1
 """
 import operator
 from typing import Annotated
@@ -101,9 +103,9 @@ class ResumeState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
 
     # 对应工作流的①和②节点
-    student_id: str
+    user_id: str
     tenant_id: str
-    review_id: str       # 简历评审的流水号 - UUID
+    review_id: str  # 简历评审记录主键（agent_resume_reviews.id）
     pdf_minio_path: str  # 简历文件保存路径（云存储的 URI 或分布式文件系统标识符）
     pdf_local_path: str
 

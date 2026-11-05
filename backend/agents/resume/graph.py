@@ -1,38 +1,57 @@
-"""简历审查图：六维度并行 fan-out → 诊断 → 报告（设计文档 §0.1）。"""
-from __future__ import annotations
+"""
+graph - 简历评审工作流
 
-from typing import Any
+Author: 骆昊
+Version: 0.0.1
+"""
+from langgraph.graph import StateGraph, START, END
 
-from langgraph.graph import END, START, StateGraph
-
-# from backend.agents.resume.nodes import (
-#     build_report,
-#     diagnose,
-#     make_scorer,
-#     parse_pdf,
-# )
+from backend.agents.resume.nodes import (
+    upload_to_minio_node,
+    download_pdf_node,
+    extract_text_node,
+    extract_structured_node,
+    run_six_dimensions_node,
+    diagnose_issues_node,
+    generate_summary_node,
+    save_results_node,
+)
 from backend.agents.resume.state import ResumeState
 
 
-def build_resume_graph() -> Any:
-    """构造并编译简历审查图；绑定 app_state.checkpointer 支持多轮持久化。"""
-    from backend.app_state import app_state
-    # todo resume图待定
-    builder = StateGraph(ResumeState)
-    # builder.add_node("parse_pdf", parse_pdf)
-    # for dim in _DIMENSIONS:
-    #     builder.add_node(f"score_{dim}", make_scorer(dim))
-    # builder.add_node("diagnose", diagnose)
-    # builder.add_node("build_report", build_report)
-    #
-    # builder.add_edge(START, "parse_pdf")
-    # # fan-out：解析后并行打分
-    # for dim in _DIMENSIONS:
-    #     builder.add_edge("parse_pdf", f"score_{dim}")
-    #     builder.add_edge(f"score_{dim}", "diagnose")
-    # # fan-in：诊断节点在六维度都到达后汇总（LangGraph 自动等待前驱）
-    # builder.add_edge("diagnose", "build_report")
-    # builder.add_edge("build_report", END)
+def build_resume_graph():
+    """构建并编译简历审查 Agent 的状态图"""
+    builder = StateGraph(ResumeState)  # type: ignore
 
-    checkpointer = app_state.checkpointer
-    return builder.compile(checkpointer=checkpointer)
+    builder.add_node('upload_to_minio',    upload_to_minio_node)     # type: ignore
+    builder.add_node('download_pdf',       download_pdf_node)        # type: ignore
+    builder.add_node('extract_text',       extract_text_node)        # type: ignore
+    builder.add_node('extract_structured', extract_structured_node)  # type: ignore
+    builder.add_node('run_six_dimensions', run_six_dimensions_node)  # type: ignore
+    builder.add_node('diagnose_issues',    diagnose_issues_node)     # type: ignore
+    builder.add_node('generate_summary',   generate_summary_node)    # type: ignore
+    builder.add_node('save_results',       save_results_node)        # type: ignore
+
+    builder.add_edge(START,                 'upload_to_minio')
+    builder.add_edge('upload_to_minio',     'download_pdf')
+    builder.add_edge('download_pdf',        'extract_text')
+    builder.add_edge('extract_text',        'extract_structured')
+    builder.add_edge('extract_structured',  'run_six_dimensions')
+    builder.add_edge('run_six_dimensions',  'diagnose_issues')
+    builder.add_edge('diagnose_issues',     'generate_summary')
+    builder.add_edge('generate_summary',    'save_results')
+    builder.add_edge('save_results',        END)
+
+    return builder.compile()
+
+
+if __name__ == '__main__':
+    graph = build_resume_graph()
+
+    # 获得 Mermaid 代码
+    print(graph.get_graph().draw_mermaid())
+
+    # 绘制 PNG 工作流图
+    graph.get_graph().draw_png('resume_graph.png')
+
+    print('节点列表：', list(graph.nodes.keys()))
