@@ -21,6 +21,7 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -198,14 +199,17 @@ class ResumeReview(AuditMixin, Base):
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="租户ID（隔离边界，BigInteger）")
     user_id: Mapped[int] = mapped_column(BigInteger, comment="用户ID（user_id，BigInteger）")
     pdf_minio_path: Mapped[str] = mapped_column(String(512), nullable=False, comment="PDF 文件 MinIO 路径")
-    structured_data: Mapped[dict] = mapped_column(JSON, comment="结构化信息（JSON）")
-    scores: Mapped[dict] = mapped_column(JSON, comment="评分（JSON）")
-    issues: Mapped[dict] = mapped_column(JSON, comment="问题清单（JSON）")
-    summary: Mapped[dict] = mapped_column(JSON, comment="摘要（JSON）")
+    weighted_score: Mapped[float] = mapped_column(
+        Numeric(5, 2), default=0.0, comment="综合加权得分（0-100，由六维度加权计算）"
+    )
+    structured_data: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="结构化信息（JSON，上传时为空）")
+    scores: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="评分（JSON）")
+    issues: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="问题清单（JSON）")
+    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="摘要（JSON）")
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", comment="状态（pending/processing/done/failed）"
     )
-    error_msg: Mapped[str] = mapped_column(Text, comment="错误信息")
+    error_msg: Mapped[str] = mapped_column(Text, default="", comment="错误信息")
 
 
 # ------------------------- 模拟面试 -------------------------

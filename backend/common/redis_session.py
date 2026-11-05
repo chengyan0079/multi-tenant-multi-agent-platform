@@ -71,3 +71,41 @@ async def delete_session(jti: str) -> None:
         await r.delete(_key(jti))
     except Exception:  # noqa: BLE001
         logger.warning("删除登录会话失败")
+
+
+async def delete_sessions_by_tenant(tenant_id: int) -> int:
+    """按租户批量强踢：扫描所有会话，删除 value.tenant_id == tenant_id 的 key。
+
+    会话 value 为 {"user_id":..., "tenant_id":...}，超管会话 tenant_id=None 不会误删。
+    Redis 不可用时静默返回 0（退化成鉴权侧 enabled 拦截）。
+    """
+    r = app_state.redis
+    if r is None:
+        return 0
+    count = 0
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor=cursor, match=f"{_KEY_PREFIX}*", count=200)
+            if keys:
+                values = await r.mget(*keys)
+                to_del = [
+                    k
+                    for k, v in zip(keys, values)
+                    if v and _safe_load(v).get("tenant_id") == tenant_id
+                ]
+                if to_del:
+                    await r.delete(*to_del)
+                    count += len(to_del)
+            if cursor == 0:
+                break
+    except Exception:  # noqa: BLE001
+        logger.warning("按租户批量删除会话失败")
+    return count
+
+
+def _safe_load(v: "bytes | str") -> dict:
+    try:
+        return json.loads(v)
+    except Exception:  # noqa: BLE001
+        return {}

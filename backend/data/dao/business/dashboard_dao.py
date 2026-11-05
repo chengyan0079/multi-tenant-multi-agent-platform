@@ -30,9 +30,12 @@ from backend.data.sql import fetch_all, fetch_one, session_scope
 # 显式 CAST：:tenant_id 传 None 时 asyncpg 无从推断类型（首个出现位置是 IS NULL），
 # 不转型会报 could not determine data type of parameter。
 _SCOPE = "(CAST(:tenant_id AS BIGINT) IS NULL OR {t}.tenant_id = CAST(:tenant_id AS BIGINT))"
+_SCOPE_ALIASES = frozenset({"l", "th", "r", "al"})
 
 
 def _scope(alias: str) -> str:
+    if alias not in _SCOPE_ALIASES:
+        raise ValueError(f"非法表别名: {alias}")
     return _SCOPE.format(t=alias)
 
 

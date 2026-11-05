@@ -1,8 +1,5 @@
 """API 调用日志 DAO：把一次调用的元数据落一行（agent_api_call_log）。
 
-只写元数据（调用方/身份/方法/路径/状态/耗时），请求体与响应体不落库：
-这两个字段是表膨胀的主因，且排障价值低于其代价。
-
 落库是旁路：写失败仅告警，绝不影响接口返回。
 """
 from __future__ import annotations
@@ -14,7 +11,7 @@ from sqlalchemy import text
 
 from backend.app_state import app_state
 from backend.common.logger import logger
-from backend.data.sql import fetch_all, fetch_value, session_scope
+from backend.data.sql import fetch_page, session_scope
 
 _INSERT = text("""
 INSERT INTO agent_api_call_log (
@@ -83,11 +80,8 @@ class ApiLogDao:
     async def query(
         tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
     ) -> tuple[list[dict[str, Any]], int]:
-        """按租户过滤分页查询（tenant_id=None 查全量，仅超管），时间倒序。"""
         async with session_scope() as session:
-            rows = await fetch_all(
-                session, _LIST,
-                {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size},
+            return await fetch_page(
+                session, _LIST, _COUNT, {"tenant_id": tenant_id},
+                page=page, page_size=page_size,
             )
-            total = await fetch_value(session, _COUNT, {"tenant_id": tenant_id})
-            return rows, int(total)

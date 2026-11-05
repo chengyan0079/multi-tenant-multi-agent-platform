@@ -25,6 +25,29 @@ from backend.observability.exception import ModelError
 logger = get_logger("llm_factory")
 
 
+def _resolve_endpoint_path(endpoint_path: Optional[str]) -> Optional[str]:
+    """把 registry 的 endpoint_path 解析为可加载的本地路径。
+
+    - None/空 → 返回 None（调用方回退 name，走 HuggingFace 在线加载）；
+    - 绝对路径 → 原样返回；
+    - 相对路径 → 拼到配置 MODEL_ROOT（默认项目根）下再解析。
+    解析后路径不存在则抛出清晰错误（含绝对路径与来源），便于排查。
+    """
+    from backend.config.settings import config
+
+    if not endpoint_path:
+        return None
+    p = Path(endpoint_path)
+    if not p.is_absolute():
+        p = Path(config.model.root) / endpoint_path
+    p = p.resolve()
+    if not p.exists():
+        raise ModelError(
+            f"本地模型路径不存在：{p}（endpoint_path={endpoint_path!r}，MODEL_ROOT={config.model.root!r}）"
+        )
+    return str(p)
+
+
 class LLMFactory:
     """模型工厂单例：集中构造与缓存 LLM / Embedding / Reranker / Classifier。
 
@@ -59,29 +82,39 @@ class LLMFactory:
     def build_embedder(cfg: dict[str, Any]) -> Any:
         """构造 bge-m3 嵌入函数（重模型，加载较慢）。
 
-        优先用 model_registry.endpoint_path（本地权重目录，离线可用），
-        缺省才回退 name（HF 仓库名，会联网拉取）。与 classifier 的本地加载一致。
+        优先用 model_registry.endpoint_path（本地权重目录，离线可用；相对路径会拼到
+        MODEL_ROOT 下解析，见 _resolve_endpoint_path），缺省才回退 name（HF 仓库名，会联网拉取）。
+        与 classifier 的本地加载一致。
         """
         from milvus_model.hybrid import BGEM3EmbeddingFunction
 
-        model_ref = cfg.get("endpoint_path") or cfg["name"]
+        model_ref = _resolve_endpoint_path(cfg.get("endpoint_path")) or cfg["name"]
         return BGEM3EmbeddingFunction(model_name=model_ref)
 
     @staticmethod
     def build_reranker(cfg: dict[str, Any]) -> Any:
         """构造 bge-reranker 精排函数（重模型）。
 
-        同 build_embedder：优先 endpoint_path 本地目录，缺省回退 name。
+        同 build_embedder：优先 endpoint_path 本地目录（相对路径拼 MODEL_ROOT），缺省回退 name。
         """
         from milvus_model.reranker import BGERerankFunction
 
-        model_ref = cfg.get("endpoint_path") or cfg["name"]
+        model_ref = _resolve_endpoint_path(cfg.get("endpoint_path")) or cfg["name"]
         return BGERerankFunction(model_name=model_ref)
 
     @staticmethod
     def build_classifier(cfg: dict[str, Any]) -> tuple[Any, Any, list, int]:
-        """按 classifier.endpoint_path 加载离线意图分类产物（HF 格式 + meta.json）。"""
-        endpoint_path = cfg.get("endpoint_path")
+        """按 classifier.endpoint_path 加载离线意图分类产物（HF 格式）。
+
+        labels / max_len 解析优先级（meta.json 不再强制）：
+          - 目录含 meta.json         → 以它为准（兼容已有产物）；
+          - 否则含 label_mapping.json → 按 {标签名: 索引} 取索引升序得到 labels；
+          - 否则 model.config.id2label → 按索引顺序拼标签；
+          - 都没有                   → 退化为数值标签 list(range(num_labels))。
+        max_len：meta.json 优先，缺省 64。
+        endpoint_path 为相对路径时拼 MODEL_ROOT 解析（见 _resolve_endpoint_path）。
+        """
+        endpoint_path = _resolve_endpoint_path(cfg.get("endpoint_path"))
         if not endpoint_path:
             raise ModelError("意图分类器未配置 endpoint_path（model_registry 的 classifier 记录）")
         import json as _json
@@ -89,11 +122,30 @@ class LLMFactory:
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         d = Path(endpoint_path)
-        meta = _json.loads((d / "meta.json").read_text(encoding="utf-8"))
         tokenizer = AutoTokenizer.from_pretrained(d)
         model = AutoModelForSequenceClassification.from_pretrained(d)
         model.eval()
-        return model, tokenizer, meta["labels"], int(meta.get("max_len", 64))
+
+        labels: list
+        max_len: int = 64
+        meta_path = d / "meta.json"
+        mapping_path = d / "label_mapping.json"
+        if meta_path.exists():
+            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            labels = meta["labels"]
+            max_len = int(meta.get("max_len", 64))
+        elif mapping_path.exists():
+            mapping = _json.loads(mapping_path.read_text(encoding="utf-8"))
+            # {标签名: 索引} → 按索引升序，使 labels[索引] = 标签名
+            labels = [name for name, _ in sorted(mapping.items(), key=lambda kv: kv[1])]
+        else:
+            id2label = getattr(model.config, "id2label", None)
+            if id2label:
+                labels = [id2label[str(i)] for i in range(len(id2label))]
+            else:
+                num_labels = int(getattr(model.config, "num_labels", 0) or 0)
+                labels = list(range(num_labels))
+        return model, tokenizer, labels, max_len
 
     # ---------- 缓存管理（供 ModelManager 预加载 / 失效） ----------
 

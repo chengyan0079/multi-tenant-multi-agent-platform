@@ -1,11 +1,4 @@
-"""SQL 访问层：运行时只用 text() 写显式 SQL，不经过 ORM 映射。
-
-约定
-- SQL 全部以模块级 `text()` 常量内联在 DAO 文件里，不读外部 .sql 文件；
-- 查询结果统一转成 dict（列名 → 值），不构造实体对象；
-- ORM 模型（backend/data/postgres）只服务于 scripts/gen_schema.py 生成 DDL，
-  运行期不导入，避免表结构定义在代码里出现两份来源。
-"""
+"""SQL 访问层：运行时只用 text() 写显式 SQL，不经过 ORM 映射。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -69,10 +62,41 @@ async def execute_write(
     return result.rowcount or 0
 
 
+_PAGE_SIZE_MAX = 200
+
+
+async def fetch_page(
+    session: AsyncSession,
+    list_stmt: Executable,
+    count_stmt: Executable,
+    params: Mapping[str, Any] | None = None,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[dict[str, Any]], int]:
+    """分页查询；list_stmt 声明 :limit/:offset，count_stmt 复用同一组过滤参数。"""
+    if not isinstance(page, int) or page < 1:
+        raise ValueError("page 必须是 >= 1 的整数")
+    if not isinstance(page_size, int) or not 1 <= page_size <= _PAGE_SIZE_MAX:
+        raise ValueError(f"page_size 必须是 1..{_PAGE_SIZE_MAX} 的整数")
+
+    filters = dict(params or {})
+    if "limit" in filters or "offset" in filters:
+        raise ValueError("params 不得包含 limit/offset")
+    rows = await fetch_all(
+        session,
+        list_stmt,
+        {**filters, "limit": page_size, "offset": (page - 1) * page_size},
+    )
+    total = await fetch_value(session, count_stmt, filters)
+    return rows, int(total or 0)
+
+
 __all__ = [
     "execute_write",
     "fetch_all",
     "fetch_one",
+    "fetch_page",
     "fetch_value",
     "session_scope",
 ]

@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from sqlalchemy import text
+from sqlalchemy import ARRAY, Boolean, Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _LIST_AGENTS = text("""
@@ -20,6 +20,34 @@ SELECT id, agent_type, name, description, input_schema, enabled, version, update
 FROM agent
 ORDER BY agent_type
 """)
+
+_AGENTS_FROM = """
+FROM agent a
+LEFT JOIN agent_capability_policy p
+       ON p.agent_type = a.agent_type AND p.tenant_id = CAST(:tenant_id AS BIGINT)
+WHERE (:only_enabled = false
+       OR (a.enabled = true AND a.agent_type = ANY(CAST(:registered_types AS text[]))))
+"""
+_AGENTS_BINDS = (
+    # todo asyncpg 无法从 IS NULL / ANY 推断参数类型，需显式声明
+    bindparam("tenant_id", type_=Integer),
+    bindparam("only_enabled", type_=Boolean),
+    bindparam("registered_types", type_=ARRAY(String)),
+)
+_LIST_AGENTS_PAGED = text(
+    "SELECT a.id, a.agent_type, a.name, a.description, a.input_schema, "
+    "a.enabled, a.version, a.updated_at, "
+    "COALESCE(p.enabled, true) AS tenant_enabled, "
+    f"(p.agent_type IS NOT NULL) AS policy_configured {_AGENTS_FROM} "
+    "ORDER BY a.agent_type LIMIT :limit OFFSET :offset"
+).bindparams(
+    *_AGENTS_BINDS,
+    bindparam("limit", type_=Integer),
+    bindparam("offset", type_=Integer),
+)
+_COUNT_AGENTS_PAGED = text(
+    f"SELECT count(*) {_AGENTS_FROM}"
+).bindparams(*_AGENTS_BINDS)
 
 _GET_AGENT = text("""
 SELECT id, agent_type, name, description, input_schema, enabled, version, updated_at
@@ -113,6 +141,27 @@ class AgentDao:
         async with session_scope() as session:
             rows = await fetch_all(session, _LIST_AGENTS)
         return [_decode_input_schema(r) for r in rows]
+
+    @staticmethod
+    async def list_agents_paged(
+        *,
+        tenant_id: int | None = None,
+        only_enabled: bool = False,
+        registered_types: Sequence[str] = (),
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        params = {
+            "tenant_id": tenant_id,
+            "only_enabled": only_enabled,
+            "registered_types": list(registered_types),
+        }
+        async with session_scope() as session:
+            rows, total = await fetch_page(
+                session, _LIST_AGENTS_PAGED, _COUNT_AGENTS_PAGED, params,
+                page=page, page_size=page_size,
+            )
+        return [_decode_input_schema(r) for r in rows], total
 
     @staticmethod
     async def get_by_type(agent_type: str) -> dict[str, Any] | None:

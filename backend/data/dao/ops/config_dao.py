@@ -1,8 +1,6 @@
 """配置中心审批流 DAO：`agent_config_approval` / `agent_config_review`。
 
-系统级表（无 tenant_id、无审计列），只有 create_at / updated_at。
-与其他 DAO 的区别：方法接收调用方传入的 session，**事务边界由 service 控制**
-（申请 → 复核 → 执行是一个跨 Nacos 调用的长事务，不能在 DAO 里 commit）。
+方法接收调用方传入的 session，事务边界由 service 控制，DAO 内不 commit。
 """
 from __future__ import annotations
 
@@ -11,7 +9,7 @@ from typing import Any, Iterable
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page
 
 # 写入列白名单：调用方传什么就写什么，多余字段直接丢弃（防止拼错列名静默变成绑定失败）
 _INSERT_COLUMNS = (
@@ -132,6 +130,9 @@ class ConfigDao:
         `effective_at=True` 是哨兵值：表示用库端 now() 写入生效时间
         （只在状态进入终态 2 驳回 / 3 已执行 / 4 撤回 时使用），避免应用与库时区不一致。
         """
+        unknown = set(fields) - set(_UPDATE_COLUMNS)
+        if unknown:
+            raise ValueError(f"不允许更新的字段: {sorted(unknown)}")
         updates = {k: v for k, v in fields.items() if k in _UPDATE_COLUMNS}
         if not updates:
             return 0
@@ -158,20 +159,17 @@ class ConfigDao:
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        """审批单列表（条件筛选 + 分页），返回 (行, 总数)。"""
         where, params = _build_filters(
             status=status, group_id=group_id, applicant_user_id=applicant_user_id
         )
-        total = await fetch_value(session, text(_COUNT_REQUESTS + where), params) or 0
-        rows = await fetch_all(
-            session,
-            text(
-                f"SELECT * FROM agent_config_approval{where}"
-                " ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
-            ),
-            {**params, "limit": page_size, "offset": (page - 1) * page_size},
+        list_sql = text(
+            f"SELECT * FROM agent_config_approval{where}"
+            " ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
         )
-        return rows, int(total)
+        return await fetch_page(
+            session, list_sql, text(_COUNT_REQUESTS + where), params,
+            page=page, page_size=page_size,
+        )
 
     @staticmethod
     async def list_reviews(
@@ -208,24 +206,21 @@ class ConfigDao:
     async def list_all_reviews(
         session: AsyncSession, *, page: int = 1, page_size: int = 20
     ) -> tuple[list[dict[str, Any]], int]:
-        """全量复核记录（审核日志页）：关联复核人用户名与所属审批单信息。"""
-        total = await fetch_value(session, text(_COUNT_REVIEWS)) or 0
-        rows = await fetch_all(
-            session,
-            text(
-                """
-                SELECT rv.id, rv.approval_id, rv.reviewer_user_id, rv.action,
-                       rv.comment, rv.create_at,
-                       u.username AS reviewer_name,
-                       ap.data_id, ap.group_id, ap.namespace, ap.op_type,
-                       ap.title, ap.status AS approval_status
-                FROM agent_config_review rv
-                LEFT JOIN agent_user u ON u.id = rv.reviewer_user_id
-                LEFT JOIN agent_config_approval ap ON ap.id = rv.approval_id
-                ORDER BY rv.create_at DESC, rv.id DESC
-                LIMIT :limit OFFSET :offset
-                """
-            ),
-            {"limit": page_size, "offset": (page - 1) * page_size},
+        list_sql = text(
+            """
+            SELECT rv.id, rv.approval_id, rv.reviewer_user_id, rv.action,
+                   rv.comment, rv.create_at,
+                   u.username AS reviewer_name,
+                   ap.data_id, ap.group_id, ap.namespace, ap.op_type,
+                   ap.title, ap.status AS approval_status
+            FROM agent_config_review rv
+            LEFT JOIN agent_user u ON u.id = rv.reviewer_user_id
+            LEFT JOIN agent_config_approval ap ON ap.id = rv.approval_id
+            ORDER BY rv.create_at DESC, rv.id DESC
+            LIMIT :limit OFFSET :offset
+            """
         )
-        return rows, int(total)
+        return await fetch_page(
+            session, list_sql, text(_COUNT_REVIEWS),
+            page=page, page_size=page_size,
+        )

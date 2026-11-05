@@ -1,32 +1,54 @@
-"""模型配置注册表 DAO。
-
-- 全局表（无 tenant 审计列），审计用 audit_on_insert(with_tenant=False)；
-- 运行时取某 model_type 下 enabled 且 sort_order 最小的一条作为 active 模型。
-"""
+"""模型配置注册表 DAO。"""
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import text
+from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
-_COLS = (
-    "id, model_type, name, provider, base_url, api_key, endpoint_path, "
-    "temperature, timeout_s, max_retries, enabled, sort_order, description, updated_at"
+_TYPE_BIND = bindparam("model_type", type_=String)
+_LIST = text("""
+SELECT id, model_type, name, provider, base_url, api_key, endpoint_path,
+       temperature, timeout_s, max_retries, enabled, sort_order, description, updated_at
+FROM agent_model_registry
+WHERE (:model_type IS NULL OR model_type = :model_type)
+ORDER BY model_type, sort_order, id LIMIT :limit OFFSET :offset
+""").bindparams(
+    # todo asyncpg 扩展协议下 "IS NULL" 参数无法推断类型，需显式声明
+    _TYPE_BIND, bindparam("limit", type_=Integer), bindparam("offset", type_=Integer)
 )
-
-_LIST = text(f"SELECT {_COLS} FROM agent_model_registry ORDER BY model_type, sort_order, id")
-_LIST_BY_TYPE = text(
-    f"SELECT {_COLS} FROM agent_model_registry WHERE model_type = :model_type ORDER BY sort_order, id"
-)
-_GET = text(f"SELECT {_COLS} FROM agent_model_registry WHERE id = :id")
-_GET_ACTIVE = text(
-    f"SELECT {_COLS} FROM agent_model_registry "
-    "WHERE model_type = :model_type AND enabled = true "
-    "ORDER BY sort_order, id LIMIT 1"
-)
+_COUNT = text("""
+SELECT count(*) FROM agent_model_registry
+WHERE (:model_type IS NULL OR model_type = :model_type)
+""").bindparams(_TYPE_BIND)
+_GET = text("""
+SELECT id, model_type, name, provider, base_url, api_key, endpoint_path,
+       temperature, timeout_s, max_retries, enabled, sort_order, description, updated_at
+FROM agent_model_registry WHERE id = :id
+""")
+_GET_ACTIVE = text("""
+SELECT id, model_type, name, provider, base_url, api_key, endpoint_path,
+       temperature, timeout_s, max_retries, enabled, sort_order, description, updated_at
+FROM agent_model_registry
+WHERE model_type = :model_type AND enabled = true
+ORDER BY sort_order, id LIMIT 1
+""")
+_LIST_BY_PROVIDER = text("""
+SELECT id, model_type, name, provider, base_url, api_key, endpoint_path,
+       temperature, timeout_s, max_retries, enabled, sort_order, description, updated_at
+FROM agent_model_registry
+WHERE provider = :provider AND enabled = true
+ORDER BY model_type, sort_order, id
+""")
+_LIST_BY_PROVIDER_ALL = text("""
+SELECT id, model_type, name, provider, base_url, api_key, endpoint_path,
+       temperature, timeout_s, max_retries, enabled, sort_order, description, updated_at
+FROM agent_model_registry
+WHERE provider = :provider
+ORDER BY model_type, sort_order, id
+""")
 _INSERT = text(
     """
     INSERT INTO agent_model_registry (
@@ -59,12 +81,21 @@ class ModelDao:
     """模型注册表读写。"""
 
     @staticmethod
-    async def list_models(model_type: Optional[str] = None) -> list[dict[str, Any]]:
-        """模型列表（按 model_type 过滤可选，按 sort_order 升序）。"""
+    async def list_models(
+        model_type: Optional[str] = None, page: int = 1, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
-            if model_type:
-                return await fetch_all(session, _LIST_BY_TYPE, {"model_type": model_type})
-            return await fetch_all(session, _LIST)
+            return await fetch_page(
+                session, _LIST, _COUNT, {"model_type": model_type},
+                page=page, page_size=page_size,
+            )
+
+    @staticmethod
+    async def list_by_provider(provider: str, enabled_only: bool = True) -> list[dict[str, Any]]:
+        """按 provider 取模型（默认仅 enabled），用于本地模型预加载等场景。"""
+        stmt = _LIST_BY_PROVIDER if enabled_only else _LIST_BY_PROVIDER_ALL
+        async with session_scope() as session:
+            return await fetch_all(session, stmt, {"provider": provider})
 
     @staticmethod
     async def get(model_id: int) -> Optional[dict[str, Any]]:

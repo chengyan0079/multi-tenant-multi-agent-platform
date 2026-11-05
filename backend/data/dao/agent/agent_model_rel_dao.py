@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import text
+from sqlalchemy import Integer, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _COLS = (
@@ -40,6 +40,15 @@ JOIN agent a ON a.id = m.agent_id
 JOIN agent_model_registry r ON r.id = m.model_id
 WHERE a.agent_type = :agent_type
 ORDER BY r.model_type, m.priority ASC, m.model_id ASC
+LIMIT :limit OFFSET :offset
+""").bindparams(
+    bindparam("limit", type_=Integer),
+    bindparam("offset", type_=Integer),
+)
+_COUNT_BY_AGENT_TYPE = text("""
+SELECT COUNT(*) FROM agent_model m
+JOIN agent a ON a.id = m.agent_id
+WHERE a.agent_type = :agent_type
 """)
 
 _COUNT_REL = text("SELECT COUNT(*) FROM agent_model WHERE agent_id = :agent_id")
@@ -94,10 +103,14 @@ class AgentModelRelDao:
             return await fetch_one(session, _RESOLVE, {"agent_type": agent_type, "model_type": model_type})
 
     @staticmethod
-    async def list_by_agent(agent_type: str) -> list[dict[str, Any]]:
-        """该 agent 的全部模型绑定（含模型展示信息，按 model_type/priority 排序）。"""
+    async def list_by_agent_paged(
+        agent_type: str, page: int = 1, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
-            return await fetch_all(session, _LIST_BY_AGENT, {"agent_type": agent_type})
+            return await fetch_page(
+                session, _LIST_BY_AGENT, _COUNT_BY_AGENT_TYPE, {"agent_type": agent_type},
+                page=page, page_size=page_size,
+            )
 
     @staticmethod
     async def count_by_agent(agent_id: int) -> int:

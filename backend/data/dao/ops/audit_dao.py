@@ -1,16 +1,11 @@
-"""审计日志 DAO：写入与查询（agent_audit_log，只读查询，见设计文档 §6.5）。
-
-- 审计日志无写接口：仅由业务操作在事务内落库；
-- 查询时 tenant_admin 强制按本租户过滤（由调用方传 tenant_id 实现，本 DAO 不擅自决定）；
-- create_at / updated_at 由 TimestampMixin 自动维护，写入不显式给值。
-"""
+"""审计日志 DAO：写入与查询（agent_audit_log）。"""
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from sqlalchemy import text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import execute_write, fetch_one, fetch_page, session_scope
 
 _INSERT = text(
     "INSERT INTO agent_audit_log (tenant_id, user_id, action, target, detail, result, trace_id, ip) "
@@ -72,14 +67,11 @@ class AuditDao:
     async def query(
         tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
     ) -> tuple[list[dict[str, Any]], int]:
-        """按租户过滤分页查询（tenant_id=None 查全量，仅超管），按时间倒序。"""
         async with session_scope() as session:
-            rows = await fetch_all(
-                session, _LIST,
-                {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size},
+            return await fetch_page(
+                session, _LIST, _COUNT, {"tenant_id": tenant_id},
+                page=page, page_size=page_size,
             )
-            total = await fetch_value(session, _COUNT, {"tenant_id": tenant_id})
-            return rows, int(total)
 
     @staticmethod
     async def get(log_id: str) -> Optional[dict[str, Any]]:

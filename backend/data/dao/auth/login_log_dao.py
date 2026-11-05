@@ -1,6 +1,6 @@
 """登录日志 DAO：写入与查询（agent_login_log）。
 
-写入是旁路：登录成功与否不受落库结果影响，写失败只告警。
+写入是旁路：写失败只告警，不影响登录结果。
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from backend.app_state import app_state
 from backend.common.logger import logger
-from backend.data.sql import fetch_all, fetch_value, session_scope
+from backend.data.sql import fetch_page, session_scope
 
 _INSERT = text("""
 INSERT INTO agent_login_log (
@@ -78,11 +78,8 @@ class LoginLogDao:
     async def query(
         tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
     ) -> tuple[list[dict[str, Any]], int]:
-        """按租户过滤分页查询（tenant_id=None 查全量，仅超管），时间倒序。"""
         async with session_scope() as session:
-            rows = await fetch_all(
-                session, _LIST,
-                {"tenant_id": tenant_id, "limit": page_size, "offset": (page - 1) * page_size},
+            return await fetch_page(
+                session, _LIST, _COUNT, {"tenant_id": tenant_id},
+                page=page, page_size=page_size,
             )
-            total = await fetch_value(session, _COUNT, {"tenant_id": tenant_id})
-            return rows, int(total)

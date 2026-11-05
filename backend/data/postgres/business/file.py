@@ -64,3 +64,7 @@ class AgentFile(AuditMixin, Base):
     )
     checksum: Mapped[str | None] = mapped_column(String(64), comment="内容校验（sha256 十六进制）")
     remark: Mapped[str | None] = mapped_column(String(512), comment="备注")
+    parse_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending",
+        comment="解析状态：pending 未解析 / parsing 解析中 / parsed 已解析 / failed 解析失败",
+    )

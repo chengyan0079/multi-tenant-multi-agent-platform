@@ -1,13 +1,5 @@
-"""文件元数据 DAO：`agent_file`（单表版本化）。
-
-版本化规则（方案 B）：
-- 同租户 + 同上传用户 + 同 `lower(trim(original_name))` = 同一逻辑文件；
-- 重复上传：内容 sha256 与**该文件最新版**一致 → 拦截（不落库）；否则 `file_version` 递增、沿用同一 `file_uuid`；
-- 不同归一化名 → 永远新文件（新 `file_uuid`，v1），即使内容与别的文件相同。
-
-写入并发：上传决策（查最新版 + 定版本/uuid + 上传 MinIO + 落库）在**同一事务**内，
-开头 `pg_advisory_xact_lock` 按 (tenant, user, 归一化名) 串行，避免同秒并发算出同一版本号。
-"""
+"""文件元数据 DAO：`agent_file`（单表版本化）。"""
+# todo 版本化判定与 pg_advisory_xact_lock 并发控制见 upload 方法，改动前先读其事务边界。
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +9,7 @@ import uuid6
 
 from sqlalchemy import text
 
-from backend.data.sql import fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import fetch_all, fetch_one, fetch_page, fetch_value, session_scope
 from backend.data.sql.audit import audit_on_insert
 
 # 写入列白名单：调用方传什么就写什么，多余字段丢弃（防拼错列名）
@@ -119,13 +111,10 @@ class FileDao:
             " ORDER BY t.create_at DESC, t.id DESC LIMIT :limit OFFSET :offset"
         )
         async with session_scope() as session:
-            total = await fetch_value(session, text(count_sql), params) or 0
-            rows = await fetch_all(
-                session,
-                text(list_sql),
-                {**params, "limit": page_size, "offset": (page - 1) * page_size},
+            return await fetch_page(
+                session, text(list_sql), text(count_sql), params,
+                page=page, page_size=page_size,
             )
-        return rows, int(total)
 
     @staticmethod
     async def get(file_id: int) -> dict[str, Any] | None:
@@ -155,6 +144,38 @@ class FileDao:
                 text("SELECT max(file_version) FROM agent_file WHERE file_uuid = :uuid"),
                 {"uuid": file_uuid},
             )
+
+    @staticmethod
+    async def get_many(file_ids: list[int]) -> list[dict[str, Any]]:
+        """按 id 列表批量取行（用于解析前校验可见性）。"""
+        if not file_ids:
+            return []
+        async with session_scope() as session:
+            return await fetch_all(
+                session,
+                text("SELECT * FROM agent_file WHERE id = ANY(:ids)"),
+                {"ids": tuple(file_ids)},
+            )
+
+    @staticmethod
+    async def set_parse_status(
+        file_ids: list[int], status: str, *, tenant_id: int | None = None
+    ) -> int:
+        """批量更新解析状态（触发解析置 parsing；消费完成置 parsed/failed）。
+
+        file_ids 已由调用方按可见性过滤；tenant_id 非 None 时额外加租户约束（超管传 None 不过滤）。
+        """
+        if not file_ids:
+            return 0
+        params: dict[str, Any] = {"status": status, "ids": tuple(file_ids)}
+        where = "id = ANY(:ids)"
+        if tenant_id is not None:
+            where = f"({where}) AND tenant_id = :tid"
+            params["tid"] = tenant_id
+        stmt = text(f"UPDATE agent_file SET parse_status = :status WHERE {where}")
+        async with session_scope() as session:
+            res = await session.execute(stmt, params)
+            return int(res.rowcount)
 
     @staticmethod
     async def save_new_version(
@@ -194,10 +215,10 @@ class FileDao:
             version = (int(latest["file_version"]) + 1) if latest is not None else 1
             file_uuid = latest["file_uuid"] if latest is not None else uuid6.uuid7().hex
 
-            # 重命名：{file_uuid}_{user_id}_v{版本号}_upload.pdf
-            stored_name = f"{file_uuid}_{uploader_user_id}_v{version}_upload.pdf"
+            # 重命名：{file_uuid}_{user_id}_v{版本号}_upload{扩展名}
+            stored_name = f"{file_uuid}_{uploader_user_id}_v{version}_upload{file_ext}"
             tenant_seg = f"t{tenant_id}" if tenant_id is not None else "system"
-            object_key = f"files/{tenant_seg}/{file_uuid}_v{version}.pdf"
+            object_key = f"files/{tenant_seg}/{file_uuid}_v{version}{file_ext}"
 
             # 上传 MinIO（在锁/事务内，保证串行；失败则整体回滚）
             from backend.data.clients.minio import get_storage

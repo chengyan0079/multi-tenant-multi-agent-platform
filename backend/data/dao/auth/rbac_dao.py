@@ -1,17 +1,12 @@
-"""RBAC DAO：角色目录、角色权限、用户-租户-角色分配、租户开关。
-
-四张表的审计列不一样，写之前先看清：
-- `agent_role`：只有 user 审计列（全局表）；
-- `agent_role_permission` / `agent_user_tenant`：多对多中间表，**无审计列**；
-- `tenant`：只有业务列，没有审计列。
-"""
+"""RBAC DAO：角色目录、角色权限、用户-租户-角色分配。"""
+# todo 各表审计列不一致：agent_role 仅 user 列，中间表无审计列，写 SQL 前先核对列定义。
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
 from backend.data.sql.audit import audit_on_insert
 from backend.observability.exception import BizException, ErrCode
 
@@ -85,16 +80,35 @@ ORDER BY aut.tenant_id
 """)
 
 # 角色目录 + 权限点（GET /admin/roles）
-_LIST_ROLES_PERMS = text("""
+_ROLES_SELECT = """
 SELECT r.role_id, r.name, r.description,
        COALESCE(array_agg(p.scope) FILTER (WHERE p.scope IS NOT NULL), '{}'::text[]) AS scopes
 FROM agent_role r
 LEFT JOIN agent_role_permission p ON p.role_id = r.role_id
 GROUP BY r.role_id, r.name, r.description
-ORDER BY r.role_id
-""")
+"""
+_LIST_ROLES_PERMS = text(_ROLES_SELECT + "ORDER BY r.role_id")
+_LIST_ROLES_PAGED = text(_ROLES_SELECT + "ORDER BY r.role_id LIMIT :limit OFFSET :offset")
+_COUNT_ROLES = text("SELECT count(*) FROM agent_role")
 
-# 本租户成员（GET /tenant/users，管理员排前）
+
+def _normalize_scopes(rows: list[dict[str, Any]]) -> None:
+    # array_agg 在部分驱动下返回 "{a,b}" 字符串，统一成列表
+    for row in rows:
+        scopes = row.get("scopes")
+        if isinstance(scopes, str):
+            scopes = [s for s in scopes.strip("{}").split(",") if s]
+        row["scopes"] = list(scopes or [])
+
+
+# todo asyncpg 扩展协议下 "IS NULL + cast" 无法推断参数类型，需显式声明
+_MEMBER_BINDS = (
+    bindparam("tenant_id", type_=Integer),
+    bindparam("username", type_=String),
+    bindparam("username_pattern", type_=String),
+    bindparam("created_from", type_=String),
+    bindparam("created_to", type_=String),
+)
 _LIST_TENANT_MEMBERS = text("""
 SELECT u.id AS id, u.username, u.name, aut.tenant_id, u.create_at, u.updated_at,
        r.name AS role_name
@@ -102,8 +116,25 @@ FROM agent_user_tenant aut
 JOIN "agent_user" u ON u.id = aut.user_id
 JOIN agent_role r ON r.role_id = aut.role_id
 WHERE aut.tenant_id = :tenant_id
-ORDER BY (r.name = 'tenant_admin') DESC, u.id
-""")
+  AND (:username IS NULL OR u.username ILIKE :username_pattern)
+  AND (:created_from IS NULL OR u.create_at::date >= CAST(:created_from AS date))
+  AND (:created_to IS NULL OR u.create_at::date <= CAST(:created_to AS date))
+ORDER BY (r.name = 'tenant_admin') DESC, u.id DESC LIMIT :limit OFFSET :offset
+""").bindparams(
+    *_MEMBER_BINDS,
+    bindparam("limit", type_=Integer),
+    bindparam("offset", type_=Integer),
+)
+_COUNT_TENANT_MEMBERS = text("""
+SELECT COUNT(*)
+FROM agent_user_tenant aut
+JOIN "agent_user" u ON u.id = aut.user_id
+JOIN agent_role r ON r.role_id = aut.role_id
+WHERE aut.tenant_id = :tenant_id
+  AND (:username IS NULL OR u.username ILIKE :username_pattern)
+  AND (:created_from IS NULL OR u.create_at::date >= CAST(:created_from AS date))
+  AND (:created_to IS NULL OR u.create_at::date <= CAST(:created_to AS date))
+""").bindparams(*_MEMBER_BINDS)
 
 # 取某用户在某租户的角色名（改/解绑前校验归属与防自锁）
 _GET_MEMBERSHIP = text("""
@@ -198,53 +229,43 @@ class RbacDao:
 
     @staticmethod
     async def get_super_admin_identity(user_id: int) -> dict[str, Any] | None:
-        """超管分支身份快照：agent_user.is_super_admin=true 的用户返回，否则 None。
-
-        只返回 admin 角色的权限点列表，不带任何租户：超管全程无租户上下文。
-        """
         async with session_scope() as session:
-            row = await fetch_one(
-                session, _GET_SUPER_ADMIN, {"user_id": user_id}
-            )
-            if row is None:
-                return None
-            scopes = row.get("scopes")
-            if isinstance(scopes, str):
-                scopes = [s for s in scopes.strip("{}").split(",") if s]
-            row["scopes"] = list(scopes or [])
-            return row
+            row = await fetch_one(session, _GET_SUPER_ADMIN, {"user_id": user_id})
+        if row is None:
+            return None
+        _normalize_scopes([row])
+        return row
 
     @staticmethod
     async def get_user_assignments(user_id: int) -> list[dict[str, Any]]:
-            """登录选租户用：列出用户在各租户（含停用）的分配（租户名/启用/角色/权限点）。"""
-            async with session_scope() as session:
-                rows = await fetch_all(
-                    session, _GET_USER_ASSIGNMENTS, {"user_id": user_id}
-                )
-            for r in rows:
-                scopes = r.get("scopes")
-                if isinstance(scopes, str):
-                    scopes = [s for s in scopes.strip("{}").split(",") if s]
-                r["scopes"] = list(scopes or [])
-            return rows
+        async with session_scope() as session:
+            rows = await fetch_all(session, _GET_USER_ASSIGNMENTS, {"user_id": user_id})
+        _normalize_scopes(rows)
+        return rows
 
     @staticmethod
     async def list_roles_with_permissions() -> list[dict[str, Any]]:
-            """角色目录 + 权限点（GET /admin/roles）。"""
-            async with session_scope() as session:
-                rows = await fetch_all(session, _LIST_ROLES_PERMS)
-            for r in rows:
-                scopes = r.get("scopes")
-                if isinstance(scopes, str):
-                    scopes = [s for s in scopes.strip("{}").split(",") if s]
-                r["scopes"] = list(scopes or [])
-            return rows
+        async with session_scope() as session:
+            rows = await fetch_all(session, _LIST_ROLES_PERMS)
+        _normalize_scopes(rows)
+        return rows
+
+    @staticmethod
+    async def list_roles_paged(
+        page: int = 1, page_size: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        async with session_scope() as session:
+            rows, total = await fetch_page(
+                session, _LIST_ROLES_PAGED, _COUNT_ROLES,
+                page=page, page_size=page_size,
+            )
+        _normalize_scopes(rows)
+        return rows, total
 
     @staticmethod
     async def get_role_id(name: str) -> int | None:
-            """角色名 → role_id（代码只按 name 判定，不直接写数字）。"""
-            async with session_scope() as session:
-                return await fetch_value(session, _GET_ROLE_ID, {"name": name})
+        async with session_scope() as session:
+            return await fetch_value(session, _GET_ROLE_ID, {"name": name})
 
     @staticmethod
     async def set_role_permissions(role_id: int, scopes: list[str]) -> None:
@@ -378,12 +399,27 @@ class RbacDao:
                 return n
 
     @staticmethod
-    async def list_tenant_members(tenant_id: int) -> list[dict[str, Any]]:
-            """本租户成员（含角色名，管理员排前）。"""
-            async with session_scope() as session:
-                return await fetch_all(
-                    session, _LIST_TENANT_MEMBERS, {"tenant_id": tenant_id}
-                )
+    async def list_tenant_members(
+        tenant_id: int,
+        *,
+        username: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        params: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "username": username or None,
+            "username_pattern": f"%{username}%" if username else None,
+            "created_from": created_from,
+            "created_to": created_to,
+        }
+        async with session_scope() as session:
+            return await fetch_page(
+                session, _LIST_TENANT_MEMBERS, _COUNT_TENANT_MEMBERS, params,
+                page=page, page_size=page_size,
+            )
 
     @staticmethod
     async def set_tenant_admin(tenant_id: int, user_id: int) -> int | None:

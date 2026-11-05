@@ -34,10 +34,12 @@ class AgentOutbox(TimestampMixin, Base):
     topic: Mapped[str] = mapped_column(String(64), index=True, comment="消息 type / routing_key，如 audit.flush")
     payload: Mapped[dict] = mapped_column(JSONB, comment="完整消息体（含 tenant_id/user_id/type/payload）")
     status: Mapped[str] = mapped_column(
-        String(16), default="pending", index=True,
+        String(16), default="pending", server_default=text("'pending'"), index=True,
         comment="pending（待投递）| sent（已发 MQ）| done（消费端已处理）| failed（消费失败超限）",
     )
-    retry_count: Mapped[int] = mapped_column(BigInteger, default=0, comment="投递 / 消费重试次数")
+    retry_count: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), comment="投递 / 消费重试次数"
+    )
     last_error: Mapped[str | None] = mapped_column(Text, comment="最近一次失败原因")
     tenant_id: Mapped[int | None] = mapped_column(BigInteger, comment="租户ID（冗余，便于排查）")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="投递到 MQ 的时间")

@@ -1,11 +1,4 @@
-"""Outbox 读写（agent_outbox）：投递协程与消费端共用。
-
-状态机（见 docs/消息队列对接设计 §6.4）：
-- `enqueue`：业务写库同事务写入 `pending`；
-- `mark_sent`：投递协程发 MQ 成功后；
-- `mark_done`：消费端处理成功后（同时完成 §6.3 幂等判定）；
-- `inc_retry` / `mark_failed`：消费失败计数 / 超限落死信。
-"""
+"""Outbox 读写（agent_outbox）：投递协程与消费端共用。"""
 from __future__ import annotations
 
 import json
@@ -13,11 +6,13 @@ from typing import Optional
 
 from sqlalchemy import text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, session_scope
 
 _ENQUEUE = text(
-    "INSERT INTO agent_outbox (topic, payload, tenant_id, status) "
-    "VALUES (:topic, :payload, :tenant_id, 'pending') RETURNING id"
+    # id 由应用生成（即消息 key），便于全链路用同一个幂等键；
+    # retry_count 显式给 0：建表脚本里该列 NOT NULL 且无默认值，依赖库默认会插入失败
+    "INSERT INTO agent_outbox (id, topic, payload, tenant_id, status, retry_count) "
+    "VALUES (:id, :topic, :payload, :tenant_id, 'pending', 0) RETURNING id"
 )
 _MARK_SENT = text(
     "UPDATE agent_outbox SET status='sent', sent_at=now(), retry_count=:retry_count "
@@ -44,14 +39,21 @@ class OutboxDao:
     """本地消息表读写。"""
 
     @staticmethod
-    async def enqueue(*, topic: str, payload: dict, tenant_id: Optional[int]) -> str:
-        """写入一条待投递消息，返回 id（即后续 MQ 消息的 message_id）。"""
+    async def enqueue(
+        *, message_id: str, topic: str, payload: dict, tenant_id: Optional[int]
+    ) -> str:
+        """写入一条待投递消息，返回 id（与传入的 message_id 一致）。"""
         async with session_scope() as session:
             row = await fetch_one(
                 session,
                 _ENQUEUE,
                 # JSONB 列接受 JSON 文本；读回时 asyncpg 自动解析为 dict
-                {"topic": topic, "payload": json.dumps(payload), "tenant_id": tenant_id},
+                {
+                    "id": message_id,
+                    "topic": topic,
+                    "payload": json.dumps(payload),
+                    "tenant_id": tenant_id,
+                },
             )
             await session.commit()
             return row["id"]
@@ -117,7 +119,7 @@ class OutboxDao:
                 session,
                 text(
                     "SELECT id, topic, payload, tenant_id, status, retry_count, "
-                    "last_error, sent_at, create_at, update_at FROM agent_outbox WHERE id=:id"
+                    "last_error, sent_at, create_at, updated_at FROM agent_outbox WHERE id=:id"
                 ),
                 {"id": id},
             )
@@ -129,7 +131,6 @@ class OutboxDao:
         status: str | None = None,
         tenant_id: int | None = None,
     ) -> tuple[list[dict], int]:
-        """消息队列（outbox）分页列表；租户管理员按 tenant_id 过滤，超管传 None 看全量。"""
         conds: list[str] = []
         params: dict = {}
         if status is not None:
@@ -139,21 +140,16 @@ class OutboxDao:
             conds.append("tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
-        params.update({"limit": page_size, "offset": (page - 1) * page_size})
+        list_sql = text(
+            f"SELECT id, topic, status, retry_count, last_error, tenant_id, "
+            f"sent_at, create_at, updated_at FROM agent_outbox {where} "
+            "ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
+        )
+        count_sql = text(f"SELECT count(*) FROM agent_outbox {where}")
         async with session_scope() as session:
-            rows = await fetch_all(
-                session,
-                text(
-                    f"SELECT id, topic, status, retry_count, last_error, tenant_id, "
-                    f"sent_at, create_at, update_at FROM agent_outbox {where} "
-                    f"ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
-                ),
-                params,
+            return await fetch_page(
+                session, list_sql, count_sql, params, page=page, page_size=page_size
             )
-            total = await fetch_value(
-                session, text(f"SELECT count(*) FROM agent_outbox {where}"), params
-            )
-            return rows, int(total)
 
     @staticmethod
     async def update_status(
@@ -210,28 +206,22 @@ class DeadLetterDao:
         page_size: int,
         tenant_id: int | None = None,
     ) -> tuple[list[dict], int]:
-        """死信队列分页列表；租户管理员按 tenant_id 过滤，超管传 None 看全量。"""
         conds: list[str] = []
         params: dict = {}
         if tenant_id is not None:
             conds.append("tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
-        params.update({"limit": page_size, "offset": (page - 1) * page_size})
+        list_sql = text(
+            f"SELECT id, topic, payload, origin_queue, error, retry_count, "
+            f"tenant_id, create_at FROM agent_dead_letter {where} "
+            "ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
+        )
+        count_sql = text(f"SELECT count(*) FROM agent_dead_letter {where}")
         async with session_scope() as session:
-            rows = await fetch_all(
-                session,
-                text(
-                    f"SELECT id, topic, payload, origin_queue, error, retry_count, "
-                    f"tenant_id, create_at FROM agent_dead_letter {where} "
-                    f"ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
-                ),
-                params,
+            return await fetch_page(
+                session, list_sql, count_sql, params, page=page, page_size=page_size
             )
-            total = await fetch_value(
-                session, text(f"SELECT count(*) FROM agent_dead_letter {where}"), params
-            )
-            return rows, int(total)
 
     @staticmethod
     async def get(id: str) -> Optional[dict]:

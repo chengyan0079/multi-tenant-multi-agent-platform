@@ -1,35 +1,43 @@
-"""用户 DAO：登录认证与账号读写（user 表，密码明文比对，见设计文档 §2）。
-
-- 登录只查 username（唯一列），密码明文直接比对，不哈希；
-- user 表无审计列（与 ORM 模型一致），建号时一次性设定密码，之后不变更；
-- 不提供改密/重置/注册等能力（设计文档 §2.3）。
-"""
+"""用户 DAO：登录认证与账号读写（user 表，密码明文比对）。"""
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import String, bindparam, text
+from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import fetch_all, fetch_one, fetch_value, session_scope
+from backend.data.sql import fetch_one, fetch_page, fetch_value, session_scope
 
-_COLS = "id, username, name, password, tenant_id, enabled, create_at, updated_at"
-
-_GET_BY_USERNAME = text(f'SELECT {_COLS} FROM "agent_user" WHERE username = :username')
-_GET = text(f"SELECT {_COLS} FROM \"agent_user\" WHERE id = :user_id")
-_LIST = text(
-    f"SELECT {_COLS} FROM \"agent_user\" "
-    "WHERE (:tenant_id IS NULL OR tenant_id = :tenant_id) "
-    "AND (:username IS NULL OR username = :username) "
-    "AND (:created_from IS NULL OR create_at::date >= CAST(:created_from AS date)) "
-    "AND (:created_to IS NULL OR create_at::date <= CAST(:created_to AS date)) "
-    "ORDER BY id"
-).bindparams(
-    # 显式声明日期参数类型，避免 asyncpg 扩展协议下 Postgres 因
-    # "IS NULL 与 ::date 并存" 无法推断参数类型而报
-    # "could not determine data type of parameter"（导致 500）
+_GET_BY_USERNAME = text("""
+SELECT id, username, name, password, tenant_id, enabled, create_at, updated_at
+FROM "agent_user" WHERE username = :username
+""")
+_GET = text("""
+SELECT id, username, name, password, tenant_id, enabled, create_at, updated_at
+FROM "agent_user" WHERE id = :user_id
+""")
+_BINDS = (
+    # todo asyncpg 扩展协议下 "IS NULL + cast" 无法推断参数类型，必须显式声明
+    bindparam("tenant_id", type_=Integer),
+    bindparam("username", type_=String),
     bindparam("created_from", type_=String),
     bindparam("created_to", type_=String),
 )
+_LIST = text("""
+SELECT id, username, name, password, tenant_id, enabled, create_at, updated_at
+FROM "agent_user"
+WHERE (:tenant_id IS NULL OR tenant_id = :tenant_id)
+  AND (:username IS NULL OR username ILIKE '%' || :username || '%')
+  AND (:created_from IS NULL OR create_at::date >= CAST(:created_from AS date))
+  AND (:created_to IS NULL OR create_at::date <= CAST(:created_to AS date))
+ORDER BY id LIMIT :limit OFFSET :offset
+""").bindparams(*_BINDS, bindparam("limit", type_=Integer), bindparam("offset", type_=Integer))
+_COUNT = text("""
+SELECT count(*) FROM "agent_user"
+WHERE (:tenant_id IS NULL OR tenant_id = :tenant_id)
+  AND (:username IS NULL OR username ILIKE '%' || :username || '%')
+  AND (:created_from IS NULL OR create_at::date >= CAST(:created_from AS date))
+  AND (:created_to IS NULL OR create_at::date <= CAST(:created_to AS date))
+""").bindparams(*_BINDS)
 _INSERT = text(
     'INSERT INTO "agent_user" (username, name, password, tenant_id) '
     "VALUES (:username, :name, :password, :tenant_id) "
@@ -70,18 +78,18 @@ class UserDao:
         username: Optional[str] = None,
         created_from: Optional[str] = None,
         created_to: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        """用户列表（超管只读视图）：可按租户 / 登录名 / 创建日期范围过滤。"""
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        params = {
+            "tenant_id": tenant_id,
+            "username": username,
+            "created_from": created_from,
+            "created_to": created_to,
+        }
         async with session_scope() as session:
-            return await fetch_all(
-                session,
-                _LIST,
-                {
-                    "tenant_id": tenant_id,
-                    "username": username,
-                    "created_from": created_from,
-                    "created_to": created_to,
-                },
+            return await fetch_page(
+                session, _LIST, _COUNT, params, page=page, page_size=page_size
             )
 
     @staticmethod

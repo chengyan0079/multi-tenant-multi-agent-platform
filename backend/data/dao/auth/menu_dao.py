@@ -1,11 +1,6 @@
-"""菜单 DAO：菜单下发数据源（按 scope 过滤 + 组装树，见设计文档 §7）。
+"""菜单 DAO：菜单下发数据源（按 scope 过滤 + 组装树）。
 
 菜单只控制入口显隐，不是安全边界；接口侧仍须挂 require_scope。
-过滤规则（§7.2）：
-  1. visible = true
-  2. scope IS NULL OR scope ∈ 用户 scopes OR 用户 scopes 含 "*"
-  3. 父菜单可见（parent_id = 0 视为顶级）
-  4. 超管：按自身 scopes 过滤，自然只得到有权限的基建菜单（菜单由 scope 驱动）
 """
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from backend.data.sql import execute_write, fetch_all, fetch_value, session_scope
+from backend.data.sql import execute_write, fetch_all, fetch_page, fetch_value, session_scope
 from backend.observability.exception import BizException, ErrCode
 
 _LIST_VISIBLE = text(
@@ -23,8 +18,9 @@ _LIST_VISIBLE = text(
 
 _LIST_ALL = text(
     "SELECT id, name, path, icon, parent_id, sort_order, visible, scope "
-    "FROM agent_menu ORDER BY parent_id, sort_order, id"
+    "FROM agent_menu ORDER BY parent_id, sort_order, id LIMIT :limit OFFSET :offset"
 )
+_COUNT_ALL = text("SELECT count(*) FROM agent_menu")
 _INSERT_MENU = text(
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) "
     "VALUES (:name, :path, :icon, :parent_id, :sort_order, :visible, :scope) "
@@ -75,27 +71,16 @@ class MenuDao:
 
     @staticmethod
     async def build(scopes: list[str]) -> list[dict[str, Any]]:
-        """按 scope 组装菜单树（见 §7.2）。
-
-        统一按 scope 过滤（scope 为空 / 命中 / 含 '*'），不区分超管白名单：
-        - 超管 scopes 已含各基建域权限点（agent/model/config/tenant/rbac/audit/auth），
-          按 scope 自然得到全部基建菜单，而 /sessions、/qa 等业务菜单因超管无对应
-          scope 自动排除；
-        - 租户管理员按自身 scopes 过滤，只看到本租户可见的基建/权限菜单；
-        - dashboard:view 同时落在 admin 与 tenant_admin 角色上，控制台对超管和所有
-          租户管理员开放（非超管只看本租户数据，由 dashboard 端点收口）。
-        这样 /rbac 的子项（/tenants、/users、/roles、/menus）也能因 scope 命中而保留，
-        不会像旧白名单按 path 前缀匹配那样把 /tenants、/users 等丢棄。
-        """
         rows = await MenuDao.list_visible()
         rows = MenuDao.filter_by_scopes(rows, list(scopes or []))
         return MenuDao.build_tree(rows)
 
     @staticmethod
-    async def list_all() -> list[dict[str, Any]]:
-        """全部菜单（含隐藏），供菜单管理使用。"""
+    async def list_paged(page: int = 1, page_size: int = 50) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
-            return await fetch_all(session, _LIST_ALL)
+            return await fetch_page(
+                session, _LIST_ALL, _COUNT_ALL, page=page, page_size=page_size
+            )
 
     @staticmethod
     async def create(

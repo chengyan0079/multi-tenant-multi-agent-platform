@@ -1,8 +1,9 @@
 """
 memory - 分层记忆抽象（设计文档 §6.1）
 
-短期 Redis 滚动窗口 / 长期 PG Letta 式分页 / 语义 Milvus。本文件定义统一接口与基于 Redis 的
-短期记忆实现，长期与语义落点后续接 models + milvus_store。单 Agent 直接复用，无需自建。
+短期 Redis 滚动窗口 / 长期 PG（Letta 式分页块）/ 语义检索走 Milvus（文档 RAG 向量，非记忆）。
+本文件定义统一接口与基于 Redis 的短期记忆实现；长期记忆落 PG（agent_long_term_memory），
+语义检索由文档解析链路写入 Milvus 供 RAG 使用。单 Agent 直接复用，无需自建。
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ def _session_key(thread_id: str) -> str | None:
 
 
 class MemoryStore:
-    """记忆存储：短期（Redis）+ 长期/语义（后续接 PG/Milvus）。"""
+    """记忆存储：短期（Redis）+ 长期（PG，agent_long_term_memory）。语义检索由 Milvus 文档库承担。"""
 
     async def start(self) -> None:
         # 资源由 RedisManager / PostgresManager / MilvusManager 注入 app_state，此处仅做可用性检查
@@ -60,31 +61,28 @@ class MemoryStore:
         return [_loads(x) for x in raw]
 
     async def append_long(self, agent_id: str, block: str, content: str) -> None:
-        """长期/语义记忆：写入 Milvus 向量存储（启动时由 MilvusManager 注入）。
+        """长期记忆：写入 PG（agent_long_term_memory，Letta 式分页块）。
 
-        长期记忆按「租户 + 用户 + 智能体」归属，检索侧同条件过滤；身份缺失不写，
-        否则记忆会被写成租户共享。PG 落点（AgentLongTermMemory 分页块）待接入。
+        按「租户 + 用户 + 智能体 + block」归属；身份缺失不写，否则记忆会被写成租户共享。
+        Milvus 已不再用于长记忆，改作文档 RAG 向量检索（见 backend/data/milvus/store.py）。
         """
-        store = app_state.milvus_store
-        if store is None:
-            logger.warning("Milvus 未就绪，长期记忆降级为跳过写入")
-            return
         tenant_id = get_tenant_id()
         user_id = get_user_id()
         if tenant_id is None or user_id is None:
             logger.warning("缺少租户或用户上下文，跳过长期记忆写入（避免跨用户共享）")
             return
-        from datetime import datetime
+        try:
+            from backend.data.dao.business.long_term_memory_dao import LongTermMemoryDao
 
-        await store.add_memory(
-            id=f"{tenant_id}:{user_id}:{agent_id}:{block}:{datetime.now().timestamp()}",
-            tenant_id=str(tenant_id),
-            user_id=str(user_id),
-            agent_id=agent_id,
-            block=block,
-            content=content,
-            created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        )
+            await LongTermMemoryDao.append(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                block=block,
+                content=content,
+            )
+        except Exception as e:  # noqa: BLE001 - 表未创建/连接异常时降级
+            logger.warning(f"长记忆写入 PG 失败（表可能尚未创建）：{e}")
 
     async def stop(self) -> None:
         return None
