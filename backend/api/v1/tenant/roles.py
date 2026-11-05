@@ -5,34 +5,37 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
-from backend.common.response import success
+from backend.common.response import ApiResponse, success
 from backend.data.dao.auth.rbac_dao import RbacDao
 from backend.middleware.auth import CurrentUser, get_current_user
 from backend.security.rbac import RoleName, Scope
-from backend.security.security import require_scope, require_tenant_admin
+from backend.security.security import require_scope
 
 router = APIRouter(prefix="/roles", tags=["tenant"])
 
 
-@router.get("", summary="本租户可分配角色（分页）")
-async def list_roles(
-    current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_tenant_admin()),  # noqa: B008
-    __: object = Depends(require_scope(Scope.RBAC_PAGE)),  # noqa: B008
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=200),
-) -> Any:
+async def _assignable_roles() -> set[str]:
+    """本租户管理员可分配的角色（排除固定角色 admin/tenant_admin），由库驱动。"""
     rows = await RbacDao.list_roles_with_permissions()
-    items = [
-        {"role": r["name"], "description": r.get("description")}
+    return {
+        r["name"]
         for r in rows
         if r["name"] not in (RoleName.ADMIN.value, RoleName.TENANT_ADMIN.value)
-    ]
-    total = len(items)
-    start = (page - 1) * page_size
-    paged = items[start : start + page_size]
-    return success({"items": paged, "total": total, "page": page, "page_size": page_size})
+    }
+
+
+@router.get(
+    "",
+    summary="本租户可分配角色列表（排除 admin/tenant_admin）",
+    response_model=ApiResponse[List[str]],
+)
+async def list_assignable_roles(
+    current: CurrentUser = Depends(get_current_user),  # noqa: B008
+    __: object = Depends(require_scope(Scope.USER_PAGE)),  # noqa: B008
+) -> Any:
+    roles = await _assignable_roles()
+    return success(sorted(roles))

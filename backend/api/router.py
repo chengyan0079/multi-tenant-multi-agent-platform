@@ -3,23 +3,27 @@
 装配只在这里做一次，业务模块内的 router 只声明资源路径（如 /tenants），
 不写版本前缀，避免再次出现 /v1/** 与 /api/v1/** 两种写法并存。
 
-按「谁在访问」分四组挂载，鉴权依赖也只在装配处挂一次：
-- 基建域 /api/v1/admin/**：整组 require_super_admin()，超管无租户、不进业务链路；
-- 业务域 /api/v1/tenant/**：整组 require_tenant()，超管调用直接 403；
+按「谁在访问」分四组挂载，整组仅挂租户上下文依赖；权限判定改由各端点自身的
+require_scope 决定（不再按角色拦截）：
+- 基建域 /api/v1/admin/**：整组只做装配，无角色守卫；每个端点自行 require_scope，
+  超管无租户、不进业务链路（业务域 scope 超管不持有，自然不可见）；
+- 业务域 /api/v1/tenant/**：整组挂 require_tenant() 提供租户上下文，超管无租户调用直接 403；
+  业务端点各自 require_scope（如 qa:ask、interview:ask 等）；
 - 登录态 /api/v1/auth/**：无整组依赖，/login 公开、/menus 与 /me 各自挂 get_current_user；
 - 系统域 /api/v1/health、/api/v1/dashboard：直属 /api/v1，不进 admin 组——
-  /health 必须免鉴权（探针无 token，挂 super_admin 会直接 403），
-  /dashboard 挂 require_admin_or_tenant_admin（超管全局 / 租户管理员本租户）。
-模块文件里不再重复写鉴权，新增接口漏挂的可能性就没有了。
+  /health 免鉴权（探针无 token），/dashboard 由端点自身 require_scope(DASHBOARD_VIEW) 决定
+  （dashboard:view 仅超管角色持有，菜单可见性另用 dashboard:menu 控制）。
+模块文件里每个端点都需自挂 require_scope，新增接口务必补上对应 scope。
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from backend.agents.exam.api import router as exam_router
-from backend.agents.interview.api import router as interview_router
-from backend.agents.qa.api import router as qa_router
-from backend.agents.resume.api import router as resume_router
+from backend.api.v1.tenant.agent.exam import router as exam_router
+from backend.api.v1.tenant.agent.interview import router as interview_router
+from backend.api.v1.tenant.agent.qa import router as qa_router
+from backend.api.v1.tenant.agent.resume import router as resume_router
+from backend.api.v1.tenant.knowledge.queue import router as knowledge_queue_router
 from backend.api.v1 import dashboard as dashboard_api
 from backend.api.v1 import health as health_api
 from backend.api.v1.admin import agents as admin_agents
@@ -40,8 +44,6 @@ from backend.api.v1.tenant import messages as tenant_messages
 from backend.api.v1.tenant import roles as tenant_roles
 from backend.api.v1.tenant import users as tenant_users
 from backend.security.security import (
-    require_admin_or_tenant_admin,
-    require_super_admin,
     require_tenant,
 )
 
@@ -75,6 +77,7 @@ _BUSINESS = (
     resume_router,
     exam_router,
     interview_router,
+    knowledge_queue_router,
     tenant_users.router,
     tenant_roles.router,
     tenant_audit.router,
@@ -93,10 +96,11 @@ def _bundle(routers: tuple[APIRouter, ...]) -> APIRouter:
 def build_api_router() -> APIRouter:
     """返回挂好 /api/v1 前缀的总路由。"""
     api = APIRouter()
+    # 权限仅由 scope 决定（各端点自挂 require_scope）；不再按角色拦截，
+    # 否则拿到 scope 的非超管角色会被挡在门外。
     api.include_router(
         _bundle(_ADMIN),
         prefix=ADMIN_PREFIX,
-        dependencies=[Depends(require_super_admin())],
     )
     # RBAC 端点鉴权混用：读接口（角色目录）对超管+租户管理员开放，写接口（覆盖权限点/
     # 新建/删除角色、改任意租户用户角色）仅超管。不挂整组依赖，由各端点显式声明，
@@ -128,12 +132,13 @@ def build_api_router() -> APIRouter:
             prefix=TENANT_PREFIX,
             dependencies=[Depends(require_tenant())],
         )
-    # 系统域：/health 免鉴权（探针无 token），/dashboard 限超管或租户管理员
+    # 系统域：/health 免鉴权（探针无 token）；/dashboard 权限由端点自身
+    # require_scope(Scope.DASHBOARD_VIEW) 决定（dashboard:view 仅超管角色持有，
+    # 菜单可见性另用 dashboard:menu 控制）
     api.include_router(health_api.router, prefix=API_PREFIX)
     api.include_router(
         dashboard_api.router,
         prefix=API_PREFIX,
-        dependencies=[Depends(require_admin_or_tenant_admin())],
     )
     # 登录态接口：/login 公开，其余在模块内各自挂 get_current_user
     api.include_router(auth_router.router, prefix=f"{API_PREFIX}/auth")

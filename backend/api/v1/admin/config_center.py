@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -16,7 +15,7 @@ from fastapi import APIRouter, Depends, Query
 from backend.api.v1.admin.schemas import (
     ConfigAddIn, ConfigModifyIn, ConfigDeleteIn, RollbackRequestIn,
 )
-from backend.common.config_center.nacos_config import (
+from backend.common.config_center import (
     ConfigCenterError,
     get_config_center_client,
 )
@@ -44,8 +43,8 @@ async def list_configs(
 ):
     client = get_config_center_client()
     try:
-        data = await asyncio.to_thread(
-            client.list_configs, data_id=data_id or "", group=group,
+        data = await client.list_configs(
+            data_id=data_id or "", group=group,
             page_no=page_no, page_size=page_size, with_meta=True,
         )
     except ConfigCenterError as e:
@@ -60,7 +59,7 @@ async def list_groups(
 ):
     client = get_config_center_client()
     try:
-        data = await asyncio.to_thread(client.list_configs, data_id="", group=None, page_no=1, page_size=1000)
+        data = await client.list_configs(data_id="", group=None, page_no=1, page_size=1000)
     except ConfigCenterError as e:
         raise BizException(50200, f"Nacos 读取失败: {e}")
     items = (data or {}).get("pageItems") or []
@@ -77,7 +76,7 @@ async def get_config_detail(
 ):
     client = get_config_center_client()
     try:
-        info = await asyncio.to_thread(client.get_config_info, data_id, group)
+        info = await client.get_config_info(data_id, group)
     except ConfigCenterError as e:
         raise BizException(50200, f"Nacos 读取失败: {e}")
     info = info if isinstance(info, dict) else {}
@@ -105,8 +104,8 @@ async def list_history(
 ):
     client = get_config_center_client()
     try:
-        data = await asyncio.to_thread(
-            client.list_history, data_id, group, page_no=page, page_size=page_size
+        data = await client.list_history(
+            data_id, group, page_no=page, page_size=page_size
         )
     except ConfigCenterError as e:
         raise BizException(50200, f"Nacos 读取失败: {e}")
@@ -123,7 +122,7 @@ async def get_history_detail(
 ):
     client = get_config_center_client()
     try:
-        data = await asyncio.to_thread(client.get_history, data_id, nid, group)
+        data = await client.get_history(data_id, nid, group)
     except ConfigCenterError as e:
         raise BizException(50200, f"Nacos 读取失败: {e}")
     return success(data or {})

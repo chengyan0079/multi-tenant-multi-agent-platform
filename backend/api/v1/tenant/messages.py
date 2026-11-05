@@ -16,7 +16,8 @@ from backend.common.response import success
 from backend.data.dao.ops.outbox_dao import DeadLetterDao, OutboxDao
 from backend.middleware.auth import CurrentUser, get_current_user
 from backend.observability.exception import BizException, ErrCode
-from backend.security.security import require_tenant_admin
+from backend.security.rbac import Scope
+from backend.security.security import require_scope
 
 router = APIRouter(prefix="/messages", tags=["tenant"])
 
@@ -33,7 +34,7 @@ async def list_queue(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_tenant_admin()),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MESSAGE_PAGE)),  # noqa: B008
 ) -> Any:
     rows, total = await OutboxDao.list_outbox(page, page_size, status, current.tenant_id)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
@@ -44,7 +45,7 @@ async def list_dead_letters(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_tenant_admin()),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MESSAGE_PAGE)),  # noqa: B008
 ) -> Any:
     rows, total = await DeadLetterDao.list_dead_letters(page, page_size, current.tenant_id)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
@@ -55,7 +56,7 @@ async def change_status(
     msg_id: str,
     body: StatusIn,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_tenant_admin()),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MESSAGE_STATUS)),  # noqa: B008
 ) -> Any:
     if body.status not in VALID_STATUS:
         raise BizException(ErrCode.PARAM_ERROR, f"非法状态：{body.status}")
@@ -73,7 +74,7 @@ async def change_status(
 async def get_queue_msg(
     msg_id: str,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_tenant_admin()),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MESSAGE_VIEW)),  # noqa: B008
 ) -> Any:
     row = await OutboxDao.get_detail(msg_id)
     if row is None:
@@ -87,7 +88,7 @@ async def get_queue_msg(
 async def get_dead_letter(
     dl_id: str,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_tenant_admin()),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MESSAGE_VIEW)),  # noqa: B008
 ) -> Any:
     row = await DeadLetterDao.get(dl_id)
     if row is None:

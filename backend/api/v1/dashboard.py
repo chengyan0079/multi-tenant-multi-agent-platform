@@ -24,6 +24,8 @@ from backend.common.logger import get_logger
 from backend.common.response import success
 from backend.data.dao.business.dashboard_dao import DashboardDao
 from backend.middleware.auth import CurrentUser, get_current_user
+from backend.security.rbac import Scope
+from backend.security.security import require_scope
 
 logger = get_logger("dashboard")
 
@@ -75,6 +77,7 @@ async def dashboard(
     tenant_id: Optional[int] = Query(
         None, description="仅超管有效：聚焦某租户；不传为全平台"
     ),
+    _: object = Depends(require_scope(Scope.DASHBOARD_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
     # 角色准入由装配处 require_admin_or_tenant_admin 保证：超管看全平台，

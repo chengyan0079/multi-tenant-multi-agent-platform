@@ -24,6 +24,7 @@ from backend.api.v1.admin.schemas import (
     EnabledIn,
 )
 from backend.app_state import app_state
+from backend.broker.publish import publish_config_refresh
 from backend.common.response import success
 from backend.observability.exception import BizException, ErrCode
 from backend.data.dao.agent.agent_dao import AgentDao
@@ -63,31 +64,30 @@ def _item(row: dict[str, Any], registered: bool) -> dict[str, Any]:
     }
 
 
-@router.get("", summary="Agent 列表")
+@router.get("", summary="Agent 列表（分页）")
 async def list_agents(
     tenant_id: Optional[int] = Query(None, description="传则附带该租户的开通状态"),
     only_enabled: bool = Query(False, description="仅返回全局启用且已注册的"),
-    _: object = Depends(require_scope(Scope.AGENT_LIST)),  # noqa: B008
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: object = Depends(require_scope(Scope.AGENT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
-):
-    rows = await AgentDao.list_agents()
-    policies: dict[str, bool] = {}
-    if tenant_id is not None:
-        policies = {
-            p["agent_type"]: p["enabled"]
-            for p in await AgentDao.list_policies(tenant_id)
-        }
+) -> Any:
     registered = _registered_types()
+    rows, total = await AgentDao.list_agents_paged(
+        tenant_id=tenant_id,
+        only_enabled=only_enabled,
+        registered_types=sorted(registered),
+        page=page,
+        page_size=page_size,
+    )
     items = []
     for r in rows:
-        if only_enabled and (not r["enabled"] or r["agent_type"] not in registered):
-            continue
         item = _item(r, r["agent_type"] in registered)
         if tenant_id is not None:
-            # 未配置策略视为开通
-            item["tenant_enabled"] = policies.get(r["agent_type"], True)
+            item["tenant_enabled"] = r["tenant_enabled"]
         items.append(item)
-    return success({"items": items, "total": len(items)})
+    return success({"items": items, "total": total, "page": page, "page_size": page_size})
 
 
 @router.get("/{agent_type}", summary="Agent 详情")
@@ -129,25 +129,29 @@ async def set_enabled(
             meta.db_enabled = enabled
         except KeyError:
             pass
+    await publish_config_refresh("agent_registry")
     return success({"agent_type": agent_type, "enabled": enabled})
 
 
-@router.get("/tenants/{tenant_id}/capabilities", summary="租户开通策略列表")
+@router.get("/tenants/{tenant_id}/capabilities", summary="租户开通策略列表（分页）")
 async def list_capabilities(
-    tenant_id: int, _: object = Depends(require_scope(Scope.AGENT_LIST)), __: object = Depends(get_current_user),  # noqa: B008
-):
-    agents = await AgentDao.list_agents()
-    policy_map = {
-        p["agent_type"]: p["enabled"] for p in await AgentDao.list_policies(tenant_id)
-    }
+    tenant_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: object = Depends(require_scope(Scope.AGENT_LIST)),  # noqa: B008
+    __: object = Depends(get_current_user),  # noqa: B008
+) -> Any:
+    rows, total = await AgentDao.list_agents_paged(
+        tenant_id=tenant_id, page=page, page_size=page_size
+    )
     items = [{
-        "agent_type": a["agent_type"],
-        "name": a["name"],
-        "global_enabled": a["enabled"],
-        "enabled": policy_map.get(a["agent_type"], True),
-        "configured": a["agent_type"] in policy_map,
-    } for a in agents]
-    return success({"items": items, "total": len(items)})
+        "agent_type": r["agent_type"],
+        "name": r["name"],
+        "global_enabled": r["enabled"],
+        "enabled": r["tenant_enabled"],
+        "configured": r["policy_configured"],
+    } for r in rows]
+    return success({"items": items, "total": total, "page": page, "page_size": page_size})
 
 
 @router.put("/tenants/{tenant_id}/capabilities", summary="设置租户开通策略")
@@ -162,6 +166,7 @@ async def set_capabilities(
     reg = app_state.agent_registry
     if reg is not None:
         await reg.load_from_db()
+    await publish_config_refresh("agent_registry")
     return success({"tenant_id": tenant_id, "updated": len(items)})
 
 
@@ -185,6 +190,13 @@ def _invalidate_llm_cache() -> None:
         factory.clear_llm_cache()
 
 
+async def _refresh_registry() -> None:
+    reg = app_state.agent_registry
+    if reg is not None:
+        await reg.refresh()
+    await publish_config_refresh("agent_registry")
+
+
 @router.post("", summary="新增智能体")
 async def create_agent(
     body: AgentIn,
@@ -202,6 +214,7 @@ async def create_agent(
         enabled=body.enabled,
         input_schema=body.input_schema,
     )
+    await _refresh_registry()
     return success({"id": new_id, "agent_type": body.agent_type})
 
 
@@ -224,6 +237,7 @@ async def update_agent(
         enabled=body.enabled,
         input_schema=body.input_schema,
     )
+    await _refresh_registry()
     return success({"agent_type": agent_type})
 
 
@@ -240,22 +254,25 @@ async def delete_agent(
     if await AgentModelRelDao.count_by_agent(row["id"]) > 0:
         raise BizException(ErrCode.PARAM_ERROR, "该智能体已绑定模型，请先到「配置」解绑后再删除")
     await AgentDao.delete(agent_type)
+    await _refresh_registry()
     return success({"agent_type": agent_type})
 
 
 # ---------- 智能体 ↔ 模型绑定维护 ----------
 
 
-@router.get("/{agent_type}/models", summary="智能体模型绑定列表")
+@router.get("/{agent_type}/models", summary="智能体模型绑定列表（分页）")
 async def list_agent_models(
     agent_type: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
     _: object = Depends(require_scope(Scope.AGENT_VIEW)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
-):
+) -> Any:
     if await AgentDao.get_by_type(agent_type) is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
-    items = await AgentModelRelDao.list_by_agent(agent_type)
-    return success({"items": items, "total": len(items)})
+    items, total = await AgentModelRelDao.list_by_agent_paged(agent_type, page, page_size)
+    return success({"items": items, "total": total, "page": page, "page_size": page_size})
 
 
 @router.post("/{agent_type}/models", summary="添加模型绑定")

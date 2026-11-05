@@ -13,6 +13,8 @@ from backend.data.dao.agent.thread_dao import ThreadDao
 from backend.middleware.auth import CurrentUser, get_current_user, tenant_of
 from backend.observability.exception import BizException, ErrCode
 from backend.api.v1.tenant.chat.schemas import ResumeIn
+from backend.security.rbac import Scope
+from backend.security.security import require_scope
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -28,7 +30,9 @@ async def _assert_owned(thread_id: str, current: CurrentUser) -> None:
 
 @router.get("/{thread_id}")
 async def get_thread(
-    thread_id: str, current: CurrentUser = Depends(get_current_user)
+    thread_id: str,
+    _: object = Depends(require_scope(Scope.QA_PAGE)),  # noqa: B008
+    current: CurrentUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """取会话状态（从 checkpointer / 业务表）。"""
     await _assert_owned(thread_id, current)
@@ -39,6 +43,7 @@ async def get_thread(
 async def resume_thread(
     thread_id: str,
     body: ResumeIn,
+    _: object = Depends(require_scope(Scope.QA_ASK)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> dict[str, Any]:
     """HITL 注入决策后继续被 interrupt 挂起的图。"""

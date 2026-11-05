@@ -9,7 +9,7 @@ SSE 事件类型：routing_decision / progress / token / guidance / pipeline_pla
 from __future__ import annotations
 
 import json
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, Dict
 
 from fastapi import APIRouter, Depends, Request
 from sse_starlette.sse import EventSourceResponse
@@ -37,7 +37,7 @@ _PRE_RULES = {
 # agent 类型 → 所需权限点：问哪一类就要求哪一类的 ask 权限
 _SCOPE_BY_AGENT = {
     "qa": Scope.QA_ASK,
-    "resume": Scope.RESUME_ASK,
+    "resume": Scope.RESUME_UPLOAD,
     "exam": Scope.EXAM_ASK,
     "interview": Scope.INTERVIEW_ASK,
 }

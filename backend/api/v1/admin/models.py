@@ -1,26 +1,26 @@
-"""模型配置管理端点（超管）：model_registry 增删改查。
-
-挂在 /api/v1/admin/models 下，鉴权由装配处统一挂 require_super_admin()。
-模型配置是平台级全局资源（不分租户），由超管在 /models 界面维护；
-运行时 llm_factory 按 model_type 取 active 记录驱动四类模型。
-"""
+"""模型配置管理端点（超管）：model_registry 增删改查。"""
 from __future__ import annotations
 
-from typing import Optional
-
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
 
 from backend.api.v1.admin.schemas import EnabledIn, ModelIn
+from backend.broker.publish import publish_config_refresh
 from backend.common.response import success
 from backend.observability.exception import BizException, ErrCode
 from backend.data.dao.agent.model_dao import ModelDao
 from backend.middleware.auth import get_current_user
 from backend.security.rbac import Scope
 from backend.security.security import require_scope
+from backend.server.managers.model_manager import ModelManager
 
 router = APIRouter(prefix="/models", tags=["admin"])
+
+
+async def _refresh_factory() -> None:
+    await ModelManager().reload()
+    await publish_config_refresh("llm_factory")
 
 
 def _serialize(row: dict) -> dict:
@@ -51,12 +51,12 @@ async def list_models(
     page_size: int = Query(20, ge=1, le=200),
     _: object = Depends(require_scope(Scope.MODEL_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
-):
-    rows = await ModelDao.list_models(model_type)
-    total = len(rows)
-    start = (page - 1) * page_size
-    paged = rows[start : start + page_size]
-    return success({"items": [_serialize(r) for r in paged], "total": total, "page": page, "page_size": page_size})
+) -> Any:
+    rows, total = await ModelDao.list_models(model_type, page=page, page_size=page_size)
+    return success({
+        "items": [_serialize(r) for r in rows],
+        "total": total, "page": page, "page_size": page_size,
+    })
 
 
 @router.get("/{model_id}", summary="模型详情")
@@ -83,6 +83,7 @@ async def create_model(body: ModelIn, _: object = Depends(require_scope(Scope.MO
         sort_order=body.sort_order,
         description=body.description,
     )
+    await _refresh_factory()
     return success({"id": new_id})
 
 
@@ -110,6 +111,7 @@ async def update_model(
         sort_order=body.sort_order,
         description=body.description,
     )
+    await _refresh_factory()
     return success({"id": model_id})
 
 
@@ -119,6 +121,7 @@ async def delete_model(model_id: int, _: object = Depends(require_scope(Scope.MO
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
     await ModelDao.delete(model_id)
+    await _refresh_factory()
     return success({"id": model_id})
 
 
@@ -133,4 +136,5 @@ async def set_status(
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
     await ModelDao.set_enabled(model_id, body.enabled)
+    await _refresh_factory()
     return success({"id": model_id, "enabled": body.enabled})

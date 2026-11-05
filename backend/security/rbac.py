@@ -42,16 +42,17 @@ class Agent(str, Enum):
 
 
 class System(str, Enum):
-    """平台域（权限点的资源部分）：audit / message / auth / user / rbac / menu / tenant / dashboard。"""
+    """平台域（权限点的资源部分）：audit / message / auth / user / rbac / menu / tenant / dashboard / file。"""
     AUDIT = "audit"
     MESSAGE = "message"
-    AUTH = "auth"
     USER = "user"
-    RBAC = "rbac"
     MENU = "menu"
     TENANT = "tenant"
+    ROLE = "role"
+    RBAC = "rbac"
     DASHBOARD = "dashboard"
     FILE = "file"
+    TOOL = "tool"
 
 
 class Action(str, Enum):
@@ -76,6 +77,8 @@ class Action(str, Enum):
     STATUS = "status"
     ROLLBACK = "rollback"
     EXECUTE = "execute"
+    MENU = "menu"
+    REVIEW = "review"
 
 
 class Scope:
@@ -84,20 +87,26 @@ class Scope:
     资源取自 Business（AI 业务域）/ Agent（基建域）/ System（平台域），动作取自 Action。
     新增权限点须在 Scope 中登记，任何散落字符串字面量都会在校验时立即报错。
     """
-    # ===== Dashboard 仪表盘（超管看全平台，租户管理员看本租户） =====
+    # ===== Dashboard 仪表盘：菜单可见性用 dashboard:menu，接口访问用 dashboard:view =====
+    DASHBOARD_MENU = f"{System.DASHBOARD.value}:{Action.MENU.value}"
     DASHBOARD_VIEW = f"{System.DASHBOARD.value}:{Action.VIEW.value}"
 
     # ===== Agent 基建域（config / agent / model，仅超管） =====
     # Config 配置中心：分页列表/历史列表(page)、详情/历史详情/对比(view)、发起申请(add)、编辑/撤回(update)
+    CONFIG_MENU = f"{Agent.CONFIG.value}:{Action.MENU.value}"
     CONFIG_PAGE = f"{Agent.CONFIG.value}:{Action.PAGE.value}"
     CONFIG_VIEW = f"{Agent.CONFIG.value}:{Action.VIEW.value}"
     CONFIG_ADD = f"{Agent.CONFIG.value}:{Action.ADD.value}"
     CONFIG_UPDATE = f"{Agent.CONFIG.value}:{Action.UPDATE.value}"
+
     # execute=执行/驳回；delete=删除申请，rollback=回滚
     CONFIG_EXECUTE = f"{Agent.CONFIG.value}:{Action.EXECUTE.value}"
     CONFIG_DELETE = f"{Agent.CONFIG.value}:{Action.DELETE.value}"
     CONFIG_ROLLBACK = f"{Agent.CONFIG.value}:{Action.ROLLBACK.value}"
+    # CONFIG_LIST = f"{Agent.CONFIG.value}:{Action.LIST.value}"
+
     # Agent 智能体：全量列表(list)、详情(view)、租户开通策略(update)、启停(status)
+    AGENT_MENU = f"{Agent.AGENT.value}:{Action.MENU.value}"
     AGENT_PAGE = f"{Agent.AGENT.value}:{Action.PAGE.value}"
     AGENT_LIST = f"{Agent.AGENT.value}:{Action.LIST.value}"
     AGENT_VIEW = f"{Agent.AGENT.value}:{Action.VIEW.value}"
@@ -105,7 +114,9 @@ class Scope:
     AGENT_UPDATE = f"{Agent.AGENT.value}:{Action.UPDATE.value}"
     AGENT_DELETE = f"{Agent.AGENT.value}:{Action.DELETE.value}"
     AGENT_STATUS = f"{Agent.AGENT.value}:{Action.STATUS.value}"
+
     # Model 模型配置
+    MODEL_MENU = f"{Agent.MODEL.value}:{Action.MENU.value}"
     MODEL_PAGE = f"{Agent.MODEL.value}:{Action.PAGE.value}"
     MODEL_VIEW = f"{Agent.MODEL.value}:{Action.VIEW.value}"
     MODEL_ADD = f"{Agent.MODEL.value}:{Action.ADD.value}"
@@ -115,68 +126,98 @@ class Scope:
 
     # ===== System 平台域（audit / message / auth / user / rbac / menu / tenant / dashboard） =====
     # Audit 审计日志：只读，不提供增删改
+    AUDIT_MENU = f"{System.AUDIT.value}:{Action.MENU.value}"
     AUDIT_PAGE = f"{System.AUDIT.value}:{Action.PAGE.value}"
     AUDIT_VIEW = f"{System.AUDIT.value}:{Action.VIEW.value}"
+
     # Message 消息管理：超管 + 租户管理员（队列 / 死信分页列表、详情 view、状态变更 status）
+    MESSAGE_MENU = f"{System.MESSAGE.value}:{Action.MENU.value}"
     MESSAGE_PAGE = f"{System.MESSAGE.value}:{Action.PAGE.value}"
     MESSAGE_VIEW = f"{System.MESSAGE.value}:{Action.VIEW.value}"
     MESSAGE_STATUS = f"{System.MESSAGE.value}:{Action.STATUS.value}"
-    # Auth 登录鉴权：菜单 / 个人信息（自端点仅依赖登录态，这里登记备用）
-    AUTH_PAGE = f"{System.AUTH.value}:{Action.PAGE.value}"
-    AUTH_UPDATE = f"{System.AUTH.value}:{Action.UPDATE.value}"
+
     # User 用户管理：分页列表、详情、增删改、状态变更
+    USER_MENU = f"{System.USER.value}:{Action.MENU.value}"
     USER_PAGE = f"{System.USER.value}:{Action.PAGE.value}"
     USER_VIEW = f"{System.USER.value}:{Action.VIEW.value}"
     USER_ADD = f"{System.USER.value}:{Action.ADD.value}"
     USER_UPDATE = f"{System.USER.value}:{Action.UPDATE.value}"
     USER_DELETE = f"{System.USER.value}:{Action.DELETE.value}"
     USER_STATUS = f"{System.USER.value}:{Action.STATUS.value}"
-    # RBAC 用户与角色管理：分页列表、新建、覆盖权限、删除
-    RBAC_PAGE = f"{System.RBAC.value}:{Action.PAGE.value}"
-    RBAC_ADD = f"{System.RBAC.value}:{Action.ADD.value}"
-    RBAC_UPDATE = f"{System.RBAC.value}:{Action.UPDATE.value}"
-    RBAC_DELETE = f"{System.RBAC.value}:{Action.DELETE.value}"
+
+    # RBAC 权限中心（父菜单入口）：仅 rbac:list 控制"权限中心"可见性
+    # RBAC_LIST = f"{System.RBAC.value}:{Action.LIST.value}"
+    # Role 角色管理（资源名 role，独立于 rbac）：列表/分页/新建/更新/删除
+    ROLE_MENU = f"{System.ROLE.value}:{Action.MENU.value}"
+    ROLE_PAGE = f"{System.ROLE.value}:{Action.PAGE.value}"
+    ROLE_ADD = f"{System.ROLE.value}:{Action.ADD.value}"
+    ROLE_UPDATE = f"{System.ROLE.value}:{Action.UPDATE.value}"
+    ROLE_DELETE = f"{System.ROLE.value}:{Action.DELETE.value}"
     # Menu 菜单管理（仅超管；租户管理员不可维护前端导航）：分页列表、增删改、显隐
+    MENU_MENU = f"{System.MENU.value}:{Action.MENU.value}"
     MENU_PAGE = f"{System.MENU.value}:{Action.PAGE.value}"
     MENU_ADD = f"{System.MENU.value}:{Action.ADD.value}"
     MENU_UPDATE = f"{System.MENU.value}:{Action.UPDATE.value}"
     MENU_DELETE = f"{System.MENU.value}:{Action.DELETE.value}"
     MENU_STATUS = f"{System.MENU.value}:{Action.STATUS.value}"
+    # 权限中心父菜单入口（含 租户/用户/角色/菜单 管理，以 rbac:menu 控制可见性）
+    RBAC_MENU = f"{System.RBAC.value}:{Action.MENU.value}"
+
     # Tenant 租户管理：分页列表、详情、增改、管理员更换、启停
+    TENANT_MENU = f"{System.TENANT.value}:{Action.MENU.value}"
     TENANT_PAGE = f"{System.TENANT.value}:{Action.PAGE.value}"
     TENANT_VIEW = f"{System.TENANT.value}:{Action.VIEW.value}"
     TENANT_ADD = f"{System.TENANT.value}:{Action.ADD.value}"
-    TENANT_UPDATE = f"{System.TENANT.value}:{Action.UPDATE.value}"
     TENANT_DELETE = f"{System.TENANT.value}:{Action.DELETE.value}"
     TENANT_STATUS = f"{System.TENANT.value}:{Action.STATUS.value}"
     # 文件上传下载
+    FILE_MENU = f"{System.FILE.value}:{Action.MENU.value}"
     FILE_UPLOAD = f"{System.FILE.value}:{Action.UPLOAD.value}"
     FILE_DOWNLOAD = f"{System.FILE.value}:{Action.DOWNLOAD.value}"
     FILE_PAGE = f"{System.FILE.value}:{Action.PAGE.value}"
     FILE_VIEW = f"{System.FILE.value}:{Action.VIEW.value}"
+    # Tool 工具中心
+    TOOL_MENU = f"{System.TOOL.value}:{Action.MENU.value}"
+    TOOL_PAGE = f"{System.TOOL.value}:{Action.PAGE.value}"
+    TOOL_VIEW = f"{System.TOOL.value}:{Action.VIEW.value}"
+    TOOL_ADD = f"{System.TOOL.value}:{Action.ADD.value}"
+    TOOL_UPDATE = f"{System.TOOL.value}:{Action.UPDATE.value}"
+    TOOL_DELETE = f"{System.TOOL.value}:{Action.DELETE.value}"
+    TOOL_STATUS = f"{System.TOOL.value}:{Action.STATUS.value}"
 
     # ===== Business AI 业务域（qa / interview / resume / exam / knowledge） =====
     # 问哪一类就要求哪一类的 ask 权限；page=历史列表、view=单条详情
+    QA_MENU = f"{Business.QA.value}:{Action.MENU.value}"
     QA_ASK = f"{Business.QA.value}:{Action.ASK.value}"
     QA_PAGE = f"{Business.QA.value}:{Action.PAGE.value}"
     QA_VIEW = f"{Business.QA.value}:{Action.VIEW.value}"
-    INTERVIEW_ASK = f"{Business.INTERVIEW.value}:{Action.ASK.value}"
+    QA_LIST = f"{Business.QA.value}:{Action.LIST.value}"
+
+    INTERVIEW_MENU = f"{Business.INTERVIEW.value}:{Action.MENU.value}"
     INTERVIEW_PAGE = f"{Business.INTERVIEW.value}:{Action.PAGE.value}"
     INTERVIEW_VIEW = f"{Business.INTERVIEW.value}:{Action.VIEW.value}"
-    RESUME_ASK = f"{Business.RESUME.value}:{Action.ASK.value}"
+    INTERVIEW_ASK = f"{Business.INTERVIEW.value}:{Action.ASK.value}"
+
+    RESUME_MENU = f"{Business.RESUME.value}:{Action.MENU.value}"
     RESUME_UPLOAD = f"{Business.RESUME.value}:{Action.UPLOAD.value}"
     RESUME_PAGE = f"{Business.RESUME.value}:{Action.PAGE.value}"
     RESUME_VIEW = f"{Business.RESUME.value}:{Action.VIEW.value}"
-    EXAM_ASK = f"{Business.EXAM.value}:{Action.ASK.value}"
+    RESUME_DELETE = f"{Business.RESUME.value}:{Action.DELETE.value}"
+
+    EXAM_MENU = f"{Business.EXAM.value}:{Action.MENU.value}"
     EXAM_PAGE = f"{Business.EXAM.value}:{Action.PAGE.value}"
     EXAM_ADD = f"{Business.EXAM.value}:{Action.ADD.value}"
     EXAM_UPDATE = f"{Business.EXAM.value}:{Action.UPDATE.value}"
     EXAM_VIEW = f"{Business.EXAM.value}:{Action.VIEW.value}"
-    KNOWLEDGE_ASK = f"{Business.KNOWLEDGE.value}:{Action.ASK.value}"
+    EXAM_ASK = f"{Business.EXAM.value}:{Action.ASK.value}"
+
+    KNOWLEDGE_MENU = f"{Business.KNOWLEDGE.value}:{Action.MENU.value}"
     KNOWLEDGE_PAGE = f"{Business.KNOWLEDGE.value}:{Action.PAGE.value}"
     KNOWLEDGE_UPLOAD = f"{Business.KNOWLEDGE.value}:{Action.UPLOAD.value}"
     KNOWLEDGE_DOWNLOAD = f"{Business.KNOWLEDGE.value}:{Action.DOWNLOAD.value}"
     KNOWLEDGE_VIEW = f"{Business.KNOWLEDGE.value}:{Action.VIEW.value}"
+    KNOWLEDGE_DELETE = f"{Business.KNOWLEDGE.value}:{Action.DELETE.value}"
+    KNOWLEDGE_REVIEW = f"{Business.KNOWLEDGE.value}:{Action.REVIEW.value}"
 
 
 # 所有合法权限点，供 require_scope 校验声明合法性（Scope 不再是 Enum）
@@ -206,33 +247,6 @@ def is_tenant_admin_role(role_name: str | None) -> bool:
     return role_name == RoleName.TENANT_ADMIN.value
 
 
-# # 固定内置角色目录：role_id(int 业务键) → (可读名 name, 权限点 scopes[])。
-# # 与 scripts/schema.sql 的 RBAC 默认数据保持一致；角色判断统一以 name 为准。
-# # 注意：本常量仅作为 ensure_default_roles() 的「种子源」写入数据库，
-# # 请求期授权解析一律以 agent_role_permission 表为准，本常量不参与任何兜底。
-# # scope 使用 Scope 枚举成员，确保任何拼写错误在加载期即暴露。
-# # 仅 admin 一个固定角色在此登记；tenant_admin 等其余角色由前端创建，运行期全由数据库驱动。
-# DEFAULT_ROLES: dict[int, tuple[str, list[Scope]]] = {
-#     1: ("admin", [
-#         # Dashboard 仪表盘（超管看全平台，租户管理员看本租户）
-#         Scope.DASHBOARD_VIEW,
-#         # Agent 基建域
-#         Scope.CONFIG_PAGE, Scope.CONFIG_VIEW, Scope.CONFIG_ADD, Scope.CONFIG_UPDATE, Scope.CONFIG_ROLLBACK,
-#         Scope.CONFIG_EXECUTE, Scope.CONFIG_DELETE,
-#         Scope.AGENT_PAGE, Scope.AGENT_LIST, Scope.AGENT_VIEW, Scope.AGENT_ADD, Scope.AGENT_UPDATE, Scope.AGENT_DELETE, Scope.AGENT_STATUS,
-#         Scope.MODEL_PAGE, Scope.MODEL_VIEW, Scope.MODEL_ADD, Scope.MODEL_UPDATE, Scope.MODEL_DELETE, Scope.MODEL_STATUS,
-#         # System 平台域
-#         Scope.AUTH_PAGE, Scope.AUTH_UPDATE,
-#         Scope.RBAC_PAGE, Scope.RBAC_ADD, Scope.RBAC_UPDATE, Scope.RBAC_DELETE,
-#         Scope.USER_PAGE, Scope.USER_VIEW, Scope.USER_ADD, Scope.USER_UPDATE, Scope.USER_DELETE, Scope.USER_STATUS,
-#         Scope.TENANT_PAGE, Scope.TENANT_VIEW, Scope.TENANT_ADD, Scope.TENANT_UPDATE, Scope.TENANT_DELETE, Scope.TENANT_STATUS,
-#         Scope.AUDIT_PAGE, Scope.AUDIT_VIEW,
-#         Scope.MESSAGE_PAGE, Scope.MESSAGE_VIEW, Scope.MESSAGE_STATUS,
-#         Scope.MENU_PAGE, Scope.MENU_ADD, Scope.MENU_UPDATE, Scope.MENU_DELETE, Scope.MENU_STATUS,
-#     ]),
-# }
-
-
 @dataclass(frozen=True)
 class Identity:
     """请求期身份快照：用户在某个租户内的角色名与权限点。
@@ -256,30 +270,6 @@ class Identity:
 
 class RbacService:
     """角色/权限解析（无状态，纯查库 + 固定内置目录）。"""
-
-    # @staticmethod
-    # async def ensure_default_roles() -> None:
-    #     """幂等写入固定内置角色与权限点（全局，tenant 无关）。
-    #
-    #     注意：启动**不再**自动调用本方法（已移除 RbacSeedManager）。超管权限改由
-    #     schema.sql 的 SEED_RBAC 在建库时静态注入，保证存在且齐全；后续改动走手动
-    #     SQL 或前端 RBAC 维护接口。本方法仅保留为手动 seed / 单测入口。
-    #     启动期没有请求上下文，审计列显式记到系统身份占位（SYSTEM_USER_ID，非真实超管 id）。
-    #     """
-    #     roles = [
-    #         (role_id, name, f"内置角色 {name}")
-    #         for role_id, (name, _) in DEFAULT_ROLES.items()
-    #     ]
-    #     permissions = [
-    #         (role_id, scope)
-    #         for role_id, (_, scopes) in DEFAULT_ROLES.items()
-    #         for scope in scopes
-    #     ]
-    #     new_roles, new_perms = await RbacDao.ensure_roles_and_permissions(
-    #         roles, permissions, user_id=SYSTEM_USER_ID
-    #     )
-    #     logger.info(f"固定内置角色与权限点已确保（新增角色 {new_roles}、权限点 {new_perms}）")
-
     @staticmethod
     async def resolve_identity(user_id: int, tenant_id: int) -> Optional[Identity]:
         """解析请求期身份快照。以下情况一律返回 None，由调用方按未授权处理：

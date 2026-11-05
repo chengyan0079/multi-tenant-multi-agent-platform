@@ -9,16 +9,11 @@ from pydantic import BaseModel, Field
 # ---------- 租户管理 ----------
 
 class TenantIn(BaseModel):
-    """新建租户：只填名称，租户间地位平等。"""
+    """新建租户：名称 + 主租户用户（一步建主用户并授权 tenant_admin）。"""
 
     name: str = Field(..., max_length=128)
-
-
-class TenantUpdate(BaseModel):
-    """改名 / 启停（NULL 表示不改动）。"""
-
-    name: Optional[str] = Field(None, max_length=128)
-    enabled: Optional[bool] = None
+    # 新增租户的同时创建主租户用户并绑定 tenant_admin 角色（原子操作）
+    manager: TenantManagerIn
 
 
 class TenantManagerIn(BaseModel):

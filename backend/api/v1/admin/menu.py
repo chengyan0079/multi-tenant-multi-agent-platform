@@ -1,8 +1,4 @@
-"""超管菜单管理端点（/api/v1/admin/menus）。
-
-菜单管理归权限中心，复用 rbac:read / rbac:write 两个权限点；整组已在装配处挂
-require_super_admin()，模块内不再重复鉴权，仅写操作叠加 require_scope 做接口级校验。
-"""
+"""超管菜单管理端点（/api/v1/admin/menus）。"""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -44,11 +40,8 @@ async def list_menus(
     _: object = Depends(require_scope(Scope.MENU_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
-    rows = await MenuDao.list_all()
-    total = len(rows)
-    start = (page - 1) * page_size
-    paged = rows[start:start + page_size]
-    return success({"items": paged, "total": total, "page": page, "page_size": page_size})
+    rows, total = await MenuDao.list_paged(page=page, page_size=page_size)
+    return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
 
 @router.post("/menus", summary="新建菜单")
@@ -65,7 +58,7 @@ async def create_menu(
 async def update_menu(
     menu_id: int,
     body: MenuIn,
-    _: object = Depends(require_scope(Scope.MENU_DELETE)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MENU_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
     if body.parent_id == menu_id:
@@ -77,7 +70,7 @@ async def update_menu(
 @router.delete("/menus/{menu_id}", summary="删除菜单")
 async def delete_menu(
     menu_id: int,
-    _: object = Depends(require_scope(Scope.MENU_UPDATE)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.MENU_DELETE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
     await MenuDao.delete(menu_id)
