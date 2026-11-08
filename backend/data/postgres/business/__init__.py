@@ -10,7 +10,8 @@ from backend.data.postgres.business.meta import (
     ResumeReview,
     InterviewQuestion,
     InterviewSession,
-    QaSession,
+    QaResult,
+    QaRagasEval,
 )
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "ResumeReview",
     "InterviewQuestion",
     "InterviewSession",
-    "QaSession",
+    "QaResult",
+    "QaRagasEval",
     "AgentFile",
 ]

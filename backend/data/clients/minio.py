@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from backend.data.clients.base import BaseClient, ClientError
@@ -145,3 +146,37 @@ async def get_storage() -> MinioClient:
             await asyncio.to_thread(client.ensure_bucket)
             _storage = client
     return _storage
+
+
+def current_yyyymm() -> str:
+    """当前年月（yyyyMM），用于 MinIO 对象 key 的月份分片。"""
+    return datetime.now().strftime("%Y%m")
+
+
+def build_object_key(
+    *,
+    filetype: str,
+    tenant_id: str | int,
+    user_id: str | int,
+    name: str,
+    ext: str,
+    yyyymm: str | None = None,
+) -> str:
+    """生成统一的 MinIO 对象 key。
+
+    模板：{filetype}/{tenant_id}/{yyyyMM}/{user_id}/{name}.{ext}
+    所有文件上传入口统一走此函数，避免 key 拼接散落硬编码。
+    """
+    ym = yyyymm or current_yyyymm()
+    return f"{filetype}/{tenant_id}/{ym}/{user_id}/{name}.{ext}"
+
+
+async def get_object_bytes(key: str) -> bytes:
+    """从 MinIO 读取对象字节（全内存，不落盘）。
+
+    所有"下载后解析"场景统一走此函数，解析库直接吃字节/流：
+      pymupdf.open(stream=data, filetype="pdf")、docx.Document(BytesIO(data))。
+    接口下载（tenant/agent/files）直接返回字节，同样不需要本地临时文件。
+    """
+    storage = await get_storage()
+    return await asyncio.to_thread(storage.get_bytes, key)

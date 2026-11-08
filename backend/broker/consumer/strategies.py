@@ -12,6 +12,7 @@ from backend.broker.handlers import HANDLERS
 from backend.broker.topology import MAX_RETRIES
 from backend.common.logger import logger
 from backend.data.dao.ops.outbox_dao import DeadLetterDao, OutboxDao
+from backend.observability.exception import BizException
 
 if TYPE_CHECKING:
     from aio_pika import IncomingMessage
@@ -26,8 +27,9 @@ async def on_task(message: "IncomingMessage") -> None:
         await message.ack()
         return
 
-    # 幂等：key 即 Outbox 主键，已 done 的消息重投不再执行
-    if await OutboxDao.fetch_status(msg.key) == "done":
+    # 幂等：key 即 Outbox 主键。done / failed 都是终态，重投不再执行。
+    # 如需人工重跑失败消息，应先把 outbox.status 重置为 pending（或换新 key）。
+    if await OutboxDao.fetch_status(msg.key) in ("done", "failed"):
         await message.ack()
         return
 
@@ -40,6 +42,11 @@ async def on_task(message: "IncomingMessage") -> None:
     try:
         await handler(msg)
         await OutboxDao.mark_done(msg.key, msg.header.retry_count)
+        await message.ack()
+    except BizException as exc:
+        # 业务性失败（鉴权不足 / 参数非法）重试也不会变好，直接落 failed，避免白耗重试次数
+        logger.warning(f"[task] 业务失败不重试 type={msg.type} key={msg.key}：{exc}")
+        await OutboxDao.mark_failed(msg.key, str(exc), msg.header.retry_count)
         await message.ack()
     except Exception as exc:  # noqa: BLE001
         await _handle_failure(message, msg, exc)

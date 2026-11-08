@@ -13,12 +13,12 @@ class TaskType(str, Enum):
     """全部业务消息类型。"""
 
     AGENT_RUN = "agent.run"
-    DOC_PARSE = "doc.parse"
+    QA_PARSE = "qa.parse"
+    QA_RAGAS_REVIEW = "qa.ragas_review"
     RESUME_REVIEW = "resume.review"
-    KNOWLEDGE_REINDEX = "knowledge.reindex"
+    EXAM_REVIEW = "exam.review"
     NOTIFY_SEND = "notify.send"
     AUDIT_FLUSH = "audit.flush"
-    CONFIG_REFRESH = "config.refresh"
 
     def __str__(self) -> str:
         # str 枚举默认输出 "TaskType.AGENT_RUN"，统一成枚举值便于日志与队列命名

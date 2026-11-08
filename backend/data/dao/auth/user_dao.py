@@ -12,7 +12,7 @@ SELECT id, username, name, password, tenant_id, enabled, create_at, updated_at
 FROM "agent_user" WHERE username = :username
 """)
 _GET = text("""
-SELECT id, username, name, password, tenant_id, enabled, create_at, updated_at
+SELECT id, username, name, password, tenant_id, is_super_admin, enabled, create_at, updated_at
 FROM "agent_user" WHERE id = :user_id
 """)
 _BINDS = (
@@ -23,7 +23,7 @@ _BINDS = (
     bindparam("created_to", type_=String),
 )
 _LIST = text("""
-SELECT id, username, name, password, tenant_id, enabled, create_at, updated_at
+SELECT id, username, name, password, tenant_id, is_super_admin, enabled, create_at, updated_at
 FROM "agent_user"
 WHERE (:tenant_id IS NULL OR tenant_id = :tenant_id)
   AND (:username IS NULL OR username ILIKE '%' || :username || '%')

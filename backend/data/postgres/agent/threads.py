@@ -39,3 +39,7 @@ class AgentThread(TimestampMixin, Base):
         String(255), nullable=True,
         comment="会话维度键（如 qa 的 session_id），用于同用户多会话区分与 find-or-create",
     )
+    title: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="新会话", server_default="新会话",
+        comment="会话标题（创建默认「新会话」，首问后按问题主题更新）",
+    )

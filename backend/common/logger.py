@@ -41,8 +41,14 @@ def ensure_trace_id() -> str:
 
 
 def _inject_trace_id(record: dict) -> None:
-    """把 trace_id 注入日志 record；上下文里没有就按需生成。"""
-    record["extra"]["trace_id"] = ensure_trace_id()
+    """把 trace_id 注入日志 record。
+
+    只读取当前上下文，不在日志阶段自动生成：服务启动、后台任务等没有 HTTP
+    请求上下文的日志不应出现 trace；请求入口由 TraceIdMiddleware 写入。
+    """
+    tid = trace_id_ctx.get()
+    record["extra"]["trace_id"] = tid
+    record["extra"]["trace_prefix"] = f"trace={tid} | " if tid else ""
 
 
 # loguru 为单例：附加包名前缀与 trace_id 注入两个 patcher
@@ -58,8 +64,8 @@ logger = (
 #   毫秒时间戳   —— 与 trace_id 一起对齐链路，秒级精度不够排并发问题
 LOG_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-    "pid={process.id} thread={thread.name} | trace={extra[trace_id]} | "
-    "{name}:{file}:{line} - {message}"
+    "pid={process.id} thread={thread.name} | "
+    "{extra[trace_prefix]}{name}:{file}:{line} - {message}"
 )
 
 
@@ -133,10 +139,43 @@ def archive_old_logs(
 def get_logger(name: str | None = None) -> Any:
     """获取 logger（loguru 为单例，name 仅语义）。
 
-    必须返回打过 patch 的 logger：name 前缀与 trace_id 注入都挂在它上面。
-    若返回原始 _logger，LOG_FORMAT 里的 {extra[trace_id]} 会因 extra 为空而 KeyError。
+    必须返回打过 patch 的 logger：name 前缀与 trace 前缀注入都挂在它上面。
+    若返回原始 _logger，LOG_FORMAT 里的 {extra[trace_prefix]} 会因 extra 为空而 KeyError。
     """
     return logger
+
+
+def brief(value: Any, *, limit: int = 240) -> str:
+    """把任意值压成单行摘要，供中间件客户端的 debug 日志使用。
+
+    大对象（向量、缓存内容、批量结果）只保留类型与长度/前若干字符，
+    避免单条日志刷屏，也避免把 session token 等敏感值整段落盘。
+    """
+    try:
+        if value is None:
+            return "None"
+        if isinstance(value, (bytes, bytearray)):
+            return f"<bytes len={len(value)}>"
+        if isinstance(value, str):
+            text = value
+        elif isinstance(value, (list, tuple, set)):
+            return f"<{type(value).__name__} len={len(value)}>"
+        elif isinstance(value, dict):
+            return f"<dict keys={list(value)[:8]}>"
+        else:
+            text = repr(value)
+        text = text.replace("\n", "\\n").replace("\r", "\\r")
+        return text if len(text) <= limit else f"{text[:limit]}...<len={len(text)}>"
+    except Exception:  # noqa: BLE001 - 日志格式化绝不能影响业务
+        return f"<unprintable {type(value).__name__}>"
+
+
+def brief_args(args: Any, kwargs: Any, *, limit: int = 240) -> str:
+    """命令/方法参数摘要：位置参数逐个压短，关键字参数保留键名。"""
+    parts = [brief(a, limit=limit) for a in args]
+    parts += [f"{k}={brief(v, limit=limit)}" for k, v in kwargs.items()]
+    joined = ", ".join(parts)
+    return joined if len(joined) <= 600 else f"{joined[:600]}...<len={len(joined)}>"
 
 
 __all__ = [
@@ -144,6 +183,8 @@ __all__ = [
     "setup_logging",
     "archive_old_logs",
     "get_logger",
+    "brief",
+    "brief_args",
     "ensure_trace_id",
     "trace_id_ctx",
     "LOG_FORMAT",

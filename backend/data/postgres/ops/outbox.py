@@ -32,6 +32,10 @@ class AgentOutbox(TimestampMixin, Base):
         comment="主键（UUID，同时作为 MQ 消息 message_id）",
     )
     topic: Mapped[str] = mapped_column(String(64), index=True, comment="消息 type / routing_key，如 audit.flush")
+    message_kind: Mapped[str] = mapped_column(
+        String(16), default="task", server_default=text("'task'"), index=True,
+        comment="投递语义：task（工作队列/竞争消费）| broadcast（发布订阅/每副本一份）；由 routing.Kind 推导",
+    )
     payload: Mapped[dict] = mapped_column(JSONB, comment="完整消息体（含 tenant_id/user_id/type/payload）")
     status: Mapped[str] = mapped_column(
         String(16), default="pending", server_default=text("'pending'"), index=True,

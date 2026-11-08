@@ -1,14 +1,39 @@
-"""Redis 异步客户端对象（redis.asyncio）。"""
+"""Redis 异步客户端对象（redis.asyncio）。
+
+读写日志：redis.asyncio 的所有命令最终都走 execute_command，因此用 LoggedRedis
+子类在此处统一打 debug 日志，业务侧（memory / session / 提示词缓存 / 看板 /
+配置刷新）无需改动即可全覆盖。
+"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Any
 
 from redis.asyncio import Redis
 
+from backend.common.logger import brief, brief_args, logger
 from backend.data.clients.base import BaseClient, ClientError
 
 if TYPE_CHECKING:
     from backend.config.schemas import RedisSettings
+
+
+class LoggedRedis(Redis):
+    """在唯一命令入口记录读写 debug 日志的 Redis 客户端。"""
+
+    async def execute_command(self, *args: Any, **options: Any) -> Any:
+        cmd = str(args[0]).upper() if args else "UNKNOWN"
+        logger.debug(f"[redis] → {cmd} args={brief_args(args[1:], options)}")
+        started = time.perf_counter()
+        try:
+            result = await super().execute_command(*args, **options)
+        except Exception as exc:
+            cost = (time.perf_counter() - started) * 1000
+            logger.debug(f"[redis] ✗ {cmd} cost={cost:.1f}ms error={brief(str(exc))}")
+            raise
+        cost = (time.perf_counter() - started) * 1000
+        logger.debug(f"[redis] ← {cmd} cost={cost:.1f}ms result={brief(result)}")
+        return result
 
 
 class RedisClient(BaseClient):
@@ -19,7 +44,7 @@ class RedisClient(BaseClient):
     def __init__(self, url: str, *, decode_responses: bool = True) -> None:
         self._url = url
         self._decode_responses = decode_responses
-        self._client: Redis | None = None
+        self._client: LoggedRedis | None = None
 
     @classmethod
     def from_settings(cls, cfg: "RedisSettings") -> "RedisClient":
@@ -33,7 +58,10 @@ class RedisClient(BaseClient):
 
     async def connect(self) -> None:
         if self._client is None:
-            self._client = Redis.from_url(self._url, decode_responses=self._decode_responses)
+            # from_url 内部用 cls(...) 构造，故返回的正是 LoggedRedis 实例
+            self._client = LoggedRedis.from_url(
+                self._url, decode_responses=self._decode_responses
+            )
 
     async def close(self) -> None:
         if self._client is not None:

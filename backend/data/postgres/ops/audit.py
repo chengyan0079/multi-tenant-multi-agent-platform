@@ -1,6 +1,8 @@
 """审计日志。"""
 from __future__ import annotations
 
+from typing import Optional
+
 from sqlalchemy import BigInteger, Index, String, Text, UUID, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,7 +26,9 @@ class AgentAuditLog(TimestampMixin, Base):
         UUID(as_uuid=False), primary_key=True, server_default=text("uuid_generate_v4()"),
         comment="主键（UUID）",
     )
-    tenant_id: Mapped[int] = mapped_column(BigInteger, comment="租户ID（隔离边界，BigInteger）")
+    tenant_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True, comment="租户ID（隔离边界，BigInteger；超管无租户为 NULL）"
+    )
     user_id: Mapped[int] = mapped_column(BigInteger, default=0, comment="操作人（user_id，BigInteger）")
     action: Mapped[str] = mapped_column(String(64), default="", comment="操作类型")
     target: Mapped[str] = mapped_column(String(128), default="", comment="操作对象")

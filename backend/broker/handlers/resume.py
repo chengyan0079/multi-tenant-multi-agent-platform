@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import text
 
 from backend.app_state import app_state
@@ -28,6 +30,19 @@ async def _fetch_status(review_id: str) -> str | None:
             )
         ).mappings().first()
     return row["status"] if row else None
+
+
+async def _mark_failed(review_id: str, error: str) -> None:
+    """仅当仍为 processing 时标 failed，避免覆盖已完成的 done。"""
+    async with session_scope() as session:
+        await session.execute(
+            text(
+                "UPDATE agent_resume_reviews "
+                "SET status = 'failed', error_msg = :error "
+                "WHERE id = CAST(:id AS uuid) AND status = 'processing'"
+            ),
+            {"error": error[:2000], "id": review_id},
+        )
 
 
 async def handle_resume_review(msg: TaskMessage) -> None:
@@ -51,8 +66,9 @@ async def handle_resume_review(msg: TaskMessage) -> None:
 
     initial_state = {
         "review_id": review_id,
-        "user_id": str(data.get("user_id")),
-        "tenant_id": str(data.get("tenant_id")),
+        # DB 的 user_id / tenant_id 是 bigint，这里保持整数，避免写库时 asyncpg 类型错误
+        "user_id": int(data["user_id"]),
+        "tenant_id": int(data["tenant_id"]),
         "pdf_minio_path": data.get("pdf_minio_path"),
     }
 
@@ -63,4 +79,13 @@ async def handle_resume_review(msg: TaskMessage) -> None:
 
     # 跑图：节点内已含 MinIO 下载、LLM 评审、save_results 回写 status='done'。
     # 异常向上抛，由 consumer 重试；重试耗尽则落死信，最终由定时任务标 failed。
-    await orch.run_agent("resume", review_id, initial_state)
+    timeout_s = app_state.settings.scheduler.resume_timeout_min * 60
+    try:
+        await asyncio.wait_for(
+            orch.run_agent("resume", review_id, initial_state), timeout=timeout_s
+        )
+    except asyncio.TimeoutError:
+        # 与定时任务阈值一致：取消仍在跑的图，避免继续消耗 LLM 调用
+        logger.error(f"[resume.review] 评审超时（>{timeout_s}s），取消 {review_id}")
+        await _mark_failed(review_id, "评审超时")
+        return

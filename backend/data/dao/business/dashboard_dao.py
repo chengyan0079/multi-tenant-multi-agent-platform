@@ -4,8 +4,8 @@
 - `tenant_id=None` → 全平台（仅超管）；
 - `tenant_id=N` → 该租户（租户管理员固定为本租户）。
 
-隔离口径：所有带业务数据的表都以 `tenant_id` 列为边界（agent_thread / agent_message /
-agent_run / agent_audit_log / agent_api_call_log / agent_capability_policy），
+隔离口径：所有带业务数据的表都以 `tenant_id` 列为边界（agent_thread / agent_run /
+agent_audit_log / agent_api_call_log / agent_capability_policy），
 `agent` / `model_registry` / `agent_plugin` / `tenant` 是平台级全局表，只出现于超管视图。
 
 时间列不统一，按表取值：业务表与审计表统一是 `create_at`（见 AuditMixin/TimestampMixin），
@@ -62,14 +62,32 @@ SELECT
      WHERE {_scope('r')} AND r.create_at >= :prev_since AND r.create_at < :since) AS runs_prev,
   (SELECT COUNT(*) FROM agent_run r
      WHERE {_scope('r')} AND r.create_at >= :prev_since AND r.create_at < :since
-       AND r.status = 'error') AS error_runs_prev
+       AND r.status = 'error') AS error_runs_prev,
+  -- agent_run 尚未接入时，用 API 日志兜底成功率，避免永远显示 100%
+  (SELECT COUNT(*) FROM agent_api_call_log l
+     WHERE {_scope('l')} AND l.req_time >= :since) AS api_requests,
+  (SELECT COUNT(*) FROM agent_api_call_log l
+     WHERE {_scope('l')} AND l.req_time >= :since
+       AND (l.status_code IS NULL OR l.status_code >= 400)) AS api_errors,
+  (SELECT COUNT(*) FROM agent_api_call_log l
+     WHERE {_scope('l')} AND l.req_time >= :prev_since AND l.req_time < :since) AS api_requests_prev,
+  (SELECT COUNT(*) FROM agent_api_call_log l
+     WHERE {_scope('l')} AND l.req_time >= :prev_since AND l.req_time < :since
+       AND (l.status_code IS NULL OR l.status_code >= 400)) AS api_errors_prev
 """)
 
-# 智能体总数：超管看平台存量，租户看已开通数（未配置的视为未开通，口径从简）
+# 智能体总数：超管看平台存量；租户看「全局启用且未被本租户显式关闭」的数量。
+# 与 AgentRegistry.is_enabled_for_tenant 一致：策略未配置视为开通，只有 enabled=false 才关闭。
 _AGENT_TOTAL_PLATFORM = text("SELECT COUNT(*) AS total FROM agent WHERE enabled")
 _AGENT_TOTAL_TENANT = text(
-    "SELECT COUNT(*) AS total FROM agent_capability_policy "
-    "WHERE tenant_id = CAST(:tenant_id AS BIGINT) AND enabled"
+    "SELECT COUNT(*) AS total FROM agent a "
+    "WHERE a.enabled "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM agent_capability_policy p "
+    "    WHERE p.tenant_id = CAST(:tenant_id AS BIGINT) "
+    "      AND p.agent_type = a.agent_type "
+    "      AND p.enabled = false"
+    "  )"
 )
 
 # 近 N 天请求量 / 错误量：错误按 HTTP >= 400 计（4xx 参数错、5xx 服务错都算失败请求）
@@ -93,6 +111,29 @@ FROM agent_run r
 LEFT JOIN agent a ON a.agent_type = r.graph_name
 WHERE {_scope('r')} AND r.create_at >= :since
 GROUP BY COALESCE(a.name, r.graph_name)
+ORDER BY value DESC, name ASC
+LIMIT :limit
+""")
+
+# agent_run 尚未接入时，按业务 API 路径归类出调用占比
+_AGENT_DISTRIBUTION_API = text(f"""
+SELECT COALESCE(a.name, x.agent_type) AS name, COUNT(*) AS value
+FROM (
+  SELECT CASE
+    WHEN l.path LIKE '/api/v1/tenant/qa/%' THEN 'qa'
+    WHEN l.path LIKE '/api/v1/tenant/resume/%' THEN 'resume'
+    WHEN l.path LIKE '/api/v1/tenant/exam/%'
+      OR l.path LIKE '/api/v1/tenant/agent/exam/%' THEN 'exam'
+    WHEN l.path LIKE '/api/v1/tenant/agent/files/%' THEN 'qa'
+    WHEN l.path LIKE '/api/v1/tenant/agent/%' THEN 'agent'
+    ELSE NULL
+  END AS agent_type
+  FROM agent_api_call_log l
+  WHERE {_scope('l')} AND l.req_time >= :since
+) x
+LEFT JOIN agent a ON a.agent_type = x.agent_type
+WHERE x.agent_type IS NOT NULL
+GROUP BY COALESCE(a.name, x.agent_type)
 ORDER BY value DESC, name ASC
 LIMIT :limit
 """)
@@ -121,6 +162,25 @@ FROM agent_audit_log al
 LEFT JOIN "agent_user" u ON u.id = al.user_id
 WHERE {_scope('al')}
 ORDER BY al.create_at DESC
+LIMIT :limit
+""")
+
+# 审计为空时，用最近 API 调用兜底「最近活动」（业务接口目前没有写审计）
+_RECENT_API = text(f"""
+SELECT
+  l.id::text AS key,
+  to_char(l.req_time, 'YYYY-MM-DD HH24:MI:SS') AS time,
+  COALESCE(u.username, CASE WHEN l.user_id IS NULL THEN 'anonymous'
+                            ELSE 'user-' || l.user_id::text END) AS "user",
+  l.method || ' ' || l.path AS action,
+  COALESCE(l.route, l.path) AS target,
+  CASE WHEN l.status_code IS NULL THEN '未知'
+       WHEN l.status_code < 400 THEN '成功'
+       ELSE '失败' END AS result
+FROM agent_api_call_log l
+LEFT JOIN "agent_user" u ON u.id = l.user_id
+WHERE {_scope('l')}
+ORDER BY l.req_time DESC
 LIMIT :limit
 """)
 
@@ -173,7 +233,7 @@ class DashboardDao:
 
     @staticmethod
     async def agent_total(*, tenant_id: Optional[int]) -> int:
-        """智能体总数：超管取平台启用数，租户取本租户已开通数。"""
+        """智能体总数：超管取平台启用数；租户取「全局启用且未被显式关闭」的数量。"""
         sql = _AGENT_TOTAL_PLATFORM if tenant_id is None else _AGENT_TOTAL_TENANT
         async with session_scope() as session:
             row = await fetch_one(session, sql, {"tenant_id": tenant_id})
@@ -202,6 +262,18 @@ class DashboardDao:
             )
 
     @staticmethod
+    async def agent_distribution_from_api(
+        *, tenant_id: Optional[int], since: datetime, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """agent_run 无数据时，按业务 API 路径归类出调用占比。"""
+        async with session_scope() as session:
+            return await fetch_all(
+                session,
+                _AGENT_DISTRIBUTION_API,
+                {"tenant_id": tenant_id, "since": since, "limit": limit},
+            )
+
+    @staticmethod
     async def latency_by_hour(
         *, tenant_id: Optional[int], since: datetime
     ) -> list[dict[str, Any]]:
@@ -223,6 +295,16 @@ class DashboardDao:
         async with session_scope() as session:
             return await fetch_all(
                 session, _RECENT, {"tenant_id": tenant_id, "limit": limit}
+            )
+
+    @staticmethod
+    async def recent_activities_from_api(
+        *, tenant_id: Optional[int], limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """审计为空时，用最近 API 调用兜底最近活动。"""
+        async with session_scope() as session:
+            return await fetch_all(
+                session, _RECENT_API, {"tenant_id": tenant_id, "limit": limit}
             )
 
     @staticmethod

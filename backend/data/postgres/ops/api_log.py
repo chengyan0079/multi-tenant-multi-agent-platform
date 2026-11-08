@@ -33,7 +33,7 @@ class ApiCallLog(TimestampMixin, Base):
     tenant_id: Mapped[int | None] = mapped_column(BigInteger, comment="租户ID（取自 JWT 的 tenant_id，可为空，BigInteger）")
     method: Mapped[str] = mapped_column(String(16), nullable=False, comment="HTTP方法（GET/POST/...）")
     path: Mapped[str] = mapped_column(String(512), nullable=False, comment="请求路径（不含query）")
-    route: Mapped[str | None] = mapped_column(String(512), comment="匹配路由模板（如/admin/files/{oss_key}）")
+    route: Mapped[str | None] = mapped_column(String(512), comment="匹配路由模板（如/api/v1/tenant/agent/files/{file_id}）")
     query_string: Mapped[str | None] = mapped_column(String(1024), comment="查询字符串")
     req_headers: Mapped[dict | None] = mapped_column(JSON, comment="请求头（JSON；敏感头已脱敏）")
     req_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="请求时间")

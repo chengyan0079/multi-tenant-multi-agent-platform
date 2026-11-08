@@ -65,6 +65,8 @@ class AgentFile(AuditMixin, Base):
     checksum: Mapped[str | None] = mapped_column(String(64), comment="内容校验（sha256 十六进制）")
     remark: Mapped[str | None] = mapped_column(String(512), comment="备注")
     parse_status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending",
+        String(16), nullable=False,
+        default="pending", server_default=text("'pending'"),
+        # server_default 必须保留：FileDao 用裸 SQL INSERT 且不传该列，依赖库默认值
         comment="解析状态：pending 未解析 / parsing 解析中 / parsed 已解析 / failed 解析失败",
     )

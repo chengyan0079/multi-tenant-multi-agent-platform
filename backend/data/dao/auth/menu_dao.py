@@ -16,11 +16,9 @@ _LIST_VISIBLE = text(
     "FROM agent_menu WHERE visible = true ORDER BY sort_order, id"
 )
 
-_LIST_ALL = text(
-    "SELECT id, name, path, icon, parent_id, sort_order, visible, scope "
-    "FROM agent_menu ORDER BY parent_id, sort_order, id LIMIT :limit OFFSET :offset"
+_MENU_COLUMNS = (
+    "SELECT id, name, path, icon, parent_id, sort_order, visible, scope FROM agent_menu"
 )
-_COUNT_ALL = text("SELECT count(*) FROM agent_menu")
 _INSERT_MENU = text(
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) "
     "VALUES (:name, :path, :icon, :parent_id, :sort_order, :visible, :scope) "
@@ -47,12 +45,12 @@ class MenuDao:
     def filter_by_scopes(
         rows: list[dict[str, Any]], scopes: list[str]
     ) -> list[dict[str, Any]]:
-        """按 scope 过滤可见菜单：scope 为空（登录即可见）/ scope ∈ scopes / scopes 含 '*'。"""
+        """按 scope 过滤可见菜单：scope 为空（登录即可见）/ scope ∈ scopes（精确匹配）。"""
         allowed = set(scopes or [])
         out: list[dict[str, Any]] = []
         for r in rows:
             scope = r.get("scope")
-            if scope is None or scope in allowed or "*" in allowed:
+            if scope is None or scope in allowed:
                 out.append(r)
         return out
 
@@ -76,10 +74,48 @@ class MenuDao:
         return MenuDao.build_tree(rows)
 
     @staticmethod
-    async def list_paged(page: int = 1, page_size: int = 50) -> tuple[list[dict[str, Any]], int]:
+    async def list_paged(
+        page: int = 1,
+        page_size: int = 50,
+        *,
+        name: str | None = None,
+        path: str | None = None,
+        scope: str | None = None,
+        visible: bool | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """菜单分页；名称/路径/权限点均为 ILIKE 模糊匹配。"""
+        conds: list[str] = []
+        params: dict[str, Any] = {}
+
+        keyword = (name or "").strip()
+        if keyword:
+            conds.append("name ILIKE :name")
+            params["name"] = f"%{keyword}%"
+
+        path_keyword = (path or "").strip()
+        if path_keyword:
+            conds.append("path ILIKE :path")
+            params["path"] = f"%{path_keyword}%"
+
+        scope_keyword = (scope or "").strip()
+        if scope_keyword:
+            conds.append("COALESCE(scope, '') ILIKE :scope")
+            params["scope"] = f"%{scope_keyword}%"
+
+        if visible is not None:
+            conds.append("visible = :visible")
+            params["visible"] = visible
+
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        list_sql = text(
+            f"{_MENU_COLUMNS} {where} ORDER BY parent_id, sort_order, id "
+            "LIMIT :limit OFFSET :offset"
+        )
+        count_sql = text(f"SELECT count(*) FROM agent_menu {where}")
+
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST_ALL, _COUNT_ALL, page=page, page_size=page_size
+                session, list_sql, count_sql, params, page=page, page_size=page_size
             )
 
     @staticmethod

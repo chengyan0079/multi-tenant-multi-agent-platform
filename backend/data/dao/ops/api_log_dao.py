@@ -40,19 +40,22 @@ _RECORD_KEYS = (
 )
 
 # 时间倒序；tenant_id 为空表示全平台（仅超管）
-_LIST = text("""
-SELECT id, trace_id, caller, user_id, tenant_id, method, path, route,
-       query_string, status_code, cost_ms, req_time, create_at
-FROM agent_api_call_log
-WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
-ORDER BY req_time DESC
-LIMIT :limit OFFSET :offset
-""")
+_LIST_BASE = """
+SELECT l.id, l.trace_id, l.caller, l.user_id,
+       COALESCE(u.name, u.username,
+                CASE WHEN l.user_id IS NULL THEN NULL
+                     ELSE '用户#' || l.user_id::text END) AS user_name,
+       l.tenant_id,
+       COALESCE(t.name, CASE WHEN l.tenant_id IS NULL THEN NULL
+                            ELSE '租户#' || l.tenant_id::text END) AS tenant_name,
+       l.method, l.path, l.route, l.query_string, l.status_code, l.cost_ms,
+       l.req_time, l.create_at
+FROM agent_api_call_log l
+LEFT JOIN agent_tenant t ON t.id = l.tenant_id
+LEFT JOIN "agent_user" u ON u.id = l.user_id
+"""
 
-_COUNT = text("""
-SELECT count(*) FROM agent_api_call_log
-WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
-""")
+_COUNT_BASE = "SELECT count(*) FROM agent_api_call_log l"
 
 
 class ApiLogDao:
@@ -78,10 +81,26 @@ class ApiLogDao:
 
     @staticmethod
     async def query(
-        tenant_id: Optional[int] = None, page: int = 1, page_size: int = 20
+        tenant_id: Optional[int] = None,
+        page: int = 1,
+        page_size: int = 20,
+        path_prefix: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
+        conds: list[str] = []
+        params: dict[str, Any] = {}
+        if tenant_id is not None:
+            conds.append("l.tenant_id = :tenant_id")
+            params["tenant_id"] = tenant_id
+        if path_prefix:
+            conds.append("l.path LIKE :path_prefix")
+            params["path_prefix"] = f"{path_prefix.rstrip('%')}%"
+        where = f"WHERE {' AND '.join(conds)}" if conds else ""
+        list_sql = text(
+            f"{_LIST_BASE} {where} ORDER BY l.req_time DESC LIMIT :limit OFFSET :offset"
+        )
+        count_sql = text(f"{_COUNT_BASE} {where}")
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST, _COUNT, {"tenant_id": tenant_id},
+                session, list_sql, count_sql, params,
                 page=page, page_size=page_size,
             )

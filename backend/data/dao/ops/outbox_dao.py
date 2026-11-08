@@ -11,8 +11,8 @@ from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, se
 _ENQUEUE = text(
     # id 由应用生成（即消息 key），便于全链路用同一个幂等键；
     # retry_count 显式给 0：建表脚本里该列 NOT NULL 且无默认值，依赖库默认会插入失败
-    "INSERT INTO agent_outbox (id, topic, payload, tenant_id, status, retry_count) "
-    "VALUES (:id, :topic, :payload, :tenant_id, 'pending', 0) RETURNING id"
+    "INSERT INTO agent_outbox (id, topic, message_kind, payload, tenant_id, status, retry_count) "
+    "VALUES (:id, :topic, :message_kind, :payload, :tenant_id, 'pending', 0) RETURNING id"
 )
 _MARK_SENT = text(
     "UPDATE agent_outbox SET status='sent', sent_at=now(), retry_count=:retry_count "
@@ -40,7 +40,8 @@ class OutboxDao:
 
     @staticmethod
     async def enqueue(
-        *, message_id: str, topic: str, payload: dict, tenant_id: Optional[int]
+        *, message_id: str, topic: str, payload: dict, tenant_id: Optional[int],
+        message_kind: str = "task",
     ) -> str:
         """写入一条待投递消息，返回 id（与传入的 message_id 一致）。"""
         async with session_scope() as session:
@@ -51,6 +52,7 @@ class OutboxDao:
                 {
                     "id": message_id,
                     "topic": topic,
+                    "message_kind": message_kind,
                     "payload": json.dumps(payload),
                     "tenant_id": tenant_id,
                 },
@@ -118,7 +120,7 @@ class OutboxDao:
             return await fetch_one(
                 session,
                 text(
-                    "SELECT id, topic, payload, tenant_id, status, retry_count, "
+                    "SELECT id, topic, message_kind, payload, tenant_id, status, retry_count, "
                     "last_error, sent_at, create_at, updated_at FROM agent_outbox WHERE id=:id"
                 ),
                 {"id": id},
@@ -130,18 +132,22 @@ class OutboxDao:
         page_size: int,
         status: str | None = None,
         tenant_id: int | None = None,
+        message_kind: str | None = None,
     ) -> tuple[list[dict], int]:
         conds: list[str] = []
         params: dict = {}
         if status is not None:
             conds.append("status = :status")
             params["status"] = status
+        if message_kind is not None:
+            conds.append("message_kind = :message_kind")
+            params["message_kind"] = message_kind
         if tenant_id is not None:
             conds.append("tenant_id = :tenant_id")
             params["tenant_id"] = tenant_id
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         list_sql = text(
-            f"SELECT id, topic, status, retry_count, last_error, tenant_id, "
+            f"SELECT id, topic, message_kind, status, retry_count, last_error, tenant_id, "
             f"sent_at, create_at, updated_at FROM agent_outbox {where} "
             "ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
         )
@@ -153,11 +159,27 @@ class OutboxDao:
 
     @staticmethod
     async def update_status(
-        id: str, status: str, expect_tenant_id: int | None = None
+        id: str,
+        status: str,
+        expect_tenant_id: int | None = None,
+        error: str | None = None,
     ) -> int:
-        """变更状态（重投=pending / 标记完成=done / 失败=failed）；可限定归属租户。"""
-        sql = "UPDATE agent_outbox SET status=:status, last_error=NULL WHERE id=:id"
-        params: dict = {"id": id, "status": status}
+        """变更状态（重投=pending / 标记完成=done / 失败=failed）；可限定归属租户。
+
+        标记 failed 时保留已有 last_error；没有则写入本次原因，避免错误字段被清空。
+        重投/完成则清空 last_error。
+        """
+        if status == "failed":
+            sql = (
+                "UPDATE agent_outbox "
+                "SET status=:status, "
+                "last_error=COALESCE(NULLIF(:error, ''), NULLIF(last_error, ''), '手动标记失败') "
+                "WHERE id=:id"
+            )
+            params: dict = {"id": id, "status": status, "error": (error or "").strip()}
+        else:
+            sql = "UPDATE agent_outbox SET status=:status, last_error=NULL WHERE id=:id"
+            params = {"id": id, "status": status}
         if expect_tenant_id is not None:
             sql += " AND tenant_id=:tenant_id"
             params["tenant_id"] = expect_tenant_id

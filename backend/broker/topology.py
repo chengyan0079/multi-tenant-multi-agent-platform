@@ -45,15 +45,17 @@ class QueueSpec:
 
 TASK_QUEUES: tuple[QueueSpec, ...] = (
     QueueSpec(TaskType.AGENT_RUN, prefetch=1),  # 多 Agent 串联 / 长推理
-    QueueSpec(TaskType.DOC_PARSE, prefetch=2),  # 文档解析 + 向量化，吃 CPU
+    QueueSpec(TaskType.QA_PARSE, prefetch=2),  # qa 知识库文档解析 + 向量化，吃 CPU
     QueueSpec(TaskType.RESUME_REVIEW, prefetch=1),  # 简历评审跑 LangGraph
-    QueueSpec(TaskType.KNOWLEDGE_REINDEX, prefetch=2),  # 知识库补充回流
+    QueueSpec(TaskType.QA_RAGAS_REVIEW, prefetch=1),  # 问答 RAGAS 质量测评（LLM 打分）
+    QueueSpec(TaskType.EXAM_REVIEW, prefetch=1),  # 试卷批改跑 LangGraph（含 HITL 暂停）
     QueueSpec(TaskType.NOTIFY_SEND, prefetch=10),  # 通知外发，IO 等待为主
     QueueSpec(TaskType.AUDIT_FLUSH, prefetch=20),  # 审计批量落库，单条很快
 )
 
-# 广播类型：每个副本各消费一份（FANOUT + 独占队列），不参与重试 / 死信
-BROADCAST_TYPES: tuple[TaskType, ...] = (TaskType.CONFIG_REFRESH,)
+# 广播类型：每个副本各消费一份（FANOUT + 独占队列），不参与重试 / 死信。
+# 当前无业务使用（配置刷新已改用 Redis 版本号拉取）；保留拓扑代码供将来真正的广播场景。
+BROADCAST_TYPES: tuple[TaskType, ...] = ()
 
 
 def retry_queue_name(queue_name: str) -> str:

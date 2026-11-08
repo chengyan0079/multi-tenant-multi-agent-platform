@@ -12,14 +12,22 @@ _INSERT = text(
     "VALUES (:tenant_id, :user_id, :action, :target, :detail, :result, :trace_id, :ip)"
 )
 _LIST = text(
-    "SELECT id, tenant_id, user_id, action, target, detail, result, trace_id, ip, create_at "
-    "FROM agent_audit_log "
-    "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT)) "
-    "ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
+    "SELECT a.id, a.tenant_id, "
+    "COALESCE(t.name, CASE WHEN a.tenant_id IS NULL THEN '平台' "
+    "ELSE '租户#' || a.tenant_id::text END) AS tenant_name, "
+    "a.user_id, "
+    "COALESCE(u.name, u.username, "
+    "CASE WHEN a.user_id IS NULL THEN NULL ELSE '用户#' || a.user_id::text END) AS user_name, "
+    "a.action, a.target, a.detail, a.result, a.trace_id, a.ip, a.create_at "
+    "FROM agent_audit_log a "
+    "LEFT JOIN agent_tenant t ON t.id = a.tenant_id "
+    "LEFT JOIN \"agent_user\" u ON u.id = a.user_id "
+    "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR a.tenant_id = CAST(:tenant_id AS BIGINT)) "
+    "ORDER BY a.create_at DESC LIMIT :limit OFFSET :offset"
 )
 _COUNT = text(
-    "SELECT count(*) FROM agent_audit_log "
-    "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))"
+    "SELECT count(*) FROM agent_audit_log a "
+    "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR a.tenant_id = CAST(:tenant_id AS BIGINT))"
 )
 
 
@@ -80,8 +88,17 @@ class AuditDao:
             return await fetch_one(
                 session,
                 text(
-                    "SELECT id, tenant_id, user_id, action, target, detail, result, "
-                    "trace_id, ip, create_at FROM agent_audit_log WHERE id = :id"
+                    "SELECT a.id, a.tenant_id, "
+                    "COALESCE(t.name, CASE WHEN a.tenant_id IS NULL THEN '平台' "
+                    "ELSE '租户#' || a.tenant_id::text END) AS tenant_name, "
+                    "a.user_id, "
+                    "COALESCE(u.name, u.username, "
+                    "CASE WHEN a.user_id IS NULL THEN NULL ELSE '用户#' || a.user_id::text END) AS user_name, "
+                    "a.action, a.target, a.detail, a.result, a.trace_id, a.ip, a.create_at "
+                    "FROM agent_audit_log a "
+                    "LEFT JOIN agent_tenant t ON t.id = a.tenant_id "
+                    "LEFT JOIN \"agent_user\" u ON u.id = a.user_id "
+                    "WHERE a.id = :id"
                 ),
                 {"id": log_id},
             )

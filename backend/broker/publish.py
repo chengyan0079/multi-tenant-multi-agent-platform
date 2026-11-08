@@ -6,14 +6,14 @@ broker 未启用时消息留在 Outbox，启用后补发，调用方无需关心
 """
 from __future__ import annotations
 
-import time
-
 import uuid6
 
 from backend.broker.envelope import MessageHeader, TaskMessage
+from backend.broker.routing import route
 from backend.broker.types import TaskType
 from backend.common.logger import logger, trace_id_ctx
 from backend.data.dao.ops.outbox_dao import OutboxDao
+from backend.services.config_refresh import publish as publish_config_refresh_signal
 
 
 async def enqueue_task(
@@ -44,6 +44,7 @@ async def enqueue_task(
             topic=type.value,
             payload=msg.to_dict(),
             tenant_id=tenant_id,
+            message_kind=route(type).kind.value,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"写 Outbox 失败 type={type} tenant={tenant_id}：{exc}")
@@ -53,10 +54,9 @@ async def enqueue_task(
 
 
 async def publish_config_refresh(*targets: str) -> None:
-    """广播配置变更，供其它副本刷新内存注册表。"""
-    await enqueue_task(
-        TaskType.CONFIG_REFRESH,
-        tenant_id=None,
-        user_id=0,
-        data={"targets": list(targets), "ts": time.time()},
-    )
+    """发布配置变更信号到 Redis，供其它副本定时拉取后刷新内存注册表。
+
+    注意：这是跨副本缓存失效信号，不属于 Outbox 消息，故不写 agent_outbox、不走 MQ。
+    保留本函数是为了让 5 个管理端调用点无需改动。
+    """
+    await publish_config_refresh_signal(*targets)

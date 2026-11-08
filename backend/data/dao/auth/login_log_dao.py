@@ -22,17 +22,21 @@ INSERT INTO agent_login_log (
 
 # 时间倒序；tenant_id 为空表示全平台（仅超管）
 _LIST = text("""
-SELECT id, user_id, username, tenant_id, login_type, success, fail_reason,
-       ip, user_agent, client, trace_id, create_at
-FROM agent_login_log
-WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
-ORDER BY create_at DESC
+SELECT l.id, l.user_id, l.username, l.tenant_id,
+       COALESCE(t.name, CASE WHEN l.tenant_id IS NULL THEN NULL
+                            ELSE '租户#' || l.tenant_id::text END) AS tenant_name,
+       l.login_type, l.success, l.fail_reason,
+       l.ip, l.user_agent, l.client, l.trace_id, l.create_at
+FROM agent_login_log l
+LEFT JOIN agent_tenant t ON t.id = l.tenant_id
+WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR l.tenant_id = CAST(:tenant_id AS BIGINT))
+ORDER BY l.create_at DESC
 LIMIT :limit OFFSET :offset
 """)
 
 _COUNT = text("""
-SELECT count(*) FROM agent_login_log
-WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR tenant_id = CAST(:tenant_id AS BIGINT))
+SELECT count(*) FROM agent_login_log l
+WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR l.tenant_id = CAST(:tenant_id AS BIGINT))
 """)
 
 

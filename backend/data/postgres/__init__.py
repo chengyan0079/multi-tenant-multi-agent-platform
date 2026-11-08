@@ -23,9 +23,7 @@ from backend.data.postgres.auth import (
 )
 from backend.data.postgres.agent import (
     AgentCapabilityPolicy,
-    AgentEscalation,
     AgentLongTermMemory,
-    AgentMessage,
     AgentModel,
     AgentModelRel,
     AgentPluginModel,
@@ -42,7 +40,8 @@ from backend.data.postgres.business import (
     InterviewQuestion,
     InterviewSession,
     KnowledgePendingQueue,
-    QaSession,
+    QaResult,
+    QaRagasEval,
     Question,
     ResumeReview,
     ScoringPoint,
@@ -71,12 +70,10 @@ __all__ = [
     "AgentModelRel",
     "ModelRegistry",
     "AgentThread",
-    "AgentMessage",
     "AgentRun",
     "AgentTool",
     "AgentPluginModel",
     "AgentLongTermMemory",
-    "AgentEscalation",
     # business
     "KnowledgePendingQueue",
     "Exam",
@@ -87,7 +84,8 @@ __all__ = [
     "ResumeReview",
     "InterviewQuestion",
     "InterviewSession",
-    "QaSession",
+    "QaResult",
+    "QaRagasEval",
     "AgentFile",
     # ops
     "ConfigApproval",

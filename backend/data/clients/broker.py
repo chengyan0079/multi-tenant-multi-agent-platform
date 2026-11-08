@@ -24,6 +24,11 @@ from backend.data.clients.base import BaseClient, ClientError
 BrokerCallback = Callable[["aio_pika.IncomingMessage"], Awaitable[None]]
 
 
+def _body_text(body: bytes) -> str:
+    """消息体转可读 JSON 文本（非法 UTF-8 用替换字符兜底，不因日志干扰收发）。"""
+    return bytes(body).decode("utf-8", errors="replace")
+
+
 class BrokerClient(BaseClient):
     """RabbitMQ 异步客户端。"""
 
@@ -118,6 +123,10 @@ class BrokerClient(BaseClient):
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,  # 持久消息，落盘
             content_type="application/json",
         )
+        logger.debug(
+            f"[mq] send exchange={exchange} routing_key={routing_key} "
+            f"message_id={message_id} headers={headers or {}} body={_body_text(body)}"
+        )
         await exchange_obj.publish(msg, routing_key=routing_key)
 
     async def consume(
@@ -134,7 +143,18 @@ class BrokerClient(BaseClient):
         await ch.set_qos(prefetch_count=prefetch)
         self._consumer_channels.append(ch)
         queue = await ch.get_queue(queue_name)
-        await queue.consume(callback, no_ack=False)
+
+        async def _on_message(message: "aio_pika.IncomingMessage") -> None:
+            """统一记录收到的消息 JSON，再交给业务策略处理（ack/nack 仍由策略负责）。"""
+            logger.debug(
+                f"[mq] recv queue={queue_name} "
+                f"routing_key={getattr(message, 'routing_key', None)} "
+                f"message_id={getattr(message, 'message_id', None)} "
+                f"body={_body_text(message.body)}"
+            )
+            await callback(message)
+
+        await queue.consume(_on_message, no_ack=False)
         logger.info(f"RabbitMQ 开始消费队列 {queue_name}（prefetch={prefetch}）")
 
 

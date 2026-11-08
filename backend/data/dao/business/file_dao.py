@@ -9,6 +9,7 @@ import uuid6
 
 from sqlalchemy import text
 
+from backend.data.clients.minio import build_object_key, get_storage
 from backend.data.sql import fetch_all, fetch_one, fetch_page, fetch_value, session_scope
 from backend.data.sql.audit import audit_on_insert
 
@@ -218,11 +219,15 @@ class FileDao:
             # 重命名：{file_uuid}_{user_id}_v{版本号}_upload{扩展名}
             stored_name = f"{file_uuid}_{uploader_user_id}_v{version}_upload{file_ext}"
             tenant_seg = f"t{tenant_id}" if tenant_id is not None else "system"
-            object_key = f"files/{tenant_seg}/{file_uuid}_v{version}{file_ext}"
+            object_key = build_object_key(
+                filetype="files",
+                tenant_id=tenant_seg,
+                user_id=uploader_user_id,
+                name=f"{file_uuid}_v{version}",
+                ext=(file_ext or "").lstrip(".") or "bin",
+            )
 
             # 上传 MinIO（在锁/事务内，保证串行；失败则整体回滚）
-            from backend.data.clients.minio import get_storage
-
             storage = await get_storage()
             await asyncio.to_thread(
                 storage.put_bytes, object_key, data, content_type=content_type
