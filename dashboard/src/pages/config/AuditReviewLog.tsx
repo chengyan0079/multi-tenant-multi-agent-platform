@@ -1,5 +1,5 @@
 import { App as AntdApp, Tag, Typography } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { ProTable, type ProColumns } from '../../components/ProTable';
 import dayjs from 'dayjs';
 
 import {

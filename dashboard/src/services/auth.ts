@@ -150,20 +150,19 @@ export function getScopes(): string[] {
   return getSession()?.scopes ?? [];
 }
 
-/** 是否拥有某权限点（scopes 含 '*' 视为全通，与后端菜单过滤一致）。 */
+/** 是否拥有某权限点（精确匹配，与后端 require_scope / 菜单过滤一致）。 */
 export function hasScope(scope: string): boolean {
-  const s = getScopes();
-  return s.includes('*') || s.includes(scope);
+  return getScopes().includes(scope);
 }
 
 /** 是否同时拥有全部给定权限点。 */
 export function hasAllScopes(...scopes: string[]): boolean {
   const s = getScopes();
-  return s.includes('*') || scopes.every((x) => s.includes(x));
+  return scopes.every((x) => s.includes(x));
 }
 
 /** 是否拥有任一给定权限点。 */
 export function hasAnyScopes(...scopes: string[]): boolean {
   const s = getScopes();
-  return s.includes('*') || scopes.some((x) => s.includes(x));
+  return scopes.some((x) => s.includes(x));
 }

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App as AntdApp, Button, Drawer, Form, Input, Modal, Popconfirm, Select, Space, Tag, Typography } from 'antd';
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import { ProTable, type ProColumns, type ActionType } from '../../components/ProTable';
 import {
   createRole,
   deleteRole,
@@ -47,6 +47,12 @@ export default function RoleList() {
       .catch((e) => message.error(e instanceof Error ? e.message : String(e)));
   }, [message]);
 
+  /** 合法权限点扁平集合：用于过滤历史脏数据（枚举已移除的 scope） */
+  const allScopeValues = useMemo(
+    () => scopeOptions.flatMap((g) => g.options.map((o) => o.value)),
+    [scopeOptions],
+  );
+
   const request = useCallback(async (params: any) => {
     const r = await listRoles(params.current ?? 1, params.pageSize ?? 20);
     return { data: sortByTimeThenId(r.items), success: true, total: r.total };
@@ -79,7 +85,10 @@ export default function RoleList() {
   /** 配置权限：覆盖式写入，勾选结果即该角色全部权限点 */
   const openPerms = (role: RoleItem) => {
     setPermRole(role);
-    setPermScopes(role.scopes);
+    // 只回填当前合法权限点，避免历史脏数据（枚举已移除的 scope）在保存时被后端拒绝
+    setPermScopes(
+      allScopeValues.length ? role.scopes.filter((s) => allScopeValues.includes(s)) : role.scopes,
+    );
   };
 
   const savePerms = async () => {
@@ -146,24 +155,33 @@ export default function RoleList() {
       search: false,
       width: 220,
       fixed: 'right',
-      render: (_, record) => (
-        <Space>
-          <a onClick={() => openDetail(record)}>详情</a>
-          {hasScope('role:update') && <a onClick={() => openEdit(record)}>编辑</a>}
-          {hasScope('role:update') && <a onClick={() => openPerms(record)}>配置权限</a>}
-          {hasScope('role:delete') && (
-            <Popconfirm
-              title="确认删除该角色？"
-              description="删除后该角色下用户的角色关联将失效"
-              onConfirm={() => onDelete(record.role_id)}
-              okText="删除"
-              cancelText="取消"
-            >
-              <a>删除</a>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
+      render: (_, record) => {
+        // 内置超管角色不可改删（后端按角色名 admin 保护，前端同步隐藏入口）
+        const isBuiltinAdmin = record.name === 'admin';
+        return (
+          <Space>
+            <a onClick={() => openDetail(record)}>详情</a>
+            {hasScope('role:update') && !isBuiltinAdmin && (
+              <a onClick={() => openEdit(record)}>编辑</a>
+            )}
+            {hasScope('role:update') && !isBuiltinAdmin && (
+              <a onClick={() => openPerms(record)}>配置权限</a>
+            )}
+            {hasScope('role:delete') && !isBuiltinAdmin && (
+              <Popconfirm
+                title="确认删除该角色？"
+                description="删除后该角色下用户的角色关联将失效"
+                onConfirm={() => onDelete(record.role_id)}
+                okText="删除"
+                cancelText="取消"
+              >
+                <a>删除</a>
+              </Popconfirm>
+            )}
+            {isBuiltinAdmin && <Tag color="gold">内置角色</Tag>}
+          </Space>
+        );
+      },
     },
   ];
 

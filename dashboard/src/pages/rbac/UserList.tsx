@@ -9,9 +9,9 @@ import {
   Popconfirm,
   Select,
   Space,
-  Typography,
+  Result,
 } from 'antd';
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import { ProTable, type ProColumns, type ActionType } from '../../components/ProTable';
 import dayjs from 'dayjs';
 import { hasScope, isTenantContext } from '../../services/auth';
 import {
@@ -33,6 +33,7 @@ export default function UserList() {
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
   const [roleOptions, setRoleOptions] = useState<{ value: string; label: string }[]>([]);
   const [drawerUser, setDrawerUser] = useState<(UserItem & { enabled?: boolean }) | null>(null);
+  const [editUser, setEditUser] = useState<(UserItem & { enabled?: boolean }) | null>(null);
   const [roleForm] = Form.useForm();
 
   useEffect(() => {
@@ -44,6 +45,8 @@ export default function UserList() {
   const canAdd = hasScope('user:add');
   const canDelete = hasScope('user:delete');
   const canUpdateRole = hasScope('user:update');
+  const canView = hasScope('user:view');
+  const canPage = hasScope('user:page');
 
   const [createUserOpen, setCreateUserOpen] = useState(false);
   const [creatingUser, setCreatingUser] = useState(false);
@@ -84,6 +87,11 @@ export default function UserList() {
       width: 100,
       valueType: 'select',
       valueEnum: tenantValueEnum,
+      render: (_, record) => {
+        if (record.is_super_admin) return '超管';
+        if (record.tenant_id == null) return '-';
+        return tenantValueEnum[record.tenant_id] ?? record.tenant_id;
+      },
     },
     {
       title: '创建时间',
@@ -103,34 +111,44 @@ export default function UserList() {
       title: '操作',
       key: 'action',
       search: false,
-      render: (_, record) => (
-        <Space>
-          <Button type="link" onClick={() => openDetail(record)}>
-            详情
-          </Button>
-          {canDelete && isTenantContext() && (
-            <Popconfirm
-              title="确认解绑该用户？"
-              onConfirm={() => onDeleteUser(record.id)}
-              okText="确认"
-              cancelText="取消"
-            >
-              <Button type="link" danger>
-                删除
+      render: (_, record) => {
+        const isSuper = Boolean(record.is_super_admin);
+        return (
+          <Space>
+            {canView && (
+              <Button type="link" onClick={() => openDetail(record)}>
+                详情
               </Button>
-            </Popconfirm>
-          )}
-        </Space>
-      ),
+            )}
+            {canUpdateRole && !isSuper && (
+              <Button type="link" onClick={() => openEdit(record)}>
+                编辑
+              </Button>
+            )}
+            {canDelete && isTenantContext() && !isSuper && (
+              <Popconfirm
+                title="确认解绑该用户？"
+                onConfirm={() => onDeleteUser(record.id)}
+                okText="确认"
+                cancelText="取消"
+              >
+                <Button type="link" danger>
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </Space>
+        );
+      },
     },
   ];
 
   const onRoleSubmit = async (values: { role: string; tenant_id: number }) => {
-    if (!drawerUser) return;
+    if (!editUser) return;
     try {
-      await changeUserRole(drawerUser.id, values.tenant_id, values.role);
+      await changeUserRole(editUser.id, values.tenant_id, values.role);
       message.success('角色已更新');
-      setDrawerUser(null);
+      setEditUser(null);
       actionRef.current?.reload();
     } catch (e) {
       message.error((e as Error).message);
@@ -170,6 +188,19 @@ export default function UserList() {
       message.error(e instanceof Error ? e.message : String(e));
     }
   };
+
+  /** 编辑：改角色（详情只读，编辑走独立弹窗） */
+  const openEdit = async (record: UserItem) => {
+    try {
+      setEditUser(await getUser(record.id));
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看用户管理的权限" />;
+  }
 
   return (
     <div>
@@ -219,36 +250,30 @@ export default function UserList() {
               <b>创建时间：</b>
               {drawerUser.create_at ? dayjs(drawerUser.create_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
             </p>
-            {canUpdateRole && (
-              <>
-                <Typography.Title level={5}>修改角色</Typography.Title>
-                <Form
-                  form={roleForm}
-                  layout="vertical"
-                  initialValues={{ role: 'student', tenant_id: drawerUser.tenant_id }}
-                  onFinish={onRoleSubmit}
-                >
-                  <Form.Item name="tenant_id" label="目标租户" rules={[{ required: true }]}>
-                    <Select options={tenantOptions} />
-                  </Form.Item>
-                  <Form.Item name="role" label="角色" rules={[{ required: true }]}>
-                    <Select options={roleOptions} />
-                  </Form.Item>
-                  <Popconfirm
-                    title="确认修改用户角色？"
-                    description="角色变更立即生效，影响该用户权限"
-                    onConfirm={() => roleForm.submit()}
-                    okText="提交"
-                    cancelText="取消"
-                  >
-                    <Button type="primary">提交</Button>
-                  </Popconfirm>
-                </Form>
-              </>
-            )}
           </>
         )}
       </Drawer>
+      <Modal
+        title={`编辑用户 #${editUser?.id ?? ''}`}
+        open={editUser !== null}
+        onCancel={() => setEditUser(null)}
+        onOk={() => roleForm.submit()}
+        destroyOnClose
+      >
+        <Form
+          form={roleForm}
+          layout="vertical"
+          onFinish={onRoleSubmit}
+          initialValues={{ role: 'student', tenant_id: editUser?.tenant_id }}
+        >
+          <Form.Item name="tenant_id" label="目标租户" rules={[{ required: true }]}>
+            <Select options={tenantOptions} />
+          </Form.Item>
+          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+            <Select options={roleOptions} />
+          </Form.Item>
+        </Form>
+      </Modal>
       <Modal
         title="新建用户"
         open={createUserOpen}

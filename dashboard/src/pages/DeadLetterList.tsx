@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, App as AntdApp, Button, Descriptions, Drawer, Space, Tooltip, Typography } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { Alert, App as AntdApp, Button, Descriptions, Drawer, Result, Space, Tooltip, Typography } from 'antd';
+import { ProTable, type ProColumns } from '../components/ProTable';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
 import { getDeadLetter, listDeadLetters, type DeadLetterItem } from '../services/message';
 import { sortByTimeThenId } from '../utils/sort';
+import { hasScope } from '../services/auth';
 
 export default function DeadLetterList() {
   const [data, setData] = useState<DeadLetterItem[]>([]);
@@ -17,7 +18,12 @@ export default function DeadLetterList() {
   const [drawerDL, setDrawerDL] = useState<DeadLetterItem | null>(null);
   const { message } = AntdApp.useApp();
 
+  // 死信队列权限点（与后端 Scope 对齐）：列表按 page 拦，详情按 view 拦
+  const canPage = hasScope('message:page');
+  const canView = hasScope('message:view');
+
   const load = useCallback(async () => {
+    if (!hasScope('message:page')) return;
     setLoading(true);
     setError(null);
     try {
@@ -78,12 +84,18 @@ export default function DeadLetterList() {
       key: 'action',
       width: 90,
       render: (_, record) => (
-        <Button type="link" size="small" onClick={() => openDetail(record.id)}>
-          详情
-        </Button>
+        canView && (
+          <Button type="link" size="small" onClick={() => openDetail(record.id)}>
+            详情
+          </Button>
+        )
       ),
     },
   ];
+
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看死信队列的权限" />;
+  }
 
   return (
     <div>

@@ -1,4 +1,4 @@
-/** 文件管理接口（后端 /api/v1/admin/files；按租户隔离，超管查全部）。 */
+/** 文件管理接口（后端 /api/v1/tenant/agent/files；仅租户用户，按租户隔离）。 */
 
 import { API_BASE, ApiError, authHeaders, http, type ApiEnvelope } from './http';
 
@@ -18,6 +18,8 @@ export interface FileItem {
   parse_status: string | null;
   create_at: string;
   updated_at: string;
+  /** 仅上传接口返回：上传后是否已自动入队解析。 */
+  parse_queued?: boolean;
 }
 
 /** 详情：在 FileItem 基础上附带该逻辑文件的全部版本。 */
@@ -34,36 +36,40 @@ export interface FileListResult {
 
 export const listFiles = (params: {
   file_name?: string;
-  tenant_id?: number;
   page?: number;
   page_size?: number;
 } = {}) => {
   const qs = new URLSearchParams();
   if (params.file_name) qs.set('file_name', params.file_name);
-  if (params.tenant_id) qs.set('tenant_id', String(params.tenant_id));
   if (params.page) qs.set('page', String(params.page));
   if (params.page_size) qs.set('page_size', String(params.page_size));
   const s = qs.toString();
-  return http.get<FileListResult>(`/api/v1/admin/files${s ? '?' + s : ''}`);
+  return http.get<FileListResult>(`/api/v1/tenant/agent/files${s ? '?' + s : ''}`);
 };
 
-export const getFile = (id: number) => http.get<FileDetail>(`/api/v1/admin/files/${id}`);
+export const getFile = (id: number) =>
+  http.get<FileDetail>(`/api/v1/tenant/agent/files/${id}`);
 
-/** 上传限制（单文件上限 MB，由后端 FILE_MAX_UPLOAD_MB 配置）。 */
+/** 上传限制与上传后行为（FILE_MAX_UPLOAD_MB / FILE_AUTO_PARSE）。 */
 export const getFileConfig = () =>
-  http.get<{ max_upload_mb: number }>('/api/v1/admin/files/config');
+  http.get<{ max_upload_mb: number; auto_parse: boolean }>(
+    '/api/v1/tenant/agent/files/config',
+  );
 
-/** 触发文档解析（向量化入 Milvus，走消息队列）；fileIds 为选中文件 id 列表。 */
+/** 触发文档解析（向量化入 Milvus，走消息队列）；failed 为入队失败、已回退未解析的 id。 */
 export const parseFiles = (fileIds: number[]) =>
-  http.post<{ queued: number }>('/api/v1/admin/files/parse', { file_ids: fileIds });
+  http.post<{ queued: number; failed: number[] }>('/api/v1/tenant/agent/files/parse', {
+    file_ids: fileIds,
+  });
 
-/** 上传（multipart/form-data）：不能走 JSON 封装，需 FormData + 自动 boundary。 */
+/** 上传（multipart/form-data）：不能走 JSON 封装，需 FormData + 自动 boundary。
+ *  租户固定取登录态，前端不再传 tenant_id。 */
 export async function uploadFile(file: File, remark?: string): Promise<FileItem> {
   const form = new FormData();
   form.append('file', file);
   if (remark) form.append('remark', remark);
 
-  const res = await fetch(`${API_BASE}/api/v1/admin/files/upload`, {
+  const res = await fetch(`${API_BASE}/api/v1/tenant/agent/files/upload`, {
     method: 'POST',
     headers: authHeaders(),
     body: form,
@@ -95,7 +101,8 @@ export interface BatchUploadResult {
   page_size: number;
 }
 
-/** 批量上传（multipart/form-data）；结果按 page/page_size 返回。 */
+/** 批量上传（multipart/form-data）；结果按 page/page_size 返回。
+ *  租户固定取登录态，前端不再传 tenant_id。 */
 export async function batchUploadFiles(
   files: File[],
   params: { remark?: string; page?: number; page_size?: number } = {},
@@ -110,7 +117,7 @@ export async function batchUploadFiles(
   const s = qs.toString();
 
   const res = await fetch(
-    `${API_BASE}/api/v1/admin/files/batch-upload${s ? '?' + s : ''}`,
+    `${API_BASE}/api/v1/tenant/agent/files/batch-upload${s ? '?' + s : ''}`,
     { method: 'POST', headers: authHeaders(), body: form },
   );
   const body = (await res.json()) as ApiEnvelope<BatchUploadResult>;
@@ -122,7 +129,7 @@ export async function batchUploadFiles(
 
 /** 下载：带鉴权拉 blob，再触发浏览器保存。 */
 export async function downloadFile(id: number, fileName: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/admin/files/${id}/download`, {
+  const res = await fetch(`${API_BASE}/api/v1/tenant/agent/files/${id}/download`, {
     headers: authHeaders(),
   });
   if (!res.ok) {

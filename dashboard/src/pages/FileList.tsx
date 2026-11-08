@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type Key } from 'react';
 import {
   Alert,
   App as AntdApp,
+  Badge,
   Button,
   Descriptions,
   Divider,
@@ -15,12 +16,19 @@ import {
   Typography,
   Upload,
 } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
-import { DownloadOutlined, InboxOutlined, UploadOutlined } from '@ant-design/icons';
+import { ProTable, type ProColumns } from '../components/ProTable';
+import {
+  DownloadOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import dayjs from 'dayjs';
 
 import {
+  batchUploadFiles,
   downloadFile,
   getFile,
   getFileConfig,
@@ -30,6 +38,7 @@ import {
   type FileDetail,
   type FileItem,
 } from '../services/files';
+import { hasScope } from '../services/auth';
 
 const { Dragger } = Upload;
 
@@ -49,6 +58,10 @@ const PARSE_STATUS_META: Record<string, { text: string; color: string }> = {
   failed: { text: '解析失败', color: 'error' },
 };
 
+/** 只有未解析 / 解析失败的文件需要（且允许）重新解析。 */
+const isParseable = (record: FileItem): boolean =>
+  record.parse_status !== 'parsed' && record.parse_status !== 'parsing';
+
 export default function FileList() {
   const { message } = AntdApp.useApp();
   const [data, setData] = useState<FileItem[]>([]);
@@ -60,6 +73,7 @@ export default function FileList() {
   const [keywordInput, setKeywordInput] = useState('');
   const [query, setQuery] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
+  const [parseSubmitting, setParseSubmitting] = useState(false);
 
   const [drawerFile, setDrawerFile] = useState<FileDetail | null>(null);
 
@@ -68,6 +82,11 @@ export default function FileList() {
   const [remark, setRemark] = useState('');
   const [uploading, setUploading] = useState(false);
   const [maxUploadMb, setMaxUploadMb] = useState(200);
+  // 各操作权限：与后端 require_scope 对齐（详情 qa_file:view、下载 qa_file:download、上传/解析 qa_file:upload）
+  const canUpload = hasScope('qa_file:upload');
+  const canView = hasScope('qa_file:view');
+  const canDownload = hasScope('qa_file:download');
+  const [autoParse, setAutoParse] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -93,11 +112,25 @@ export default function FileList() {
 
   useEffect(() => {
     getFileConfig()
-      .then((r) => setMaxUploadMb(r.max_upload_mb))
+      .then((r) => {
+        setMaxUploadMb(r.max_upload_mb);
+        setAutoParse(r.auto_parse);
+      })
       .catch(() => {
         /* 读取失败沿用默认值 */
       });
   }, []);
+
+  // 有文件处于「解析中」时自动轮询，解析完成后状态自动刷新，无需手动点刷新
+  const hasParsing = data.some((r) => r.parse_status === 'parsing');
+  const selectedRows = data.filter((r) => selectedRowKeys.includes(r.id));
+  const parseableSelected = selectedRows.filter(isParseable);
+  const skippedSelectedCount = selectedRows.length - parseableSelected.length;
+  useEffect(() => {
+    if (!hasParsing) return undefined;
+    const timer = window.setInterval(() => void load(), 3000);
+    return () => window.clearInterval(timer);
+  }, [hasParsing, load]);
 
   const openDetail = async (id: number) => {
     setDrawerFile(null);
@@ -110,30 +143,63 @@ export default function FileList() {
 
   const handleDownload = async (row: FileItem) => {
     try {
-      await downloadFile(row.id, row.file_name);
+      // 用原始文件名保存，file_name 是含 uuid/版本的存储名
+      await downloadFile(row.id, row.original_name || row.file_name);
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
     }
   };
 
   const doUpload = async () => {
-    const f = fileList[0]?.originFileObj as File | undefined;
-    if (!f) {
+    const picked = fileList
+      .map((f) => f.originFileObj as File | undefined)
+      .filter((f): f is File => Boolean(f));
+    if (picked.length === 0) {
       message.warning('请先选择文件');
       return;
     }
-    if (!/\.(pdf|md|txt)$/i.test(f.name)) {
-      message.warning('仅支持上传 PDF / Markdown / TXT 文件');
+    const invalid = picked.filter((f) => !/\.(pdf|md|txt)$/i.test(f.name));
+    if (invalid.length > 0) {
+      message.warning(`仅支持 PDF / Markdown / TXT：${invalid.map((f) => f.name).join('、')}`);
       return;
     }
-    if (f.size > maxUploadMb * 1024 * 1024) {
-      message.warning(`文件超过 ${maxUploadMb}MB 上限`);
+    const tooLarge = picked.filter((f) => f.size > maxUploadMb * 1024 * 1024);
+    if (tooLarge.length > 0) {
+      message.warning(`超过 ${maxUploadMb}MB 上限：${tooLarge.map((f) => f.name).join('、')}`);
       return;
     }
+
     setUploading(true);
     try {
-      await uploadFile(f, remark.trim() || undefined);
-      message.success('上传成功');
+      const note = remark.trim() || undefined;
+      if (picked.length === 1) {
+        const item = await uploadFile(picked[0], note);
+        if (item.parse_queued) {
+          message.success('上传成功，已提交解析');
+        } else if (autoParse) {
+          message.warning('上传成功，但解析入队失败，请在列表中手动点「解析」');
+        } else {
+          message.success('上传成功');
+        }
+      } else {
+        const res = await batchUploadFiles(picked, { remark: note });
+        const okItems = res.items.filter((i) => i.ok);
+        const failedItems = res.items.filter((i) => !i.ok);
+        const queued = okItems.filter((i) => Boolean(i.parse_queued)).length;
+        if (failedItems.length === 0) {
+          message.success(
+            autoParse
+              ? `上传成功 ${okItems.length} 个，已提交解析 ${queued} 个`
+              : `上传成功 ${okItems.length} 个`,
+          );
+        } else {
+          message.warning(
+            `成功 ${okItems.length} 个，失败 ${failedItems.length} 个：${failedItems
+              .map((i) => `${i.original_name ?? ''}（${i.error ?? '未知错误'}）`)
+              .join('；')}`,
+          );
+        }
+      }
       setUploadOpen(false);
       setFileList([]);
       setRemark('');
@@ -146,6 +212,37 @@ export default function FileList() {
       message.error(e instanceof Error ? e.message : String(e));
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleParse = async () => {
+    const selected = data.filter((r) => selectedRowKeys.includes(r.id));
+    const parseable = selected.filter(isParseable);
+    if (parseable.length === 0) {
+      message.info('选中的文件均已解析或正在解析，无需重复解析');
+      return;
+    }
+    const skipped = selected.length - parseable.length;
+    setParseSubmitting(true);
+    try {
+      const res = await parseFiles(parseable.map((r) => r.id));
+      if (res.failed.length > 0) {
+        message.warning(
+          `已提交 ${res.queued} 个，${res.failed.length} 个入队失败已回退未解析${
+            skipped > 0 ? `（跳过 ${skipped} 个已解析/解析中）` : ''
+          }`,
+        );
+      } else {
+        message.success(
+          `已提交 ${res.queued} 个文件解析${skipped > 0 ? `（跳过 ${skipped} 个已解析/解析中）` : ''}`,
+        );
+      }
+      setSelectedRowKeys([]);
+      void load();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setParseSubmitting(false);
     }
   };
 
@@ -211,16 +308,20 @@ export default function FileList() {
       width: 160,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openDetail(record.id)}>
-            详情
-          </Button>
-          <Button
-            type="link"
-            icon={<DownloadOutlined />}
-            onClick={() => handleDownload(record)}
-          >
-            下载
-          </Button>
+          {canView && (
+            <Button type="link" onClick={() => openDetail(record.id)}>
+              详情
+            </Button>
+          )}
+          {canDownload && (
+            <Button
+              type="link"
+              icon={<DownloadOutlined />}
+              onClick={() => handleDownload(record)}
+            >
+              下载
+            </Button>
+          )}
         </Space>
       ),
     },
@@ -244,7 +345,6 @@ export default function FileList() {
           allowClear
         />
         <Button
-          type="primary"
           onClick={() => {
             setQuery(keywordInput.trim());
             setPage(1);
@@ -252,33 +352,48 @@ export default function FileList() {
         >
           查询
         </Button>
-        <Button onClick={() => void load()}>刷新</Button>
-        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+          刷新
+        </Button>
+        <Button type="primary" icon={<UploadOutlined />} disabled={!canUpload} onClick={() => setUploadOpen(true)}>
           上传文件
         </Button>
         <Popconfirm
           title="确认解析选中的文件？"
-          description={`将提交 ${selectedRowKeys.length} 个文件到消息队列进行向量化解析`}
+          description={
+            parseableSelected.length > 0
+              ? `将提交 ${parseableSelected.length} 个文件到消息队列进行向量化解析${
+                  skippedSelectedCount > 0
+                    ? `，已跳过 ${skippedSelectedCount} 个已解析/解析中文件`
+                    : ''
+                }`
+              : '选中的文件均已解析或正在解析，无需重复解析'
+          }
           okText="确认解析"
           cancelText="取消"
-          disabled={selectedRowKeys.length === 0}
-          onConfirm={async () => {
-            try {
-              const ids = selectedRowKeys.map((k) => Number(k));
-              await parseFiles(ids);
-              message.success(`已提交 ${ids.length} 个文件解析`);
-              setSelectedRowKeys([]);
-              void load();
-            } catch (e) {
-              message.error(e instanceof Error ? e.message : String(e));
-            }
-          }}
+          disabled={parseableSelected.length === 0 || !canUpload}
+          onConfirm={handleParse}
         >
-          <Button disabled={selectedRowKeys.length === 0}>
-            解析{selectedRowKeys.length > 0 ? `（${selectedRowKeys.length}）` : ''}
-          </Button>
+          <Badge
+            count={parseableSelected.length}
+            size="small"
+            offset={[-2, 2]}
+            style={{ boxShadow: 'none' }}
+          >
+            <Button
+              type="primary"
+              ghost
+              icon={<ThunderboltOutlined />}
+              disabled={parseableSelected.length === 0 || !canUpload}
+              loading={parseSubmitting}
+            >
+              解析
+            </Button>
+          </Badge>
         </Popconfirm>
-        <Typography.Text type="secondary">共 {total} 个文件</Typography.Text>
+        <Typography.Text type="secondary">
+          共 {total} 个文件{hasParsing ? '，解析中自动刷新' : ''}
+        </Typography.Text>
       </Space>
 
       {error && (
@@ -338,15 +453,19 @@ export default function FileList() {
           </Button>,
           <Popconfirm
             key="ok"
-            title="确认上传该文件？"
-            description="上传后将可提交向量化解析任务，是否继续？"
+            title={fileList.length > 1 ? `确认上传这 ${fileList.length} 个文件？` : '确认上传该文件？'}
+            description={
+              autoParse
+                ? '上传后将提交后台解析任务，是否继续？'
+                : '上传后可在列表中触发解析，是否继续？'
+            }
             okText="确认上传"
             cancelText="取消"
-            disabled={fileList.length === 0}
+            disabled={fileList.length === 0 || !canUpload}
             onConfirm={doUpload}
           >
-            <Button type="primary" loading={uploading} disabled={fileList.length === 0}>
-              上传
+            <Button type="primary" loading={uploading} disabled={fileList.length === 0 || !canUpload}>
+              {fileList.length > 1 ? `上传（${fileList.length}）` : '上传'}
             </Button>
           </Popconfirm>,
         ]}
@@ -354,16 +473,18 @@ export default function FileList() {
         <Dragger
           accept=".pdf,.md,.txt"
           beforeUpload={() => false}
-          maxCount={1}
+          multiple
+          maxCount={20}
           fileList={fileList}
           onChange={({ fileList: fl }) => setFileList(fl)}
         >
           <p className="ant-upload-drag-icon">
             <InboxOutlined />
           </p>
-          <p className="ant-upload-text">点击或拖拽文件到此区域</p>
+          <p className="ant-upload-text">点击或拖拽文件到此区域（支持多选 / 批量上传）</p>
           <p className="ant-upload-hint">
-          仅支持 PDF / Markdown / TXT；单文件上限 {maxUploadMb}MB；同名文件重复上传自动递增版本号，内容与最新版完全一致则拦截
+            仅支持 PDF / Markdown / TXT，单次最多 20 个、单文件上限 {maxUploadMb}MB；
+            同名文件重复上传自动递增版本号，内容与最新版完全一致则拦截
           </p>
         </Dragger>
         <Input.TextArea
@@ -386,12 +507,25 @@ export default function FileList() {
           <>
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="ID">{drawerFile.id}</Descriptions.Item>
-            <Descriptions.Item label="文件名">{drawerFile.file_name}</Descriptions.Item>
+            <Descriptions.Item label="文件名">
+              {drawerFile.original_name || drawerFile.file_name}
+            </Descriptions.Item>
+            <Descriptions.Item label="存储名">
+              <code style={{ wordBreak: 'break-all' }}>{drawerFile.file_name}</code>
+            </Descriptions.Item>
             <Descriptions.Item label="大小">{formatSize(drawerFile.file_size)}</Descriptions.Item>
             <Descriptions.Item label="类型">
               {drawerFile.content_type ?? drawerFile.file_ext ?? '-'}
             </Descriptions.Item>
             <Descriptions.Item label="版本">v{drawerFile.file_version}</Descriptions.Item>
+            <Descriptions.Item label="解析状态">
+              {(() => {
+                const meta =
+                  PARSE_STATUS_META[drawerFile.parse_status ?? 'pending'] ??
+                  PARSE_STATUS_META.pending;
+                return <Tag color={meta.color}>{meta.text}</Tag>;
+              })()}
+            </Descriptions.Item>
             <Descriptions.Item label="租户">{drawerFile.tenant_id ?? '-'}</Descriptions.Item>
             <Descriptions.Item label="上传用户">{drawerFile.uploader_user_id}</Descriptions.Item>
             <Descriptions.Item label="校验值">

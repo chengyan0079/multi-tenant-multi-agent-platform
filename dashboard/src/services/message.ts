@@ -8,6 +8,7 @@ import type { Paged } from './rbac';
 export interface OutboxItem {
   id: string;
   topic: string;
+  message_kind: string;
   status: string;
   retry_count: number;
   last_error: string | null;
@@ -42,11 +43,12 @@ export async function listMessageQueue(params: {
   page?: number;
   page_size?: number;
   status?: string;
+  message_kind?: string;
   tenant_id?: number;
 }) {
   if (isTenantContext()) {
-    const { page, page_size, status } = params;
-    return http.get<Paged<OutboxItem>>(`/api/v1/tenant/messages/queue${qs({ page, page_size, status })}`);
+    const { page, page_size, status, message_kind } = params;
+    return http.get<Paged<OutboxItem>>(`/api/v1/tenant/messages/queue${qs({ page, page_size, status, message_kind })}`);
   }
   return http.get<Paged<OutboxItem>>(`/api/v1/admin/messages/queue${qs(params)}`);
 }
@@ -65,9 +67,9 @@ export async function listDeadLetters(params: {
 }
 
 /** 更改消息状态：pending=重投 / done=标记完成 / failed=标记失败。 */
-export async function updateMessageStatus(id: string, status: string) {
+export async function updateMessageStatus(id: string, status: string, error?: string) {
   const base = isTenantContext() ? '/api/v1/tenant/messages' : '/api/v1/admin/messages';
-  return http.patch(`${base}/queue/${id}`, { status });
+  return http.patch(`${base}/queue/${id}`, error ? { status, error } : { status });
 }
 
 /** 消息详情（含 payload）。 */

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, App as AntdApp, Button, Descriptions, Drawer, Select, Space, Tag, Tooltip, Typography } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { Alert, App as AntdApp, Button, Descriptions, Drawer, Result, Select, Space, Tag, Tooltip, Typography } from 'antd';
+import { ProTable, type ProColumns } from '../components/ProTable';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
 import { getAuditLog, listAuditLogs, type AuditItem } from '../services/audit';
 import { listTenants, type TenantItem } from '../services/rbac';
 import { sortByTimeThenId } from '../utils/sort';
+import { hasScope } from '../services/auth';
 
 /** 结果着色：审计里的 result 是字符串（成功/失败），未知值统一灰色 */
 const RESULT_COLOR: Record<string, string> = { 成功: 'green', 失败: 'red' };
@@ -24,6 +25,7 @@ export default function AuditLog() {
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
 
   const load = useCallback(async () => {
+    if (!hasScope('audit:page')) return;
     setLoading(true);
     setError(null);
     try {
@@ -54,6 +56,10 @@ export default function AuditLog() {
   const tenantLabel = (id: number): string =>
     tenantOptions.find((o) => o.value === id)?.label ?? `#${id}`;
 
+  // 审计权限点（与后端 Scope 对齐）：列表按 page 拦，详情按 view 拦
+  const canPage = hasScope('audit:page');
+  const canView = hasScope('audit:view');
+
   const openDetail = async (id: string) => {
     setDrawerLog(null);
     try {
@@ -77,9 +83,17 @@ export default function AuditLog() {
       dataIndex: 'tenant_id',
       key: 'tenant_id',
       width: 140,
-      render: (v: number) => tenantLabel(v),
+      render: (_: number | null, row: AuditItem) =>
+        row.tenant_name ?? (row.tenant_id != null ? tenantLabel(row.tenant_id) : '-'),
     },
-    { title: '操作人', dataIndex: 'user_id', key: 'user_id', width: 90 },
+    {
+      title: '操作人',
+      dataIndex: 'user_id',
+      key: 'user_id',
+      width: 140,
+      render: (_: number | null, row: AuditItem) =>
+        row.user_name ?? (row.user_id != null ? `#${row.user_id}` : '-'),
+    },
     {
       title: '动作',
       dataIndex: 'action',
@@ -130,12 +144,18 @@ export default function AuditLog() {
       key: 'action',
       width: 90,
       render: (_, row: AuditItem) => (
-        <Button type="link" size="small" onClick={() => openDetail(row.id)}>
-          详情
-        </Button>
+        canView && (
+          <Button type="link" size="small" onClick={() => openDetail(row.id)}>
+            详情
+          </Button>
+        )
       ),
     },
   ];
+
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看业务审计的权限" />;
+  }
 
   return (
     <div>
@@ -200,8 +220,14 @@ export default function AuditLog() {
         {drawerLog && (
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="ID">{drawerLog.id}</Descriptions.Item>
-            <Descriptions.Item label="租户">{drawerLog.tenant_id}</Descriptions.Item>
-            <Descriptions.Item label="操作人">{drawerLog.user_id}</Descriptions.Item>
+            <Descriptions.Item label="租户">
+              {drawerLog.tenant_name ??
+                (drawerLog.tenant_id != null ? tenantLabel(drawerLog.tenant_id) : '-')}
+            </Descriptions.Item>
+            <Descriptions.Item label="操作人">
+              {drawerLog.user_name ??
+                (drawerLog.user_id != null ? `#${drawerLog.user_id}` : '-')}
+            </Descriptions.Item>
             <Descriptions.Item label="动作"><code>{drawerLog.action}</code></Descriptions.Item>
             <Descriptions.Item label="对象">{drawerLog.target ?? '-'}</Descriptions.Item>
             <Descriptions.Item label="详情">{drawerLog.detail ?? '-'}</Descriptions.Item>

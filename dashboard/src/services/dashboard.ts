@@ -76,10 +76,17 @@ export interface DashboardData {
   tenant_ranking?: TenantRankRow[];
 }
 
-export function getDashboard(days = 7, tenantId?: number): Promise<DashboardData> {
+export function getDashboard(
+  days = 7,
+  tenantId?: number,
+  refresh = false,
+): Promise<DashboardData> {
   const query = new URLSearchParams({ days: String(days) });
   if (tenantId != null) {
     query.set('tenant_id', String(tenantId));
+  }
+  if (refresh) {
+    query.set('refresh', 'true');
   }
   return http.get<DashboardData>(`/api/v1/dashboard?${query.toString()}`);
 }

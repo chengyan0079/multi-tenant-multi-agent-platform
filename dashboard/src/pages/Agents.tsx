@@ -16,10 +16,11 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Result,
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { ProTable, type ProColumns } from '../components/ProTable';
 import dayjs from 'dayjs';
 
 import {
@@ -37,6 +38,7 @@ import {
 } from '../services/agents';
 import { MODEL_TYPES, listModels, type ModelItem } from '../services/models';
 import { sortByTimeThenId } from '../utils/sort';
+import { hasScope } from '../services/auth';
 
 export default function Agents() {
   const [items, setItems] = useState<AgentItem[]>([]);
@@ -64,6 +66,13 @@ export default function Agents() {
   const [addForm] = Form.useForm();
   const [addLoading, setAddLoading] = useState(false);
   const [bindPending, setBindPending] = useState<string | null>(null);
+
+  // 智能体管理权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
+  const canPage = hasScope('agent:page');
+  const canAdd = hasScope('agent:add');
+  const canUpdate = hasScope('agent:update');
+  const canDelete = hasScope('agent:delete');
+  const canStatus = hasScope('agent:status');
 
   const load = async (targetPage = page, targetPageSize = pageSize) => {
     setLoading(true);
@@ -331,7 +340,7 @@ export default function Agents() {
         <Tooltip title={row.registered ? '' : '代码未接入，启停不影响运行'}>
           <Switch
             checked={row.enabled}
-            disabled={!row.registered}
+            disabled={!row.registered || !canStatus}
             loading={pending === row.agent_type}
             onChange={(checked) => void toggle(row.agent_type, checked)}
           />
@@ -344,29 +353,35 @@ export default function Agents() {
       width: 220,
       render: (_: unknown, row: AgentItem) => (
         <Space size="small">
-          <Button type="link" size="small" onClick={() => openConfig(row)}>
-            配置
-          </Button>
-          <Button type="link" size="small" onClick={() => openEdit(row)}>
-            编辑
-          </Button>
-          <Popconfirm
-            title={`确认删除「${row.name}」？`}
-            description="删除后不可恢复；已绑定模型的需先解绑。"
-            okText="删除"
-            okButtonProps={{ danger: true }}
-            cancelText="取消"
-            onConfirm={() => doDelete(row)}
-          >
-            <Button
-              type="link"
-              size="small"
-              danger
-              loading={deletePending === row.agent_type}
-            >
-              删除
+          {canUpdate && (
+            <Button type="link" size="small" onClick={() => openConfig(row)}>
+              配置
             </Button>
-          </Popconfirm>
+          )}
+          {canUpdate && (
+            <Button type="link" size="small" onClick={() => openEdit(row)}>
+              编辑
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm
+              title={`确认删除「${row.name}」？`}
+              description="删除后不可恢复；已绑定模型的需先解绑。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => doDelete(row)}
+            >
+              <Button
+                type="link"
+                size="small"
+                danger
+                loading={deletePending === row.agent_type}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -408,7 +423,7 @@ export default function Agents() {
       width: 150,
       render: (_: unknown, row) => (
         <Space size="small">
-          {!row.is_default && (
+          {!row.is_default && canUpdate && (
             <Button
               type="link"
               size="small"
@@ -418,32 +433,38 @@ export default function Agents() {
               设默认
             </Button>
           )}
-          <Popconfirm
-            title="确认解绑该模型？"
-            okText="解绑"
-            okButtonProps={{ danger: true }}
-            cancelText="取消"
-            onConfirm={() => removeBinding(row.model_id)}
-          >
-            <Button
-              type="link"
-              size="small"
-              danger
-              loading={bindPending === `${configAgent?.agent_type}-${row.model_id}`}
+          {canDelete && (
+            <Popconfirm
+              title="确认解绑该模型？"
+              okText="解绑"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => removeBinding(row.model_id)}
             >
-              解绑
-            </Button>
-          </Popconfirm>
+              <Button
+                type="link"
+                size="small"
+                danger
+                loading={bindPending === `${configAgent?.agent_type}-${row.model_id}`}
+              >
+                解绑
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
   ];
 
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看智能体管理的权限" />;
+  }
+
   return (
     <Card
-      title={<Typography.Title level={4} style={{ margin: 0 }}>智能体管理</Typography.Title>}
+      title={<Typography.Title level={4} style={{ margin: 0 }}>智能体列表</Typography.Title>}
       extra={
-        <Button type="primary" onClick={openCreate}>
+        <Button type="primary" disabled={!canAdd} onClick={openCreate}>
           新增智能体
         </Button>
       }
@@ -601,7 +622,7 @@ export default function Agents() {
               <InputNumber min={0} />
             </Form.Item>
             <Form.Item>
-              <Button type="primary" loading={addLoading} onClick={() => void submitAddBinding()}>
+              <Button type="primary" loading={addLoading} disabled={!canUpdate} onClick={() => void submitAddBinding()}>
                 添加
               </Button>
             </Form.Item>

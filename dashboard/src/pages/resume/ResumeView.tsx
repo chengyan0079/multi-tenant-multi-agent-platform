@@ -17,9 +17,11 @@ import { deleteReview, getReview, type ResumeDetail } from '../../services/resum
 import { hasScope } from '../../services/auth';
 
 const STATUS_COLOR: Record<string, string> = {
+  pending: 'default',
+  processing: 'processing',
+  done: 'success',
   completed: 'success',
   failed: 'error',
-  processing: 'processing',
 };
 
 /** 评审查看页（resume:view）：展示单条评审结果（评分/维度/问题/总结），删除按 scope 门控。 */
@@ -118,17 +120,31 @@ export default function ResumeView() {
           {d.summary && (
             <>
               <Divider>评审总结</Divider>
-              <Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>{d.summary}</Typography.Paragraph>
+              {d.summary.overall_comment ? (
+                <Typography.Paragraph>{d.summary.overall_comment}</Typography.Paragraph>
+              ) : null}
+              {d.summary.fit_assessment ? (
+                <Typography.Paragraph type="secondary">
+                  岗位匹配度：{d.summary.fit_assessment}
+                </Typography.Paragraph>
+              ) : null}
+              {d.summary.highlights?.length ? (
+                <ul>
+                  {d.summary.highlights.map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                </ul>
+              ) : null}
             </>
           )}
 
-          {d.dimension_scores && Object.keys(d.dimension_scores).length > 0 && (
+          {d.dimension_scores && d.dimension_scores.length > 0 && (
             <>
               <Divider>维度评分</Divider>
               <Space wrap>
-                {Object.entries(d.dimension_scores).map(([k, v]) => (
-                  <Tag key={k} color="blue">
-                    {k}：{typeof v === 'number' ? v.toFixed(1) : String(v)}
+                {d.dimension_scores.map((dim) => (
+                  <Tag key={dim.dimension} color="blue">
+                    {dim.dimension}：{dim.score}
                   </Tag>
                 ))}
               </Space>
@@ -140,7 +156,9 @@ export default function ResumeView() {
               <Divider>改进建议</Divider>
               <ul>
                 {d.issues.map((it, i) => (
-                  <li key={i}>{it}</li>
+                  <li key={i}>
+                    [{it.priority}] {it.description}（{it.location}）：{it.suggestion}
+                  </li>
                 ))}
               </ul>
             </>

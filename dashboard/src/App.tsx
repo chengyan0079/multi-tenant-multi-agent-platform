@@ -5,7 +5,14 @@ import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Agents from './pages/Agents';
-import Sessions from './pages/Sessions';
+import Sessions from './pages/agent/qa/Sessions';
+import QaChat from './pages/agent/qa/QaChat';
+import QaResults from './pages/agent/qa/QaResults';
+import ResumeAnalysis from './pages/agent/resume/ResumeAnalysis';
+import ResumeReport from './pages/agent/resume/ResumeReport';
+import ExamStart from './pages/agent/exam/ExamStart';
+import ExamResults from './pages/agent/exam/ExamResults';
+import ExamReport from './pages/agent/exam/ExamReport';
 import Tools from './pages/Tools';
 import UserList from './pages/rbac/UserList';
 import TenantList from './pages/rbac/TenantList';
@@ -56,12 +63,29 @@ export default function App() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
-        <Route path="agents" element={<Agents />} />
-        <Route path="sessions" element={<Sessions />} />
+        <Route path="agents" element={<Navigate to="/agents/list" replace />} />
+        <Route path="agents/list" element={<Agents />} />
         <Route path="tools" element={<Tools />} />
         <Route path="models" element={<ModelList />} />
-        <Route path="files" element={<Navigate to="/files/list" replace />} />
-        <Route path="files/list" element={<FileList />} />
+        {/* 智能体业务域：咨询 / 简历 / 考试（二级菜单先 mock，样例通过后接后端） */}
+        <Route path="agent" element={<Navigate to="/agent/qa" replace />} />
+        <Route path="agent/qa" element={<Navigate to="/agent/qa/files" replace />} />
+        <Route path="agent/qa/files" element={<FileList />} />
+        <Route path="agent/qa/results" element={<QaResults />} />
+        <Route path="agent/qa/chat" element={<QaChat />} />
+        <Route path="agent/qa/sessions" element={<Sessions />} />
+        <Route path="agent/resume" element={<Navigate to="/agent/resume/analysis" replace />} />
+        <Route path="agent/resume/analysis" element={<ResumeAnalysis />} />
+        <Route path="agent/resume/analysis/:id" element={<ResumeReport />} />
+        <Route path="agent/exam" element={<Navigate to="/agent/exam/start" replace />} />
+        <Route path="agent/exam/start" element={<ExamStart />} />
+        <Route path="agent/exam/results" element={<ExamResults />} />
+        <Route path="agent/exam/results/:id" element={<ExamReport />} />
+        <Route path="agent/exam/analysis" element={<Navigate to="/agent/exam/results" replace />} />
+        {/* 旧入口重定向，避免历史链接失效 */}
+        <Route path="sessions" element={<Navigate to="/agent/qa/sessions" replace />} />
+        <Route path="files" element={<Navigate to="/agent/qa/files" replace />} />
+        <Route path="files/list" element={<Navigate to="/agent/qa/files" replace />} />
         <Route
           path="users"
           element={

@@ -13,8 +13,9 @@ import {
   Space,
   Switch,
   Tag,
+  Result,
 } from 'antd';
-import { ProTable, type ActionType, type ProColumns } from '@ant-design/pro-components';
+import { ProTable, type ActionType, type ProColumns } from '../components/ProTable';
 import dayjs from 'dayjs';
 
 import {
@@ -28,6 +29,7 @@ import {
   type PluginPayload,
 } from '../services/plugins';
 import { listTenants, type TenantItem } from '../services/rbac';
+import { hasScope } from '../services/auth';
 
 const STATUS_OPTIONS = [
   { value: 'enabled', label: '启用' },
@@ -54,6 +56,14 @@ interface FormValues extends PluginPayload {}
 export default function Tools() {
   const { message } = AntdApp.useApp();
   const actionRef = useRef<ActionType>();
+
+  // 工具/插件权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
+  const canPage = hasScope('tool:page');
+  const canAdd = hasScope('tool:add');
+  const canUpdate = hasScope('tool:update');
+  const canDelete = hasScope('tool:delete');
+  const canView = hasScope('tool:view');
+  const canStatus = hasScope('tool:status');
   const [createForm] = Form.useForm<FormValues>();
   const [editForm] = Form.useForm<FormValues>();
 
@@ -213,6 +223,7 @@ export default function Tools() {
           <Switch
             size="small"
             checked={row.status === 'enabled'}
+            disabled={!canStatus}
             loading={togglingId === row.id}
             onChange={(checked) => void toggle(row, checked)}
           />
@@ -234,17 +245,23 @@ export default function Tools() {
       search: false,
       render: (_: unknown, row: PluginItem) => (
         <Space size={4}>
-          <Button type="link" size="small" onClick={() => void openDetail(row.id)}>
-            详情
-          </Button>
-          <Button type="link" size="small" onClick={() => openEdit(row)}>
-            编辑
-          </Button>
-          <Popconfirm title="确认删除该插件？" onConfirm={() => void onDelete(row)}>
-            <Button type="link" size="small" danger>
-              删除
+          {canView && (
+            <Button type="link" size="small" onClick={() => void openDetail(row.id)}>
+              详情
             </Button>
-          </Popconfirm>
+          )}
+          {canUpdate && (
+            <Button type="link" size="small" onClick={() => openEdit(row)}>
+              编辑
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm title="确认删除该插件？" onConfirm={() => void onDelete(row)}>
+              <Button type="link" size="small" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -276,16 +293,24 @@ export default function Tools() {
     </Form>
   );
 
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看工具与插件的权限" />;
+  }
+
   return (
     <div>
       <ProTable<PluginItem>
         headerTitle="工具与插件"
         actionRef={actionRef}
-        toolBarRender={() => [
-          <Button key="add" type="primary" onClick={openCreate}>
-            新增插件
-          </Button>,
-        ]}
+        toolBarRender={() =>
+          canAdd
+            ? [
+                <Button key="add" type="primary" onClick={openCreate}>
+                  新增插件
+                </Button>,
+              ]
+            : []
+        }
         rowKey="id"
         columns={columns}
         request={request}

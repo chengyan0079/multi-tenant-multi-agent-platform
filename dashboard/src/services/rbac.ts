@@ -5,7 +5,8 @@ export interface UserItem {
   id: number;
   username: string;
   name: string;
-  tenant_id: number;
+  tenant_id: number | null;
+  is_super_admin?: boolean;
   create_at?: string;
   updated_at?: string;
 }
@@ -93,8 +94,14 @@ export async function deleteRole(roleId: number) {
   return http.delete(`/api/v1/admin/roles/${roleId}`);
 }
 
-export async function listMenus(page = 1, pageSize = 50) {
-  return http.get<Paged<MenuNode>>(`/api/v1/admin/menus${qs({ page, page_size: pageSize })}`);
+export async function listMenus(
+  page = 1,
+  pageSize = 50,
+  filters: { name?: string; path?: string; scope?: string } = {},
+) {
+  return http.get<Paged<MenuNode>>(
+    `/api/v1/admin/menus${qs({ page, page_size: pageSize, ...filters })}`,
+  );
 }
 
 export async function createMenu(payload: {
@@ -229,10 +236,6 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'exam:page', label: 'exam:page（试卷查询）' },
   { value: 'exam:add', label: 'exam:add（出卷）' },
   { value: 'exam:update', label: 'exam:update（改卷）' },
-  { value: 'knowledge:ask', label: 'knowledge:ask（知识库问答）' },
-  { value: 'knowledge:page', label: 'knowledge:page（知识库查询）' },
-  { value: 'knowledge:upload', label: 'knowledge:upload（知识库上传）' },
-  { value: 'knowledge:download', label: 'knowledge:download（知识库下载）' },
   { value: 'config:page', label: 'config:page（配置查询）' },
   { value: 'config:update', label: 'config:update（配置写入）' },
   { value: 'config:review', label: 'config:review（配置复核）' },
@@ -280,7 +283,10 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'config:menu', label: 'config:menu（配置中心菜单）' },
   { value: 'audit:menu', label: 'audit:menu（审计日志菜单）' },
   { value: 'message:menu', label: 'message:menu（消息管理菜单）' },
-  { value: 'file:menu', label: 'file:menu（文件管理菜单）' },
+  { value: 'qa_file:page', label: 'qa_file:page（文件列表分页）' },
+  { value: 'qa_file:view', label: 'qa_file:view（文件详情）' },
+  { value: 'qa_file:upload', label: 'qa_file:upload（文件上传/解析）' },
+  { value: 'qa_file:download', label: 'qa_file:download（文件下载）' },
   { value: 'menu:menu', label: 'menu:menu（菜单管理菜单）' },
 ];
 

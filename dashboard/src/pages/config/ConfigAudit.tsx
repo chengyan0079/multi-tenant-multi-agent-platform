@@ -12,8 +12,9 @@ import {
   Spin,
   Tag,
   Typography,
+  Result,
 } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { ProTable, type ProColumns } from '../../components/ProTable';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
@@ -32,6 +33,7 @@ import {
   type ConfigRequestDetail,
   type ConfigReviewItem,
 } from '../../services/configCenter';
+import { hasScope } from '../../services/auth';
 import ReactDiffViewer from 'react-diff-viewer-continued';
 
 const TIME_FMT = 'YYYY-MM-DD HH:mm:ss';
@@ -55,6 +57,11 @@ const sortRequests = (rows: ConfigRequestItem[]) =>
 
 export default function ConfigAudit() {
   const { message } = AntdApp.useApp();
+
+  // 配置审核权限点（与后端 Scope 对齐）：列表/详情按 page/view 拦，审批动作按 execute 拦
+  const canPage = hasScope('config:page');
+  const canView = hasScope('config:view');
+  const canExecute = hasScope('config:execute');
 
   /* ============ 申请单列表（审批流） ============ */
   const [items, setItems] = useState<ConfigRequestItem[]>([]);
@@ -94,6 +101,7 @@ export default function ConfigAudit() {
   }, [message]);
 
   const loadGroups = useCallback(async () => {
+    if (!hasScope('config:page')) return;
     try {
       const res = await listGroups();
       setGroups(res?.groups ?? []);
@@ -105,6 +113,7 @@ export default function ConfigAudit() {
   /** 重建审核队列：分页拉全量待审核（status=0）按申请时间升序入队，与主列表展示解耦。
    * 后端 page_size 上限 100，故按页累加（待审核通常不会很多，循环次数有限）。 */
   const rebuildQueue = useCallback(async () => {
+    if (!hasScope('config:page')) return;
     try {
       const collected: { id: number; create_at: string | null }[] = [];
       const PAGE = 100;
@@ -127,6 +136,7 @@ export default function ConfigAudit() {
   }, []);
 
   const loadRequests = useCallback(async () => {
+    if (!hasScope('config:page')) return;
     setLoading(true);
     setError(null);
     try {
@@ -266,10 +276,16 @@ export default function ConfigAudit() {
       key: 'action',
       width: 90,
       render: (_: unknown, row: ConfigRequestItem) => (
-        <Button type="link" size="small" onClick={() => openDetail(row.id)}>详情</Button>
+        canView && (
+          <Button type="link" size="small" onClick={() => openDetail(row.id)}>详情</Button>
+        )
       ),
     },
   ];
+
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看配置审核的权限" />;
+  }
 
   return (
     <div>
@@ -320,11 +336,12 @@ export default function ConfigAudit() {
           }
           action={
             <Button
-              size="small"
-              type="primary"
-              onClick={handleProcess}
+            size="small"
+            type="primary"
+            disabled={!canExecute}
+            onClick={handleProcess}
             >
-              去处理（{reviewQueue.length}）
+            去处理（{reviewQueue.length}）
             </Button>
           }
         />
@@ -417,12 +434,16 @@ export default function ConfigAudit() {
                   <Input.TextArea rows={2} placeholder="复核意见（驳回必填）" value={comment}
                     onChange={(e) => setComment(e.target.value)} style={{ marginBottom: 12 }} />
                   <Space>
-                    <Popconfirm title="确认审批通过并写入 Nacos？" onConfirm={() => void doReview(REVIEW_APPROVE)} okText="确认" cancelText="取消">
-                      <Button type="primary" loading={acting}>审批通过</Button>
-                    </Popconfirm>
-                    <Popconfirm title="确认驳回？" onConfirm={() => void doReview(REVIEW_REJECT)} okText="确认" cancelText="取消">
-                      <Button danger loading={acting}>驳回</Button>
-                    </Popconfirm>
+                    {canExecute && (
+                      <Popconfirm title="确认审批通过并写入 Nacos？" onConfirm={() => void doReview(REVIEW_APPROVE)} okText="确认" cancelText="取消">
+                        <Button type="primary" loading={acting}>审批通过</Button>
+                      </Popconfirm>
+                    )}
+                    {canExecute && (
+                      <Popconfirm title="确认驳回？" onConfirm={() => void doReview(REVIEW_REJECT)} okText="确认" cancelText="取消">
+                        <Button danger loading={acting}>驳回</Button>
+                      </Popconfirm>
+                    )}
                   </Space>
                 </div>
               )}

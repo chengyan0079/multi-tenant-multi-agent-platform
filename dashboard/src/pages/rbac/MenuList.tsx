@@ -11,7 +11,7 @@ import {
   Space,
   Switch,
 } from 'antd';
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import { ProTable, type ProColumns, type ActionType } from '../../components/ProTable';
 import {
   createMenu,
   deleteMenu,
@@ -39,7 +39,11 @@ export default function MenuList() {
   const [editForm] = Form.useForm();
 
   const request = useCallback(async (params: any) => {
-    const res = await listMenus(params.current ?? 1, params.pageSize ?? 50);
+    const res = await listMenus(params.current ?? 1, params.pageSize ?? 50, {
+      name: params.name,
+      path: params.path,
+      scope: params.scope,
+    });
     return { data: sortByTimeThenId(res.items), success: true, total: res.total };
   }, []);
 
@@ -145,7 +149,7 @@ export default function MenuList() {
       title: '权限点',
       dataIndex: 'scope',
       key: 'scope',
-      search: false,
+      valueType: 'text',
       render: (value: any) => value ?? '-',
     },
     {

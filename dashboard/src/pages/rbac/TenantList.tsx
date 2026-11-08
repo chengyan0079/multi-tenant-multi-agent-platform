@@ -10,8 +10,9 @@ import {
   Space,
   Switch,
   Typography,
+  Result,
 } from 'antd';
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import { ProTable, type ProColumns, type ActionType } from '../../components/ProTable';
 import dayjs from 'dayjs';
 import {
   createTenant,
@@ -22,10 +23,19 @@ import {
   type TenantItem,
 } from '../../services/rbac';
 import { sortByTimeThenId } from '../../utils/sort';
+import { SUPER_ADMIN_TENANT_ID } from '../../constants';
+import { hasScope } from '../../services/auth';
 
 export default function TenantList() {
   const { message } = AntdApp.useApp();
   const actionRef = useRef<ActionType>();
+
+  // 租户管理权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
+  const canPage = hasScope('tenant:page');
+  const canAdd = hasScope('tenant:add');
+  const canDelete = hasScope('tenant:delete');
+  const canView = hasScope('tenant:view');
+  const canStatus = hasScope('tenant:status');
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createForm] = Form.useForm();
@@ -60,7 +70,7 @@ export default function TenantList() {
           okText="确认"
           cancelText="取消"
         >
-          <Switch checked={record.enabled} onChange={() => {}} />
+          <Switch checked={record.enabled} disabled={record.id === SUPER_ADMIN_TENANT_ID || !canStatus} onChange={() => {}} />
         </Popconfirm>
       ),
     },
@@ -86,20 +96,24 @@ export default function TenantList() {
       search: false,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openDetail(record.id)}>
-            详情
-          </Button>
-          <Popconfirm
-            title="确认删除该租户？"
-            description="删除后不可恢复"
-            onConfirm={() => onDelete(record.id)}
-            okText="确认"
-            cancelText="取消"
-          >
-            <Button type="link" danger>
-              删除
+          {canView && (
+            <Button type="link" onClick={() => openDetail(record.id)}>
+              详情
             </Button>
-          </Popconfirm>
+          )}
+          {canDelete && (
+            <Popconfirm
+              title="确认删除该租户？"
+              description="删除后不可恢复"
+              onConfirm={() => onDelete(record.id)}
+              okText="确认"
+              cancelText="取消"
+            >
+              <Button type="link" danger disabled={record.id === SUPER_ADMIN_TENANT_ID}>
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -161,16 +175,24 @@ export default function TenantList() {
     }
   };
 
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看租户管理的权限" />;
+  }
+
   return (
     <div>
       <ProTable<TenantItem>
         headerTitle="租户管理"
         actionRef={actionRef}
-        toolBarRender={() => [
-          <Button key="add" type="primary" onClick={() => setCreateOpen(true)}>
-            新建租户
-          </Button>,
-        ]}
+        toolBarRender={() =>
+          canAdd
+            ? [
+                <Button key="add" type="primary" onClick={() => setCreateOpen(true)}>
+                  新建租户
+                </Button>,
+              ]
+            : []
+        }
         rowKey="id"
         columns={columns}
         request={request}

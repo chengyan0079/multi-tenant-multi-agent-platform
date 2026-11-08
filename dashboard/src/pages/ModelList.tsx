@@ -15,8 +15,9 @@ import {
   Space,
   Switch,
   Tag,
+  Result,
 } from 'antd';
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import { ProTable, type ProColumns, type ActionType } from '../components/ProTable';
 import dayjs from 'dayjs';
 
 import {
@@ -31,6 +32,7 @@ import {
   type ModelPayload,
 } from '../services/models';
 import { sortByTimeThenId } from '../utils/sort';
+import { hasScope } from '../services/auth';
 
 const TYPE_COLOR: Record<string, string> = {
   llm: 'blue',
@@ -60,6 +62,14 @@ export default function ModelList() {
   const { message, modal } = AntdApp.useApp();
   const actionRef = useRef<ActionType>();
   const modelTypeEnum = Object.fromEntries(MODEL_TYPES.map((o) => [o.value, o.label]));
+
+  // 模型配置权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
+  const canPage = hasScope('model:page');
+  const canAdd = hasScope('model:add');
+  const canUpdate = hasScope('model:update');
+  const canDelete = hasScope('model:delete');
+  const canView = hasScope('model:view');
+  const canStatus = hasScope('model:status');
 
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [drawerModel, setDrawerModel] = useState<ModelItem | null>(null);
@@ -210,10 +220,11 @@ export default function ModelList() {
       search: false,
       render: (value: any, row: ModelItem) => (
         <Switch
-          size="small"
-          checked={value}
-          loading={togglingId === row.id}
-          onChange={(checked) =>
+        size="small"
+        checked={value}
+        disabled={!canStatus}
+        loading={togglingId === row.id}
+        onChange={(checked) =>
             modal.confirm({
               title: '确认切换启用状态？',
               content: checked ? '启用后该模型可立即被调用' : '停用后该模型不可被调用，影响线上',
@@ -240,32 +251,46 @@ export default function ModelList() {
       search: false,
       render: (_: unknown, row: ModelItem) => (
         <Space size={4}>
-          <Button type="link" size="small" onClick={() => openDetail(row.id)}>
-            详情
-          </Button>
-          <Button type="link" size="small" onClick={() => openEdit(row)}>
-            编辑
-          </Button>
-          <Popconfirm title="确认删除该模型？" onConfirm={() => onDelete(row)}>
-            <Button type="link" size="small" danger>
-              删除
+          {canView && (
+            <Button type="link" size="small" onClick={() => openDetail(row.id)}>
+              详情
             </Button>
-          </Popconfirm>
+          )}
+          {canUpdate && (
+            <Button type="link" size="small" onClick={() => openEdit(row)}>
+              编辑
+            </Button>
+          )}
+          {canDelete && (
+            <Popconfirm title="确认删除该模型？" onConfirm={() => onDelete(row)}>
+              <Button type="link" size="small" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
   ];
+
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看模型配置的权限" />;
+  }
 
   return (
     <div>
       <ProTable<ModelItem>
         headerTitle="模型注册表"
         actionRef={actionRef}
-        toolBarRender={() => [
-          <Button key="add" type="primary" onClick={openCreate}>
-            新增模型
-          </Button>,
-        ]}
+        toolBarRender={() =>
+          canAdd
+            ? [
+                <Button key="add" type="primary" onClick={openCreate}>
+                  新增模型
+                </Button>,
+              ]
+            : []
+        }
         rowKey="id"
         columns={columns}
         request={request}

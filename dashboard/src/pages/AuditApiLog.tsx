@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Descriptions, Drawer, Select, Space, Tag, Typography } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { Alert, Button, Descriptions, Drawer, Result, Select, Space, Tag, Typography } from 'antd';
+import { ProTable, type ProColumns } from '../components/ProTable';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
 import { listApiLogs, type ApiLogItem } from '../services/audit';
 import { listTenants, type TenantItem } from '../services/rbac';
 import { sortByTimeThenId } from '../utils/sort';
+import { hasScope } from '../services/auth';
 
 const statusColor = (code: number | null): string => {
   if (code == null) return 'default';
@@ -31,16 +32,23 @@ export default function AuditApiLog() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tenantId, setTenantId] = useState<number | undefined>();
+  const [pathPrefix, setPathPrefix] = useState<string | undefined>();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [drawerLog, setDrawerLog] = useState<ApiLogItem | null>(null);
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
 
   const load = useCallback(async () => {
+    if (!hasScope('audit:page')) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await listApiLogs({ tenant_id: tenantId, page, page_size: pageSize });
+      const res = await listApiLogs({
+        tenant_id: tenantId,
+        path_prefix: pathPrefix,
+        page,
+        page_size: pageSize,
+      });
       setItems(sortByTimeThenId(res?.items ?? []));
       setTotal(res?.total ?? 0);
     } catch (e) {
@@ -49,7 +57,7 @@ export default function AuditApiLog() {
     } finally {
       setLoading(false);
     }
-  }, [tenantId, page, pageSize]);
+  }, [tenantId, pathPrefix, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -72,7 +80,14 @@ export default function AuditApiLog() {
       width: 170,
       render: (v?: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-'),
     },
-    { title: '租户', dataIndex: 'tenant_id', key: 'tenant_id', width: 130, render: (v: number | null) => tenantLabel(v) },
+    {
+      title: '租户',
+      dataIndex: 'tenant_id',
+      key: 'tenant_id',
+      width: 130,
+      render: (_: number | null, row: ApiLogItem) =>
+        row.tenant_name ?? tenantLabel(row.tenant_id),
+    },
     { title: '方法', dataIndex: 'method', key: 'method', width: 80, render: (v: string) => <Tag>{v}</Tag> },
     { title: '后端 API 路径', dataIndex: 'path', key: 'path', ellipsis: true, render: (v: string) => <code>{v}</code> },
     {
@@ -112,12 +127,33 @@ export default function AuditApiLog() {
     },
   ];
 
+  const canPage = hasScope('audit:page');
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看 API 调用审计的权限" />;
+  }
+
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         API 调用日志
       </Typography.Title>
       <Space style={{ marginBottom: 16 }} wrap>
+        <Select
+          placeholder="调用域"
+          value={pathPrefix}
+          onChange={(v) => {
+            setPathPrefix(v);
+            setPage(1);
+          }}
+          options={[
+            { value: '/api/v1/tenant/', label: '业务域（/api/v1/tenant）' },
+            { value: '/api/v1/admin/', label: '管理域（/api/v1/admin）' },
+            { value: '/api/v1/auth/', label: '认证（/api/v1/auth）' },
+            { value: '/api/v1/dashboard', label: '看板（/api/v1/dashboard）' },
+          ]}
+          allowClear
+          style={{ width: 240 }}
+        />
         <Select
           placeholder="按租户过滤"
           value={tenantId}
@@ -177,8 +213,13 @@ export default function AuditApiLog() {
             <Descriptions.Item label="ID">{drawerLog.id}</Descriptions.Item>
             <Descriptions.Item label="traceId">{drawerLog.trace_id ?? '-'}</Descriptions.Item>
             <Descriptions.Item label="调用方">{drawerLog.caller ?? '-'}</Descriptions.Item>
-            <Descriptions.Item label="租户">{tenantLabel(drawerLog.tenant_id)}</Descriptions.Item>
-            <Descriptions.Item label="用户">{drawerLog.user_id ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="租户">
+              {drawerLog.tenant_name ?? tenantLabel(drawerLog.tenant_id)}
+            </Descriptions.Item>
+            <Descriptions.Item label="用户">
+              {drawerLog.user_name ??
+                (drawerLog.user_id != null ? `#${drawerLog.user_id}` : '-')}
+            </Descriptions.Item>
             <Descriptions.Item label="方法">{drawerLog.method}</Descriptions.Item>
             <Descriptions.Item label="后端 API 路径"><code>{drawerLog.path}</code></Descriptions.Item>
             <Descriptions.Item label="路由模板">

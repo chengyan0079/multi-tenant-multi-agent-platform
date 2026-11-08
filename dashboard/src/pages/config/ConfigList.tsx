@@ -13,8 +13,9 @@ import {
   Space,
   Spin,
   Tag,
+  Result,
 } from 'antd';
-import { ProTable, type ProColumns, type ActionType } from '@ant-design/pro-components';
+import { ProTable, type ProColumns, type ActionType } from '../../components/ProTable';
 import dayjs from 'dayjs';
 
 import {
@@ -35,6 +36,7 @@ import {
 } from '../../services/configCenter';
 import ReactDiffViewer from 'react-diff-viewer-continued';
 import { getSession } from '../../services/auth';
+import { hasScope } from '../../services/auth';
 
 /** 后端 Nacos 客户端使用的固定命名空间（前端仅有展示意义，实际以服务端为准） */
 const NACOS_NAMESPACE = 'agent-platform';
@@ -87,6 +89,14 @@ interface DeleteValues {
 
 export default function ConfigList() {
   const { message, modal } = AntdApp.useApp();
+
+  // 配置中心权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
+  const canPage = hasScope('config:page');
+  const canAdd = hasScope('config:add');
+  const canUpdate = hasScope('config:update');
+  const canDelete = hasScope('config:delete');
+  const canRollback = hasScope('config:rollback');
+  const canView = hasScope('config:view');
 
   /* ============ 配置列表（直读 Nacos） ============ */
   const [groups, setGroups] = useState<string[]>([]);
@@ -178,6 +188,7 @@ export default function ConfigList() {
   }, []);
 
   const loadGroups = useCallback(async () => {
+    if (!hasScope('config:page')) return;
     try {
       const res = await listGroups();
       setGroups(res?.groups ?? []);
@@ -460,29 +471,39 @@ export default function ConfigList() {
         const pendingId = pendingMap[`${row.groupName}::${row.dataId}`];
         return (
           <Space size="small" wrap>
-            <Button type="link" size="small" onClick={() => openModify(row.groupName, row.dataId, row.type)}>修改</Button>
-            <Button type="link" size="small" danger onClick={() => openDelete(row.groupName, row.dataId, row.type)}>删除</Button>
-            {pendingId !== undefined && (
+            {canUpdate && (
+              <Button type="link" size="small" onClick={() => openModify(row.groupName, row.dataId, row.type)}>修改</Button>
+            )}
+            {canDelete && (
+              <Button type="link" size="small" danger onClick={() => openDelete(row.groupName, row.dataId, row.type)}>删除</Button>
+            )}
+            {pendingId !== undefined && canView && (
               <Popconfirm title="确认撤回该申请？" description="撤回后状态变为已撤回，需重新发起" okText="撤回" cancelText="取消" onConfirm={() => void doWithdraw(pendingId)}>
                 <Button type="link" size="small">撤回</Button>
               </Popconfirm>
             )}
-            <Button type="link" size="small" onClick={() => void openCfgDetail(row)}>详情</Button>
-            <Button type="link" size="small" onClick={() => openHistory(row.groupName, row.dataId, row.type)}>历史</Button>
+            {canView && (
+              <Button type="link" size="small" onClick={() => void openCfgDetail(row)}>详情</Button>
+            )}
+            {canView && (
+              <Button type="link" size="small" onClick={() => openHistory(row.groupName, row.dataId, row.type)}>历史</Button>
+            )}
           </Space>
         );
       },
     },
   ];
 
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看配置中心的权限" />;
+  }
+
   return (
     <div>
       <ProTable<NacosConfigItem>
         headerTitle="配置列表"
         actionRef={actionRef}
-        toolBarRender={() => [
-          <Button key="add" type="primary" onClick={openAdd}>新建配置</Button>,
-        ]}
+        toolBarRender={() => (canAdd ? [<Button key="add" type="primary" onClick={openAdd}>新建配置</Button>] : [])}
         rowKey={(r) => `${r.groupName}/${r.dataId}`}
         columns={cfgColumns}
         request={cfgRequest}
@@ -541,8 +562,12 @@ export default function ConfigList() {
                 title: '操作', key: 'action', width: 200,
                 render: (_: unknown, row: NacosHistoryItem) => (
                   <Space size="small">
-                    <Button type="link" size="small" onClick={() => void openHistDetail(row.nid)}>详情</Button>
-                    <Button type="link" size="small" danger onClick={() => void openRollbackPreview(row.nid)}>回滚</Button>
+                    {canView && (
+                      <Button type="link" size="small" onClick={() => void openHistDetail(row.nid)}>详情</Button>
+                    )}
+                    {canRollback && (
+                      <Button type="link" size="small" danger onClick={() => void openRollbackPreview(row.nid)}>回滚</Button>
+                    )}
                   </Space>
                 ),
               },

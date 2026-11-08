@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { App as AntdApp, Button, Popconfirm, Space, Tag, Typography } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { ProTable, type ProColumns } from '../../components/ProTable';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 

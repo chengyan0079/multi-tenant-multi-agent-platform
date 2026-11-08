@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ApiOutlined,
@@ -24,8 +24,9 @@ import {
   Statistic,
   Tag,
   Typography,
+  Result,
 } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { ProTable, type ProColumns } from '../components/ProTable';
 import {
   Area,
   AreaChart,
@@ -42,7 +43,6 @@ import {
   YAxis,
 } from 'recharts';
 
-import { sampleDashboard } from '../mock/dashboard';
 import {
   getDashboard,
   type ActivityRow,
@@ -50,6 +50,7 @@ import {
   type DashboardStat,
   type TenantRankRow,
 } from '../services/dashboard';
+import { hasScope } from '../services/auth';
 
 const PIE_COLORS = ['#3b5bdb', '#13b5b1', '#22a06b', '#e3a008', '#ef6c4d', '#5b8def'];
 
@@ -167,7 +168,7 @@ function StatCard({ item }: { item: DashboardStat }) {
   );
 }
 
-/** 首页：监控概览（对接 /api/v1/dashboard，接口不可用时退回示例数据） */
+/** 首页：监控概览（对接 /api/v1/dashboard，接口失败时展示错误态，不再使用示例数据兜底） */
 export default function Dashboard() {
   const screens = Grid.useBreakpoint();
   const isMobile = screens.lg === false;
@@ -178,21 +179,19 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState('');
-  const [isSample, setIsSample] = useState(false);
 
-  const load = useCallback(async (range: number) => {
+  const load = useCallback(async (range: number, refresh = false) => {
+    if (!hasScope('dashboard:view')) return;
     setLoading(true);
     try {
-      const result = await getDashboard(range);
+      const result = await getDashboard(range, undefined, refresh);
       setData(result);
-      setIsSample(false);
       setError('');
       setUpdatedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
     } catch (err) {
       setError(err instanceof Error ? err.message : '看板数据加载失败');
-      // 没拿到过真实数据时用示例数据兜底，避免整页空白
-      setData((prev) => prev ?? sampleDashboard);
-      setIsSample(true);
+      // 加载失败保留已有数据（如切换周期前的旧数据），不再用示例数据兜底
+      setData((prev) => prev);
     } finally {
       setLoading(false);
     }
@@ -202,20 +201,14 @@ export default function Dashboard() {
     void load(days);
   }, [days, load]);
 
-  const view = data ?? sampleDashboard;
-  const scopeLabel = view.scope.is_super_admin
-    ? view.scope.tenant_id == null
-      ? '全平台视角'
-      : `聚焦租户 #${view.scope.tenant_id}`
-    : `本租户视角${view.scope.tenant_id != null ? ` #${view.scope.tenant_id}` : ''}`;
+  // 计算放在所有提前 return 之前：避免条件调用 Hook 导致
+  // "Rendered more hooks than during the previous render" 整页报错。
+  const distribution = data?.agent_distribution ?? [];
+  const totalCalls = distribution.reduce((sum, item) => sum + Number(item.value || 0), 0);
 
-  const distribution = view.agent_distribution;
-  const totalCalls = useMemo(
-    () => distribution.reduce((sum, item) => sum + Number(item.value || 0), 0),
-    [distribution],
-  );
-  const hasTrend = view.request_trend.some((p) => p.requests > 0 || p.errors > 0);
-  const hasLatency = view.latency_by_hour.some((p) => p.avg > 0);
+  if (!hasScope('dashboard:view')) {
+    return <Result status="403" title="无权限" subTitle="你没有查看监控概览的权限" />;
+  }
 
   if (loading && !data) {
     return (
@@ -237,6 +230,33 @@ export default function Dashboard() {
     );
   }
 
+  if (!data) {
+    return (
+      <div className="dash-page">
+        <Result
+          status="warning"
+          title="看板数据加载失败"
+          subTitle={error || '当前没有可用的看板数据'}
+          extra={
+            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load(days)}>
+              重试
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  const view = data;
+  const scopeLabel = view.scope.is_super_admin
+    ? view.scope.tenant_id == null
+      ? '全平台视角'
+      : `聚焦租户 #${view.scope.tenant_id}`
+    : `本租户视角${view.scope.tenant_id != null ? ` #${view.scope.tenant_id}` : ''}`;
+
+  const hasTrend = view.request_trend.some((p) => p.requests > 0 || p.errors > 0);
+  const hasLatency = view.latency_by_hour.some((p) => p.avg > 0);
+
   return (
     <div className="dash-page">
       <Card className="dash-hero" bordered={false}>
@@ -252,8 +272,7 @@ export default function Dashboard() {
               <Tag color="blue">{scopeLabel}</Tag>
               <Tag>v{view.service.version}</Tag>
               <Tag color="green">已运行 {formatUptime(view.service.uptime_s)}</Tag>
-              {isSample ? <Tag color="orange">示例数据</Tag> : null}
-              {updatedAt && !isSample ? (
+              {updatedAt ? (
                 <Typography.Text type="secondary">更新于 {updatedAt}</Typography.Text>
               ) : null}
             </Space>
@@ -267,7 +286,11 @@ export default function Dashboard() {
                 { label: '近 30 天', value: 30 },
               ]}
             />
-            <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load(days)}>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={loading}
+              onClick={() => void load(days, true)}
+            >
               刷新
             </Button>
           </Space>
@@ -280,9 +303,9 @@ export default function Dashboard() {
           showIcon
           style={{ marginTop: 16 }}
           message="看板数据加载失败"
-          description={`${error}${isSample ? '（当前展示示例数据）' : ''}`}
+          description={error}
           action={
-            <Button size="small" onClick={() => void load(days)}>
+            <Button size="small" onClick={() => void load(days, true)}>
               重试
             </Button>
           }
@@ -410,7 +433,7 @@ export default function Dashboard() {
           <Card
             className="dash-card"
             title="最近活动"
-            extra={<Typography.Text type="secondary">最新 5 条审计事件</Typography.Text>}
+            extra={<Typography.Text type="secondary">最新 5 条审计/调用事件</Typography.Text>}
           >
             <ProTable<ActivityRow>
               search={false}

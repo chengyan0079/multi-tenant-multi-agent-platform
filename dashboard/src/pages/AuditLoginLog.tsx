@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Descriptions, Drawer, Select, Space, Tag, Typography } from 'antd';
-import { ProTable, type ProColumns } from '@ant-design/pro-components';
+import { Alert, Button, Descriptions, Drawer, Result, Select, Space, Tag, Typography } from 'antd';
+import { ProTable, type ProColumns } from '../components/ProTable';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 
 import { listLoginLogs, type LoginLogItem } from '../services/audit';
 import { listTenants, type TenantItem } from '../services/rbac';
 import { sortByTimeThenId } from '../utils/sort';
+import { hasScope } from '../services/auth';
 
 export default function AuditLoginLog() {
   const [items, setItems] = useState<LoginLogItem[]>([]);
@@ -20,6 +21,7 @@ export default function AuditLoginLog() {
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
 
   const load = useCallback(async () => {
+    if (!hasScope('audit:page')) return;
     setLoading(true);
     setError(null);
     try {
@@ -55,7 +57,14 @@ export default function AuditLoginLog() {
       width: 170,
       render: (v?: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-'),
     },
-    { title: '租户', dataIndex: 'tenant_id', key: 'tenant_id', width: 140, render: (v: number | null) => tenantLabel(v) },
+    {
+      title: '租户',
+      dataIndex: 'tenant_id',
+      key: 'tenant_id',
+      width: 140,
+      render: (_: number | null, row: LoginLogItem) =>
+        row.tenant_name ?? tenantLabel(row.tenant_id),
+    },
     { title: '用户名', dataIndex: 'username', key: 'username', width: 120, render: (v: string | null) => v ?? '-' },
     { title: '登录方式', dataIndex: 'login_type', key: 'login_type', width: 100 },
     {
@@ -79,6 +88,11 @@ export default function AuditLoginLog() {
       ),
     },
   ];
+
+  const canPage = hasScope('audit:page');
+  if (!canPage) {
+    return <Result status="403" title="无权限" subTitle="你没有查看登录日志的权限" />;
+  }
 
   return (
     <div>
@@ -143,7 +157,9 @@ export default function AuditLoginLog() {
         {drawerLog && (
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="ID">{drawerLog.id}</Descriptions.Item>
-            <Descriptions.Item label="租户">{tenantLabel(drawerLog.tenant_id)}</Descriptions.Item>
+            <Descriptions.Item label="租户">
+              {drawerLog.tenant_name ?? tenantLabel(drawerLog.tenant_id)}
+            </Descriptions.Item>
             <Descriptions.Item label="用户名">{drawerLog.username ?? '-'}</Descriptions.Item>
             <Descriptions.Item label="登录方式">{drawerLog.login_type}</Descriptions.Item>
             <Descriptions.Item label="结果">{drawerLog.success ? '成功' : '失败'}</Descriptions.Item>

@@ -5,9 +5,12 @@ import { http } from './http';
 export interface AuditItem {
   /** 审计主键是 UUID 字符串，不是自增数字 */
   id: string;
-  tenant_id: number;
-  /** 操作人用户 ID：审计表只存 ID，没有用户名 */
-  user_id: number;
+  tenant_id: number | null;
+  /** 后端 JOIN 出的租户名称，取不到时回退 ID */
+  tenant_name: string | null;
+  user_id: number | null;
+  /** 后端 JOIN 出的操作人名称，取不到时回退 ID */
+  user_name: string | null;
   action: string;
   target: string | null;
   detail: string | null;
@@ -43,6 +46,7 @@ export interface LoginLogItem {
   user_id: number | null;
   username: string | null;
   tenant_id: number | null;
+  tenant_name: string | null;
   login_type: string;
   success: boolean;
   fail_reason: string | null;
@@ -71,7 +75,9 @@ export interface ApiLogItem {
   trace_id: string | null;
   caller: string | null;
   user_id: number | null;
+  user_name: string | null;
   tenant_id: number | null;
+  tenant_name: string | null;
   method: string;
   path: string;
   route: string | null;
@@ -83,9 +89,15 @@ export interface ApiLogItem {
 }
 
 /** 查询 API 调用日志（后端分页，超管可筛租户）。 */
-export function listApiLogs(params: { tenant_id?: number; page?: number; page_size?: number } = {}) {
+export function listApiLogs(params: {
+  tenant_id?: number;
+  path_prefix?: string;
+  page?: number;
+  page_size?: number;
+} = {}) {
   const qs = new URLSearchParams();
   if (params.tenant_id !== undefined) qs.set('tenant_id', String(params.tenant_id));
+  if (params.path_prefix) qs.set('path_prefix', params.path_prefix);
   if (params.page) qs.set('page', String(params.page));
   if (params.page_size) qs.set('page_size', String(params.page_size));
   const s = qs.toString();
