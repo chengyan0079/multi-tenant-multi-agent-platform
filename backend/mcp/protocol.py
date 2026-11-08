@@ -38,7 +38,7 @@ class AgentPlugin(Protocol):
 
 
 class BaseTool(ABC):
-    """一个可执行工具（如 rag_retrieve / web_search）。"""
+    """一个可执行工具（如 web_search / code_exec）。"""
 
     name: str = ""
     description: str = ""

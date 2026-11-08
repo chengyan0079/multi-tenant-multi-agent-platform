@@ -2,7 +2,7 @@
 
 核心逻辑对齐参考项目 agents/qa/nodes.py，基础设施映射如下：
 - get_llm(agent_type)        -> 本项目 LLMFactory（无独立 GENERAL agent，统一用 "qa"）
-- core.reranker.retrieve      -> rag_retrieve(query, int(tenant_id), top_k)（重排已在适配层完成）
+- core.reranker.retrieve      -> backend.rag.retrieval.retrieve(query, tenant_id, top_k)（混合召回 + BGE 精排）
 - get_classifier_instance     -> LLMFactory.classify（仅作 general 软提示，且只在分类器真实加载时采信）
 - call_mcp_tool               -> app_state.plugin_registry.call("web_search", query=...)
 - qa_sessions / pending_queue -> 摘要由 checkpointer 状态承载（save_memory_node 写回 existing_summary）；
@@ -21,22 +21,14 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from backend.agents.qa.prompts import (
-    DIRECT_ANSWER_PROMPT,
-    GENERAL_ANSWER_PROMPT,
-    HYDE_PROMPT,
-    MULTI_QUERY_REWRITE_PROMPT,
-    RAG_ANSWER_PROMPT,
-    RAG_STRATEGY_PROMPT,
-    SUMMARY_PROMPT,
-    SYSTEM_PROMPT,
-)
-from backend.agents.qa.state import QAState
+from backend.agents.qa.prompts import resolve_prompt
+from backend.agents.qa.state import QAState, RankedChunk, WebSearchResult
 from backend.app_state import app_state
 from backend.common.llm.llm_factory import get_llm
 from backend.common.logger import get_logger
 from backend.config import config
-from backend.mcp.retrieval.adapter import Chunk, rag_retrieve
+from backend.rag.ranked import Chunk
+from backend.rag.retrieval import retrieve as retrieve_chunks
 
 logger = get_logger("qa_nodes")
 
@@ -57,13 +49,15 @@ def _current_datetime_str() -> str:
     return now.strftime(f"%Y年%m月%d日 {_WEEKDAYS_CN[now.weekday()]} %H:%M")
 
 
-def _build_full_system_prompt(summary: Optional[str] = None, need_time_info: bool = True) -> str:
+async def _build_full_system_prompt(
+    summary: Optional[str] = None, need_time_info: bool = True
+) -> str:
     """构建注入了当前时间与历史摘要的 System 内容，供所有生成节点共用。
 
     注意：历史摘要必须定期更新且有过期策略；切勿把完整历史消息直接塞进系统提示词，
     否则会破坏大模型的角色边界。
     """
-    content = SYSTEM_PROMPT
+    content = await resolve_prompt("system")
     if need_time_info:
         content += f"\n\n【当前时间】{_current_datetime_str()}"
     if summary:
@@ -188,7 +182,7 @@ def _fast_rag_strategy(query: str) -> str:
 async def _determine_rag_strategy(query: str) -> str:
     """LLM 精判 RAG 策略（仅在规则判为 VAGUE/BROAD 且问题较长时调用）。"""
     try:
-        prompt = ChatPromptTemplate.from_template(RAG_STRATEGY_PROMPT)
+        prompt = ChatPromptTemplate.from_template(await resolve_prompt("rag_strategy"))
         llm = await get_llm(QA_AGENT_TYPE)
         chain = prompt | llm | StrOutputParser()
         result = (await chain.ainvoke({"query": query})).strip()
@@ -294,7 +288,7 @@ async def hyde_generate_node(state: QAState) -> dict:
 
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder(variable_name="history"),
-        ("human", HYDE_PROMPT),
+        ("human", await resolve_prompt("hyde")),
     ])
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
@@ -315,7 +309,7 @@ async def multi_query_rewrite_node(state: QAState) -> dict:
 
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder(variable_name="history"),
-        ("human", MULTI_QUERY_REWRITE_PROMPT),
+        ("human", await resolve_prompt("multi_query_rewrite")),
     ])
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
@@ -329,10 +323,10 @@ async def multi_query_rewrite_node(state: QAState) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 节点④：retrieve — 混合召回 + 精排（重排已在 rag_retrieve 适配层完成）
+# 节点④：retrieve — 混合召回 + BGE 精排（backend/rag 自研闭环）
 # --------------------------------------------------------------------------- #
 async def retrieve_node(state: QAState) -> dict:
-    """调用 rag_retrieve 完成检索，直接输出 ranked_chunks。"""
+    """调用 backend.rag.retrieval 完成检索与精排，直接输出 ranked_chunks。"""
     query_type = state.get("query_type", "PRECISE").upper()
     tenant_id = int(state.get("tenant_id", 0))
     original_query = state.get("original_query", "")
@@ -342,7 +336,9 @@ async def retrieve_node(state: QAState) -> dict:
         broad_queries = state["rewritten_queries"]
 
         async def _one(sub_query: str) -> List[Chunk]:
-            return await rag_retrieve(sub_query, tenant_id, top_k=config.qa.broad_per_query_top_k)
+            return await retrieve_chunks(
+                sub_query, tenant_id, top_k=config.qa.broad_per_query_top_k
+            )
 
         results = await asyncio.gather(
             *[_one(q) for q in broad_queries], return_exceptions=True
@@ -365,13 +361,19 @@ async def retrieve_node(state: QAState) -> dict:
         else:
             query_text = original_query
             top_k = config.qa.precise_top_k
-        merged = await rag_retrieve(query_text or "", tenant_id, top_k=top_k)
+        merged = await retrieve_chunks(query_text or "", tenant_id, top_k=top_k)
 
     ranked_chunks = [
-        {"content": d.content, "score": d.score, "source": d.source, "metadata": d.metadata}
+        RankedChunk(
+            content=d.content, score=d.score, source=d.source,
+            doc_id=d.doc_id, chunk_id=d.chunk_id, metadata=d.metadata,
+            parent_id=d.parent_id, parent_content=d.parent_content,
+            highlighted_content=d.highlighted_content,
+            chunk_type=d.chunk_type, extra=d.extra,
+        )
         for d in merged
     ]
-    confidence = ranked_chunks[0]["score"] if ranked_chunks else 0.0
+    confidence = ranked_chunks[0].score if ranked_chunks else 0.0
     is_high_confidence = confidence >= config.qa.high_confidence_threshold
 
     logger.debug(
@@ -395,10 +397,22 @@ async def generate_rag_node(state: QAState) -> dict:
     messages = state.get("messages", [])
     summary = state.get("existing_summary")
 
-    context_parts, sources = [], []
-    for i, chunk in enumerate(ranked_chunks, 1):
-        context_parts.append(f"【参考{i}】\n{chunk['content']}")
-        src = chunk.get("source") or chunk.get("metadata", {}).get("source_location", "")
+    # 父子片 small-to-big：优先用"父片内高亮子片"的完整上下文；
+    # 同一父片被多个子片命中时只取一次，避免重复把同一段上下文塞进 prompt。
+    context_parts, sources, seen_parents = [], [], set()
+    use_highlight = config.qa.parent_context_by_highlight
+    for chunk in ranked_chunks:
+        key = chunk.parent_id or chunk.chunk_id or str(len(context_parts))
+        if key in seen_parents:
+            continue
+        seen_parents.add(key)
+        body = (
+            chunk.highlighted_content
+            if use_highlight and chunk.highlighted_content
+            else (chunk.parent_content if use_highlight and chunk.parent_content else chunk.content)
+        )
+        context_parts.append(f"【参考{len(context_parts) + 1}】\n{body}")
+        src = chunk.source or chunk.metadata.get("source_location", "")
         if src and src not in sources:
             sources.append(src)
 
@@ -406,9 +420,9 @@ async def generate_rag_node(state: QAState) -> dict:
     history = [m for m in _window(messages, 2500) if not isinstance(m, SystemMessage)]
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", _build_full_system_prompt(summary)),
+        ("system", await _build_full_system_prompt(summary)),
         MessagesPlaceholder(variable_name="history"),
-        ("human", RAG_ANSWER_PROMPT),
+        ("human", await resolve_prompt("rag_answer")),
     ])
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
@@ -453,8 +467,9 @@ async def web_search_node(state: QAState) -> dict:
             max_results=config.qa.web_search_max_results,
         )
         results = results or []
-        logger.debug(f"web_search.done | count={len(results)}")
-        return {"web_search_results": results}
+        web_search_results = [WebSearchResult(**r) if isinstance(r, dict) else r for r in results]
+        logger.debug(f"web_search.done | count={len(web_search_results)}")
+        return {"web_search_results": web_search_results}
     except Exception as e:  # noqa: BLE001
         logger.warning(f"web_search.failed | {e}")
         return {"web_search_results": []}
@@ -470,13 +485,13 @@ async def _general_answer(state: QAState, current_prompt: str) -> str:
     web_context = ""
     if web_results:
         web_context = "\n".join(
-            f"[{i}] {r.get('title', '')}（{r.get('url', '')}）\n{r.get('snippet', '')[:512]}"
+            f"[{i}] {r.title}（{r.url}）\n{r.snippet[:512]}"
             for i, r in enumerate(web_results, 1)
         )
 
     history = [m for m in _window(messages, 1500) if not isinstance(m, SystemMessage)]
     prompt = ChatPromptTemplate.from_messages([
-        ("system", _build_full_system_prompt(summary)),
+        ("system", await _build_full_system_prompt(summary)),
         MessagesPlaceholder(variable_name="history"),
         ("human", current_prompt),
     ])
@@ -490,10 +505,11 @@ async def _general_answer(state: QAState, current_prompt: str) -> str:
 # --------------------------------------------------------------------------- #
 async def generate_direct_node(state: QAState) -> dict:
     """低置信度大模型直接回答。"""
+    messages = state.get("messages", [])
     web_results = state.get("web_search_results") or []
-    web_sources = [r.get("url", "") for r in web_results if r.get("url")]
+    web_sources = [r.url for r in web_results if r.url]
 
-    answer = await _general_answer(state, DIRECT_ANSWER_PROMPT)
+    answer = await _general_answer(state, await resolve_prompt("direct_answer"))
 
     if web_sources:
         final_answer = answer
@@ -526,10 +542,11 @@ async def generate_direct_node(state: QAState) -> dict:
 # --------------------------------------------------------------------------- #
 async def generate_general_node(state: QAState) -> dict:
     """通用问题直答节点：打招呼、问时间、闲聊等与知识库无关的问题。"""
+    messages = state.get("messages", [])
     web_results = state.get("web_search_results") or []
-    web_sources = [r.get("url", "") for r in web_results if r.get("url")]
+    web_sources = [r.url for r in web_results if r.url]
 
-    answer = await _general_answer(state, GENERAL_ANSWER_PROMPT)
+    answer = await _general_answer(state, await resolve_prompt("general_answer"))
 
     answer_mode = "web_augmented" if web_sources else "general"
     logger.debug(f"generate_general.done | answer_length={len(answer)} | web_sources={len(web_sources)}")
@@ -594,7 +611,7 @@ async def _compress_summary(messages: List, existing_summary: Optional[str]) -> 
     history_text = "\n".join(
         f"{'用户' if isinstance(m, HumanMessage) else '助手'}: {m.content}" for m in history
     )
-    prompt = ChatPromptTemplate.from_messages([("human", SUMMARY_PROMPT)])
+    prompt = ChatPromptTemplate.from_messages([("human", await resolve_prompt("summary"))])
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
     return await chain.ainvoke({"summary": existing_summary or "（无）", "history": history_text})

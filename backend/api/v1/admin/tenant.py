@@ -21,6 +21,9 @@ from sqlalchemy import text
 
 router = APIRouter(prefix="/tenants", tags=["admin"])
 
+# 平台超管租户：建库固化，id 恒为 0，仅作超管上传文件等场景的归属租户，禁止任何删改
+SUPER_ADMIN_TENANT_ID = 0
+
 # 一步建租户+主用户+授权 tenant_admin 的原子 SQL（共享同一 session 事务）
 _INSERT_TENANT = text("INSERT INTO agent_tenant (name, enabled) VALUES (:name, true) RETURNING id")
 _INSERT_USER = text(
@@ -129,6 +132,8 @@ async def set_status(
     _: object = Depends(require_scope(Scope.TENANT_STATUS)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    if tenant_id == SUPER_ADMIN_TENANT_ID:
+        raise BizException(ErrCode.PARAM_ERROR, "平台超管租户(id=0)禁止启停")
     tenant = await TenantDao.get(tenant_id)
     if tenant is None:
         raise BizException(ErrCode.NOT_FOUND, f"租户不存在: {tenant_id}")
@@ -155,6 +160,8 @@ async def delete_tenant(
     _: object = Depends(require_scope(Scope.TENANT_DELETE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    if tenant_id == SUPER_ADMIN_TENANT_ID:
+        raise BizException(ErrCode.PARAM_ERROR, "平台超管租户(id=0)禁止删除")
     tenant = await TenantDao.get(tenant_id)
     if tenant is None:
         raise BizException(ErrCode.NOT_FOUND, f"租户不存在: {tenant_id}")

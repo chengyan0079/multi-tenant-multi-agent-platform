@@ -9,6 +9,9 @@ from pathlib import Path
 SCHEMA_SQL = (
     Path(__file__).resolve().parents[2] / "scripts" / "schema.sql"
 ).read_text(encoding="utf-8")
+SEED_SQL = (
+    Path(__file__).resolve().parents[2] / "scripts" / "seed_data.sql"
+).read_text(encoding="utf-8")
 
 
 def test_tenant_has_flag_columns() -> None:
@@ -49,61 +52,53 @@ def test_identity_uniqueness_indexes() -> None:
 
 def test_admin_role_seeded_only() -> None:
     """角色目录只预置超管 admin；其余角色（tenant_admin 等）由前端创建，不在此落库。"""
-    assert "(1, 'admin'" in SCHEMA_SQL
-    assert "(5, 'tenant_admin'" not in SCHEMA_SQL
-    assert "(2, 'teacher'" not in SCHEMA_SQL
-    assert "(1, 'user:page')" in SCHEMA_SQL
-    assert "(1, 'rbac:page')" in SCHEMA_SQL
+    assert "(1, 'admin'" in SEED_SQL
+    assert "(5, 'tenant_admin'" not in SEED_SQL
+    assert "(2, 'teacher'" not in SEED_SQL
+    assert "(1, 'user:page')" in SEED_SQL
+    assert "(1, 'rbac:menu')" in SEED_SQL
 
 
 def test_audit_scope_is_read_only() -> None:
     """种子里不写入 audit:update，审计只读。"""
-    assert "'audit:update'" not in SCHEMA_SQL
+    assert "'audit:update'" not in SEED_SQL
 
 
 def test_config_center_only_for_super_admin() -> None:
     """配置中心只归超管：teacher / tenant_admin 不得有 config:read。"""
-    assert "(2, 'config:read')" not in SCHEMA_SQL
-    assert "(5, 'config:read')" not in SCHEMA_SQL
+    assert "(2, 'config:read')" not in SEED_SQL
+    assert "(5, 'config:read')" not in SEED_SQL
 
 
 def test_audit_only_for_admin() -> None:
     """审计只读权限只给超管 admin；tenant_admin 不在此预置（由前端创建后再配）。"""
-    assert "(1, 'audit:page')" in SCHEMA_SQL
-    assert "(2, 'audit:read')" not in SCHEMA_SQL
-    assert "(5, 'audit:page')" not in SCHEMA_SQL
+    assert "(1, 'audit:page')" in SEED_SQL
+    assert "(2, 'audit:read')" not in SEED_SQL
+    assert "(5, 'audit:page')" not in SEED_SQL
 
 
 def test_analyst_role_removed() -> None:
     """analyst 角色已删除：角色目录、权限点、用户与分配都不应残留。"""
-    assert "'analyst'" not in SCHEMA_SQL
-    assert "analyst-c" not in SCHEMA_SQL
+    assert "'analyst'" not in SEED_SQL
+    assert "analyst-c" not in SEED_SQL
     for scope in ("qa:read", "interview:read", "resume:read", "exam:read", "knowledge:read"):
-        assert f"(4, '{scope}')" not in SCHEMA_SQL
-    assert "(3002, 300, 4" not in SCHEMA_SQL
+        assert f"(4, '{scope}')" not in SEED_SQL
+    assert "(3002, 300, 4" not in SEED_SQL
 
 
 def test_menu_scope_for_rbac_is_read() -> None:
     """权限中心菜单按读权限下发，避免只有写权限的角色看不见页面。"""
-    assert "true, 'rbac:page')" in SCHEMA_SQL
+    assert "true, 'rbac:menu')" in SEED_SQL
 
 
-def test_gen_schema_seed_not_reverted() -> None:
-    """gen_schema.py 的硬编码种子必须与 schema.sql 同步，否则重新生成会回退。"""
+def test_gen_schema_is_ddl_only() -> None:
+    """DDL 生成器只产出建表语句，种子已拆到 seed_data.sql。"""
     source = (
         Path(__file__).resolve().parents[2] / "scripts" / "gen_schema.py"
     ).read_text(encoding="utf-8")
-    assert "'audit:update'" not in source
-    assert "'analyst'" not in source
-    assert "(2, 'config:read')" not in source
-    assert "(5, 'config:read')" not in source
-    # 角色目录只预置 admin（role_id=1），tenant_admin / teacher 等由前端创建，不在生成器里写
-    assert "(1, 'admin'" in source
-    assert "(5, 'tenant_admin'" not in source
-    assert "(2, 'teacher'" not in source
-    # config:review 不是合法权限点（Scope 只登记 config:execute），种子不得写入
-    assert "'config:review'" not in source
-    assert "true, 'rbac:page')" in source
+    assert "INSERT INTO" not in source
+    for name in ("SEED_RBAC", "SEED_DEV", "SEED_MENU", "SEED_MODEL", "SEED_AGENT"):
+        assert name not in source
 
 
 def test_no_by_suffix_columns() -> None:
@@ -111,16 +106,15 @@ def test_no_by_suffix_columns() -> None:
     assert not re.search(r"^\s+\w+_by\s", SCHEMA_SQL, re.M)
 
 
-def test_escalation_assignee_is_user_id() -> None:
-    """转接处理人是用户ID（BIGINT，未分配为 NULL），不再是字符串。"""
-    assert "assigned_to " not in SCHEMA_SQL
-    assert "assigned_user_id BIGINT" in SCHEMA_SQL
-    assert "ix_agent_escalation_assigned_user_id" in SCHEMA_SQL
+def test_redundant_tables_removed() -> None:
+    """会话摘要/人工转接/消息轨迹已下线，schema 不应再生成这三张表。"""
+    for table in ("agent_qa_sessions", "agent_escalation", "agent_message"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" not in SCHEMA_SQL
 
 
 def test_agent_tables_are_user_scoped() -> None:
     """会话/运行/消息都要带 user_id，否则同租户内无法按用户隔离。"""
-    for table in ("agent_thread", "agent_run", "agent_message"):
+    for table in ("agent_thread", "agent_run"):
         block = re.search(
             rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", SCHEMA_SQL, re.S
         )
@@ -144,7 +138,7 @@ def test_business_owner_columns_use_user_id_suffix() -> None:
 
 def test_insert_column_counts_match() -> None:
     """每条 INSERT 的列数与每行值数一致。"""
-    cleaned = SCHEMA_SQL.replace("now()", "NOW")
+    cleaned = SEED_SQL.replace("now()", "NOW")
     pattern = re.compile(r'INSERT INTO ([\w"]+) \(([^)]*)\) VALUES(.*?);', re.S)
     checked = 0
     for match in pattern.finditer(cleaned):

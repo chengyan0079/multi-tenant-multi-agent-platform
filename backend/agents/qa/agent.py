@@ -29,5 +29,5 @@ class QAAgent(Agent):
         return {
             "description": "智能问答：意图分类→检索(RAG)→生成→低置信Web兜底，支持多轮与历史摘要",
             "pattern": "rag",
-            "capabilities": ["rag_retrieve", "web_search", "hyde", "multi_query", "summary"],
+            "capabilities": ["rag_retrieval", "web_search", "hyde", "multi_query", "summary"],
         }

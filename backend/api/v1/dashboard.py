@@ -29,9 +29,9 @@ from backend.security.security import require_scope
 
 logger = get_logger("dashboard")
 
-# 看板聚合跨多张增长型大表，按角色各缓存一份，一小时 TTL：
-# 看板是运营快照，天然容忍小时级延迟；缓存把 DB 压力降到「每小时每 (角色, 租户, 天数) 一次」
-DASHBOARD_CACHE_TTL = 3600
+# 看板聚合跨多张增长型大表，按角色各缓存一份，60 秒 TTL：
+# 看板要接近实时；缓存只用于削峰，刷新按钮会带 refresh=true 强制回源。
+DASHBOARD_CACHE_TTL = 60
 
 
 def _dashboard_cache_key(role: str, tenant_id: int | None, days: int) -> str:
@@ -40,7 +40,8 @@ def _dashboard_cache_key(role: str, tenant_id: int | None, days: int) -> str:
     同角色下再按 (租户, 区间天数) 区分；超管聚焦某租户与全平台也是不同 key。
     """
     scope = tenant_id if tenant_id is not None else "all"
-    return f"dashboard:v1:{role}:{scope}:{days}"
+    # v2：旧 v1 缓存是 1 小时 TTL 的旧口径，换前缀让新代码立即生效
+    return f"dashboard:v2:{role}:{scope}:{days}"
 
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -77,6 +78,7 @@ async def dashboard(
     tenant_id: Optional[int] = Query(
         None, description="仅超管有效：聚焦某租户；不传为全平台"
     ),
+    refresh: bool = Query(False, description="跳过缓存，强制回源 DB"),
     _: object = Depends(require_scope(Scope.DASHBOARD_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
@@ -94,7 +96,7 @@ async def dashboard(
 
     # 旁路缓存：命中直接返回；redis 未就绪或读取异常都回源 DB，绝不影响看板可用性
     redis = app_state.redis
-    if redis is not None:
+    if redis is not None and not refresh:
         try:
             cached = await redis.get(cache_key)
             if cached:
@@ -120,11 +122,31 @@ async def dashboard(
     error_runs = int(raw.get("error_runs") or 0)
     runs_prev = int(raw.get("runs_prev") or 0)
     error_runs_prev = int(raw.get("error_runs_prev") or 0)
+    api_requests = int(raw.get("api_requests") or 0)
+    api_errors = int(raw.get("api_errors") or 0)
+    api_requests_prev = int(raw.get("api_requests_prev") or 0)
+    api_errors_prev = int(raw.get("api_errors_prev") or 0)
 
-    success_rate = round((runs - error_runs) / runs * 100, 1) if runs else 100.0
-    success_rate_prev = (
-        round((runs_prev - error_runs_prev) / runs_prev * 100, 1) if runs_prev else 100.0
-    )
+    # 优先用 agent_run 的业务成功率；尚未接入运行台账时用 API HTTP 成功率兜底，
+    # 没有任何请求时显示 0 而不是误导性的 100%。
+    if runs:
+        success_rate = round((runs - error_runs) / runs * 100, 1)
+        success_title = "平均成功率"
+    elif api_requests:
+        success_rate = round((api_requests - api_errors) / api_requests * 100, 1)
+        success_title = "接口成功率"
+    else:
+        success_rate = 0.0
+        success_title = "接口成功率"
+
+    if runs_prev:
+        success_rate_prev = round((runs_prev - error_runs_prev) / runs_prev * 100, 1)
+    elif api_requests_prev:
+        success_rate_prev = round(
+            (api_requests_prev - api_errors_prev) / api_requests_prev * 100, 1
+        )
+    else:
+        success_rate_prev = 0.0
 
     stats = [
         {
@@ -154,7 +176,7 @@ async def dashboard(
         },
         {
             "key": "success_rate",
-            "title": "平均成功率",
+            "title": success_title,
             "value": success_rate,
             "suffix": "%",
             "precision": 1,
@@ -162,6 +184,30 @@ async def dashboard(
             "trend": round(success_rate - success_rate_prev, 1),
         },
     ]
+
+    # agent_run 尚未写入时，用 API 日志兜底调用占比；审计为空时用 API 调用兜底最近活动
+    distribution = await DashboardDao.agent_distribution(
+        tenant_id=scope_tenant, since=since
+    )
+    if not distribution:
+        distribution = await DashboardDao.agent_distribution_from_api(
+            tenant_id=scope_tenant, since=since
+        )
+
+    recent_activities = await DashboardDao.recent_activities(
+        tenant_id=scope_tenant
+    )
+    # 业务接口目前大多没有写审计：审计不足 5 条时用最近 API 调用补齐
+    if len(recent_activities) < 5:
+        seen = {item["key"] for item in recent_activities}
+        for item in await DashboardDao.recent_activities_from_api(
+            tenant_id=scope_tenant
+        ):
+            if item["key"] not in seen:
+                recent_activities.append(item)
+                seen.add(item["key"])
+            if len(recent_activities) >= 5:
+                break
 
     started_at = app_state.started_at
     data: dict[str, Any] = {
@@ -185,15 +231,11 @@ async def dashboard(
             days=days,
             today=today,
         ),
-        "agent_distribution": await DashboardDao.agent_distribution(
-            tenant_id=scope_tenant, since=since
-        ),
+        "agent_distribution": distribution,
         "latency_by_hour": await DashboardDao.latency_by_hour(
             tenant_id=scope_tenant, since=since
         ),
-        "recent_activities": await DashboardDao.recent_activities(
-            tenant_id=scope_tenant
-        ),
+        "recent_activities": recent_activities,
     }
 
     # 平台级存量与租户排行只对超管下发；聚焦某租户时不再重复给全平台排行

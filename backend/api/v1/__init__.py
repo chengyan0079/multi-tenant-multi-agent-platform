@@ -4,7 +4,6 @@
 包内模块只声明资源路径，不写版本前缀。
 
 tenant/agent/  Agent 编排执行端点（业务域，挂在 /api/v1/tenant/ 下）
-tenant/chat/   会话域：统一入口、线程状态、人工队列（同上）
 config/   配置域（配置中心审批流）
 auth/     登录、租户切换、菜单下发
 admin/    超管域：租户、RBAC、审计、配置、模型

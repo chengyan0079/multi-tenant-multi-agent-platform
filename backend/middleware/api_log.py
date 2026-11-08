@@ -141,7 +141,10 @@ async def _capture_request_body(scope: dict, receive: Callable):
             msg = messages[idx]
             idx += 1
             return msg
-        return {"type": "http.disconnect"}
+        # 请求体重放完后必须交还给原始 receive：
+        # SSE（EventSourceResponse）会持续调用 receive() 监听真实断连，
+        # 若在此伪造 http.disconnect，会立刻取消整个流式响应。
+        return await receive()
 
     text = raw[:max_body].decode("utf-8", "replace")
     if len(raw) > max_body:

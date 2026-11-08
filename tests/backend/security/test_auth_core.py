@@ -57,7 +57,7 @@ async def test_super_admin_branch(sec):
     assert user.is_super_admin is True
     assert user.tenant_id is None
     assert user.home_tenant_id == 100
-    assert user.scopes == ["agent:page"]  # 超管用种子里 admin 角色的具体权限点，不再用 "*"
+    assert user.scopes == ["agent:page"]  # 超管用种子里 admin 角色的具体权限点
     assert user.is_tenant_admin is False
 
 

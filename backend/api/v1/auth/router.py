@@ -115,7 +115,7 @@ async def _login(username: str, password: str, tenant_id: int | None = None) -> 
     # 超管分支：只认 agent_user.is_super_admin 标记
     sa = await RbacDao.get_super_admin_identity(user_id)
     if sa is not None:
-        scopes = sa["scopes"]  # 种子里 admin 角色的具体权限点（无 "*"）
+        scopes = sa["scopes"]  # 种子里 admin 角色的具体权限点（不含通配）
         jti = secrets.token_hex(16)
         token = create_access_token(user_id, jti=jti)
         await create_session(jti, user_id, None)

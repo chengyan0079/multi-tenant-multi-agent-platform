@@ -1,7 +1,8 @@
-"""知识问答相关提示词。
+"""知识问答相关提示词（支持 Nacos 配置中心）。
 
-内容对齐参考项目 agents/qa/prompts.py，仅将最领域化的「IT 培训班助教」措辞中性化为
-「平台知识库助手」，核心结构与指令意图保持一致（保证核心逻辑与参考出入不大）。
+内置常量作为默认值；运行时通过 get_config_center_client().get_config(data_id, group=PROMPT)
+从 Nacos 加载。data_id 统一为 `qa_` 前缀的小写名称，见文件末尾 PROMPT_REGISTRY；
+Nacos 未配置/不可达时自动回退内置默认值，保证离线可用。
 """
 # 系统提示词（所有节点共用）
 SYSTEM_PROMPT = """
@@ -97,6 +98,14 @@ RAG_ANSWER_PROMPT = """
 【知识库参考内容】
 {context}
 
+【参考内容的结构说明】
+1. 每条参考内容是一段完整的「父片」上下文，用 <mark>...</mark> 标出的部分是本次检索命中的「子片」，
+   即与问题最直接相关的重点；未被标记的部分是它的上下文，用于帮助理解前后文。
+2. <mark> 只是阅读提示，不是原文内容；引用原文时不要输出 <mark> 标记本身。
+3. 请以 <mark> 标记的部分为主要依据作答，同时可参考同一段内的未标记上下文补全语义
+   （例如代词指代、前置条件、结论适用范围）。
+4. 同一段中可能出现多处 <mark>，它们属于同一父片，信息应合并理解，不要重复引用。
+
 【用户问题】
 {query}
 
@@ -163,3 +172,45 @@ SUMMARY_PROMPT = """
 【最近对话】
 {history}
 """
+
+
+# ---------------------------------------------------------------------------
+# Nacos 加载器：运行时按 data_id 从配置中心取提示词，缺失/不可达则回退内置默认值。
+# 节点内通过 `await resolve_prompt(key)` 获取，离线（Nacos 未配置）也能跑通问答。
+# ---------------------------------------------------------------------------
+import logging
+
+from backend.common.config_center import ConfigCenterError, get_config_center_client
+from backend.common.config_center.groups import ConfigGroup
+
+logger_prompts = logging.getLogger("qa_prompts")
+
+# key -> (Nacos data_id, 内置默认值常量名)
+PROMPT_REGISTRY: dict[str, tuple[str, str]] = {
+    "system": ("qa_system_prompt", "SYSTEM_PROMPT"),
+    "rag_strategy": ("qa_rag_strategy_prompt", "RAG_STRATEGY_PROMPT"),
+    "hyde": ("qa_hyde_prompt", "HYDE_PROMPT"),
+    "multi_query_rewrite": ("qa_multi_query_rewrite_prompt", "MULTI_QUERY_REWRITE_PROMPT"),
+    "rag_answer": ("qa_rag_answer_prompt", "RAG_ANSWER_PROMPT"),
+    "direct_answer": ("qa_direct_answer_prompt", "DIRECT_ANSWER_PROMPT"),
+    "general_answer": ("qa_general_answer_prompt", "GENERAL_ANSWER_PROMPT"),
+    "summary": ("qa_summary_prompt", "SUMMARY_PROMPT"),
+}
+
+
+async def resolve_prompt(key: str) -> str:
+    """按 key 取提示词：优先 Nacos（group=PROMPT），失败/缺失回退内置默认值常量。"""
+    if key not in PROMPT_REGISTRY:
+        raise KeyError(f"未知提示词 key: {key}")
+    data_id, const_name = PROMPT_REGISTRY[key]
+    try:
+        content = await get_config_center_client().get_config(
+            data_id, ConfigGroup.PROMPT.value
+        )
+        if content:
+            return content
+    except ConfigCenterError as e:
+        logger_prompts.warning(f"提示词[{key}]从 Nacos 加载失败，回退内置默认: {e}")
+    except Exception as e:  # noqa: BLE001 - 任何异常都不应阻断问答，回退默认即可
+        logger_prompts.warning(f"提示词[{key}]加载异常，回退内置默认: {e}")
+    return globals()[const_name]

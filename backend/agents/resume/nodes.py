@@ -3,8 +3,6 @@ nodes - 简历评审工作流节点
 
 """
 import asyncio
-import os
-import tempfile
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -15,7 +13,7 @@ from backend.agents.resume.prompts import *
 from backend.agents.resume.state import *
 from backend.common.llm.llm_factory import get_structured_llm, get_llm
 from backend.common.logger import get_logger, setup_logging
-from backend.data.clients.minio import get_storage
+from backend.data.clients.minio import build_object_key, get_object_bytes, get_storage
 from backend.data.sql import session_scope
 from backend.security.rbac import Business
 
@@ -43,7 +41,9 @@ async def upload_to_minio_node(state: ResumeState) -> dict:
     review_id = state.get("review_id", "")
     tenant_id = state.get("tenant_id", "")
     user_id = state.get("user_id", "")
-    key = f"resumes/{tenant_id}/{user_id}/{review_id}.pdf"
+    key = build_object_key(
+        filetype="resumes", tenant_id=tenant_id, user_id=user_id, name=review_id, ext="pdf",
+    )
     try:
         storage = await get_storage()
         data = await asyncio.to_thread(_read_file_bytes, local)
@@ -56,27 +56,23 @@ async def upload_to_minio_node(state: ResumeState) -> dict:
 
 
 async def download_pdf_node(state: ResumeState) -> dict:
-    """从 MinIO 下载 PDF 到本地临时文件，供 pymupdf 解析。"""
+    """从 MinIO 读取 PDF 字节到内存（不落盘），供 pymupdf 直接解析。"""
     key = state.get("pdf_minio_path")
     if not key:
         raise ValueError("download_pdf_node: pdf_minio_path 缺失")
     try:
-        storage = await get_storage()
-        data = await asyncio.to_thread(storage.get_bytes, key)
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        tmp.write(data)
-        tmp.close()
-        logger.info("download_pdf.done", review_id=state.get("review_id"), path=tmp.name)
-        return {"pdf_local_path": tmp.name}
+        data = await get_object_bytes(key)
+        logger.info("download_pdf.done", review_id=state.get("review_id"), bytes=len(data))
+        return {"pdf_bytes": data}
     except Exception as e:
         logger.error(f"download_pdf.failed | {e}")
         raise
 
 
-def _sync_extract_text(pdf_path: str) -> dict:
+def _sync_extract_text(pdf_bytes: bytes) -> dict:
     import pymupdf
 
-    pages = pymupdf.open(pdf_path)
+    pages = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     page_count = len(pages)
     all_text_parts = []
 
@@ -124,10 +120,19 @@ def _sync_extract_text(pdf_path: str) -> dict:
 
 
 async def extract_text_node(state: ResumeState) -> dict:
-    """提取文本（异步操作 - 通过线程池跑执行解析避免阻塞事件循环）"""
-    pdf_path = state['pdf_local_path']
+    """提取文本（异步操作 - 通过线程池跑执行解析避免阻塞事件循环）。
+
+    优先用 download_pdf_node 放进 state 的 pdf_bytes；外部直连（不经 API）
+    只传 pdf_local_path 时回退读取本地文件，两种入口都不落盘。
+    """
+    pdf_bytes = state.get('pdf_bytes')
+    if pdf_bytes is None:
+        local = state.get('pdf_local_path')
+        if not local:
+            raise ValueError('extract_text_node: pdf_bytes / pdf_local_path 均缺失')
+        pdf_bytes = await asyncio.to_thread(_read_file_bytes, local)
     try:
-        result = await asyncio.to_thread(_sync_extract_text, pdf_path)
+        result = await asyncio.to_thread(_sync_extract_text, pdf_bytes)
         raw_text, page_count = result['raw_text'], result['page_count']
 
         if len(raw_text.strip()) < 200:
@@ -138,13 +143,6 @@ async def extract_text_node(state: ResumeState) -> dict:
     except Exception as e:
         logger.error(f'extract_text.failed | {e}')
         raise
-    finally:
-        # 清理 download_pdf_node 创建的临时 PDF；仅当确属系统临时目录，避免误删用户传入的真实本地文件
-        if pdf_path and os.path.commonpath([tempfile.gettempdir(), os.path.abspath(pdf_path)]) == tempfile.gettempdir():
-            try:
-                os.remove(pdf_path)
-            except OSError as exc:
-                logger.warning(f'extract_text.temp_cleanup_failed | {exc}')
 
 
 async def extract_structured_node(state: ResumeState) -> dict:
@@ -154,7 +152,7 @@ async def extract_structured_node(state: ResumeState) -> dict:
     text_for_llm = raw_text[:4000] if len(raw_text) > 4000 else raw_text
     prompt = (await resolve_prompt("extract_structured")).format(resume_text=text_for_llm)
 
-    structured_llm = get_structured_llm(current_agent_type, ResumeStructured)
+    structured_llm = await get_structured_llm(current_agent_type, ResumeStructured)
 
     structured = None
     for attempt in range(2):
@@ -244,7 +242,7 @@ async def run_six_dimensions_node(state: ResumeState) -> dict:
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                structured_llm = get_structured_llm(current_agent_type, DimensionScore)
+                structured_llm = await get_structured_llm(current_agent_type, DimensionScore)
                 dim_score = await structured_llm.ainvoke([
                     SystemMessage(content=await resolve_prompt("system")),
                     HumanMessage(content=prompt),
@@ -300,7 +298,7 @@ async def diagnose_issues_node(state: ResumeState) -> dict:
             dimension_scores_summary=dimension_scores_summary,
             raw_issues=raw_issues_text,
         )
-        think_llm = get_llm(current_agent_type)
+        think_llm = await get_llm(current_agent_type)
         chain = think_llm | StrOutputParser()
         reasoning_trace = await chain.ainvoke([HumanMessage(content=think_prompt)])
         logger.debug(f'diagnose_think.done | scores={len(dimension_scores)}')
@@ -317,7 +315,7 @@ async def diagnose_issues_node(state: ResumeState) -> dict:
     ) + think_context
 
     try:
-        structured_llm = get_structured_llm(current_agent_type, IssueList)
+        structured_llm = await get_structured_llm(current_agent_type, IssueList)
         result = await structured_llm.ainvoke([
             SystemMessage(content=await resolve_prompt("system")),
             HumanMessage(content=prompt),
@@ -369,7 +367,7 @@ async def generate_summary_node(state: ResumeState) -> dict:
         target_position=target_position,
     )
 
-    structured_llm = get_structured_llm(current_agent_type, ResumeSummary)
+    structured_llm = await get_structured_llm(current_agent_type, ResumeSummary)
 
     resume_summary = None
     for attempt in range(2):
@@ -412,10 +410,16 @@ async def save_results_node(state: ResumeState) -> dict:
     summary_data = summary.model_dump_json(ensure_ascii=False)
     weighted_score = state.get('weighted_score', 0.0)
 
+    # 兼容历史状态里 user_id/tenant_id 为字符串的情况（DB 列为 bigint）
+    update_user_id = int(state['user_id']) if state.get('user_id') is not None else None
+    update_tenant_id = (
+        int(state['tenant_id']) if state.get('tenant_id') is not None else None
+    )
+
     structured_output = {
         'review_id': review_id,
-        'user_id': state['user_id'],
-        'tenant_id': state.get('tenant_id'),
+        'user_id': update_user_id,
+        'tenant_id': update_tenant_id,
         'structured': structured_data,
         'weighted_score': weighted_score,
         'dimension_scores': dimension_scores_data,
@@ -424,32 +428,38 @@ async def save_results_node(state: ResumeState) -> dict:
     }
 
     async with session_scope() as session:
-        async with session.begin():
-            await session.execute(
-                text(
-                    '''
-                    UPDATE agent_resume_reviews
-                       SET structured_data = :structured_data
-                         , weighted_score  = :weighted_score
-                         , scores          = :scores
-                         , issues          = :issues
-                         , summary         = :summary
-                         , status          = 'done'
-                         , update_user_id  = :update_user_id
-                         , update_tenant_id = :update_tenant_id
-                     WHERE id = :review_id'''
-                ),
-                {
-                    'structured_data': structured_data,
-                    'weighted_score': weighted_score,
-                    'scores': dimension_scores_data,
-                    'issues':  issues_data,
-                    'summary': summary_data,
-                    'update_user_id': state['user_id'],
-                    'update_tenant_id': state.get('tenant_id'),
-                    'review_id': review_id,
-                },
+        result = await session.execute(
+            text(
+                '''
+                UPDATE agent_resume_reviews
+                   SET structured_data = :structured_data
+                     , weighted_score  = :weighted_score
+                     , scores          = :scores
+                     , issues          = :issues
+                     , summary         = :summary
+                     , status          = 'done'
+                     , update_user_id  = :update_user_id
+                     , update_tenant_id = :update_tenant_id
+                 WHERE id = CAST(:review_id AS uuid)
+                   AND status = 'processing' '''
+            ),
+            {
+                'structured_data': structured_data,
+                'weighted_score': weighted_score,
+                'scores': dimension_scores_data,
+                'issues':  issues_data,
+                'summary': summary_data,
+                'update_user_id': update_user_id,
+                'update_tenant_id': update_tenant_id,
+                'review_id': review_id,
+            },
+        )
+        if (result.rowcount or 0) == 0:
+            # 已被超时任务标 failed（或其他终端态）：不要把 failed 覆盖成 done
+            logger.warning(
+                f'save_results.skipped_terminal | review_id={review_id} | 状态已不是 processing'
             )
+        else:
             logger.debug(f'save_results.db_written | review_id={review_id}')
     return {'fallback_used': False, 'structured_output': structured_output}
 

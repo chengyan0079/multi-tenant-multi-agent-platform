@@ -120,6 +120,7 @@ class SchedulerSettings(BaseSettings):
     escalation_timeout_min: int = 30  # HITL 转人工超时阈值（分钟），可调
     resume_timeout_min: int = 10  # resume 评审 processing 超时阈值（分钟，=600s），可调
     scan_interval: int = 60  # 默认扫描间隔（秒），各 job 可独立覆盖
+    config_refresh_interval: int = 5  # 跨副本配置刷新信号轮询间隔（秒）
 
 
 class MilvusSettings(BaseSettings):
@@ -138,32 +139,38 @@ class MilvusSettings(BaseSettings):
     rrf_k: int = 60                # RRF 融合常数
 
 
-class RagSettings(BaseSettings):
-    """RAG 适配层接入方式（MCP 优先，包导入 / HTTP 兜底）。
-
-    mcp_url：对外暴露的 MCP 服务地址（FastMCP streamable-http，默认
-        http://127.0.0.1:8766/mcp）。配置后检索走 MCP 工具，不再依赖本仓库内代码。
-    """
-
-    model_config = SettingsConfigDict(**_COMMON, env_prefix="RAG_")
-
-    mcp_url: str = ""
-    import_path: str = ""
-    http_base: str = ""
-
-
 class QaSettings(BaseSettings):
     """智能问答 Agent 的检索 / 阈值 / 窗口参数（可用 .env 的 QA_* 覆盖）。"""
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="QA_")
 
+    max_upload_mb: int = 200  # 单文件大小上限（MB）
+    auto_parse: bool = True  # 上传成功后自动入队 qa.parse（关则只落库，需手动触发解析）
+
     precise_top_k: int = 5               # PRECISE 单路检索召回数
     vague_top_k: int = 8                 # VAGUE（HyDE）检索召回数
     broad_per_query_top_k: int = 5       # BROAD 多查询每个子查询召回数
     merge_top_k: int = 5                 # BROAD 合并后取前 N
-    high_confidence_threshold: float = 0.75  # 高置信度判定阈值
+    high_confidence_threshold: float = 0.75  # 高置信度判定阈值（精排分数）
     web_search_max_results: int = 5      # Web 搜索结果上限
     summary_trigger_turns: int = 6       # 用户提问轮数达到即触发摘要压缩
+
+    # —— 文档解析 / 分块（backend/rag，参考 thy-edu-agent core/document_splitters）——
+    chunk_size: int = 512                # PDF/TXT 递归切分块大小（无父子片时的兜底）
+    chunk_overlap: int = 64              # PDF/TXT 重叠
+    md_chunk_size: int = 600             # Markdown 两阶段切分块大小
+    md_chunk_overlap: int = 60           # Markdown 重叠
+    # —— 父子片（small-to-big，参照 RAG-Ultra）——
+    parent_chunk_size: int = 1200        # 父片大小：命中子片后回填给 LLM 的完整上下文
+    parent_chunk_overlap: int = 100      # 父片重叠
+    child_chunk_size: int = 300          # 子片大小：实际参与向量召回
+    child_chunk_overlap: int = 20        # 子片重叠
+    parent_context_by_highlight: bool = True  # 生成节点用"父片内高亮子片"替代纯子片
+    index_batch_size: int = 32           # 单批向量化/写入条数
+    # —— 检索 / 精排 ——
+    recall_top_k: int = 10               # 混合召回候选数（精排前）
+    rerank_top_k: int = 3                # 精排后保留条数
+    rerank_max_input_chars: int = 1200   # 单条候选送入精排的最大字符数
 
 
 class SecuritySettings(BaseSettings):
@@ -340,14 +347,6 @@ class ApiLogSettings(BaseSettings):
         return [x.strip() for x in self.exclude_raw.split(",") if x.strip()]
 
 
-class FileSettings(BaseSettings):
-    """文件上传限制（可通过 .env 的 FILE_MAX_UPLOAD_MB 覆盖）。"""
-
-    model_config = SettingsConfigDict(**_COMMON, env_prefix="FILE_")
-
-    max_upload_mb: int = 200  # 单文件大小上限（MB）
-
-
 class ModelSettings(BaseSettings):
     """本地模型根目录（registry 的 endpoint_path 为相对路径时，拼到此目录下解析）。"""
 
@@ -383,8 +382,6 @@ class AppSettings(BaseSettings):
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     milvus: MilvusSettings = Field(default_factory=MilvusSettings)
     minio: MinioSettings = Field(default_factory=MinioSettings)
-    file: FileSettings = Field(default_factory=FileSettings)
-    rag: RagSettings = Field(default_factory=RagSettings)
     qa: QaSettings = Field(default_factory=QaSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)

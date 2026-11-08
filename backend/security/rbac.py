@@ -28,10 +28,15 @@ logger = get_logger("rbac")
 class Business(str, Enum):
     """AI 业务域（权限点的资源部分）：qa / interview / resume / exam / knowledge。新增业务域在此登记。"""
     QA = "qa"
+    QA_FILE = "qa_file"
+    QA_RESULT = "qa_result"
+    QA_SESSION = "qa_session"
     INTERVIEW = "interview"
     RESUME = "resume"
     EXAM = "exam"
-    KNOWLEDGE = "knowledge"
+    EXAM_RESULT = "exam_result"
+    # 业务域分组菜单（/agent 父节点，仅用于菜单可见性）
+    BUSINESS = "business"
 
 
 class Agent(str, Enum):
@@ -39,6 +44,7 @@ class Agent(str, Enum):
     CONFIG = "config"
     AGENT = "agent"
     MODEL = "model"
+    TOOL = "tool"
 
 
 class System(str, Enum):
@@ -51,8 +57,6 @@ class System(str, Enum):
     ROLE = "role"
     RBAC = "rbac"
     DASHBOARD = "dashboard"
-    FILE = "file"
-    TOOL = "tool"
 
 
 class Action(str, Enum):
@@ -87,6 +91,9 @@ class Scope:
     资源取自 Business（AI 业务域）/ Agent（基建域）/ System（平台域），动作取自 Action。
     新增权限点须在 Scope 中登记，任何散落字符串字面量都会在校验时立即报错。
     """
+    # ===== 业务域分组菜单（/agent 父节点）=====
+    BUSINESS_MENU = f"{Business.BUSINESS.value}:{Action.MENU.value}"
+
     # ===== Dashboard 仪表盘：菜单可见性用 dashboard:menu，接口访问用 dashboard:view =====
     DASHBOARD_MENU = f"{System.DASHBOARD.value}:{Action.MENU.value}"
     DASHBOARD_VIEW = f"{System.DASHBOARD.value}:{Action.VIEW.value}"
@@ -170,28 +177,34 @@ class Scope:
     TENANT_ADD = f"{System.TENANT.value}:{Action.ADD.value}"
     TENANT_DELETE = f"{System.TENANT.value}:{Action.DELETE.value}"
     TENANT_STATUS = f"{System.TENANT.value}:{Action.STATUS.value}"
-    # 文件上传下载
-    FILE_MENU = f"{System.FILE.value}:{Action.MENU.value}"
-    FILE_UPLOAD = f"{System.FILE.value}:{Action.UPLOAD.value}"
-    FILE_DOWNLOAD = f"{System.FILE.value}:{Action.DOWNLOAD.value}"
-    FILE_PAGE = f"{System.FILE.value}:{Action.PAGE.value}"
-    FILE_VIEW = f"{System.FILE.value}:{Action.VIEW.value}"
+
     # Tool 工具中心
-    TOOL_MENU = f"{System.TOOL.value}:{Action.MENU.value}"
-    TOOL_PAGE = f"{System.TOOL.value}:{Action.PAGE.value}"
-    TOOL_VIEW = f"{System.TOOL.value}:{Action.VIEW.value}"
-    TOOL_ADD = f"{System.TOOL.value}:{Action.ADD.value}"
-    TOOL_UPDATE = f"{System.TOOL.value}:{Action.UPDATE.value}"
-    TOOL_DELETE = f"{System.TOOL.value}:{Action.DELETE.value}"
-    TOOL_STATUS = f"{System.TOOL.value}:{Action.STATUS.value}"
+    TOOL_MENU = f"{Agent.TOOL.value}:{Action.MENU.value}"
+    TOOL_PAGE = f"{Agent.TOOL.value}:{Action.PAGE.value}"
+    TOOL_VIEW = f"{Agent.TOOL.value}:{Action.VIEW.value}"
+    TOOL_ADD = f"{Agent.TOOL.value}:{Action.ADD.value}"
+    TOOL_UPDATE = f"{Agent.TOOL.value}:{Action.UPDATE.value}"
+    TOOL_DELETE = f"{Agent.TOOL.value}:{Action.DELETE.value}"
+    TOOL_STATUS = f"{Agent.TOOL.value}:{Action.STATUS.value}"
 
     # ===== Business AI 业务域（qa / interview / resume / exam / knowledge） =====
     # 问哪一类就要求哪一类的 ask 权限；page=历史列表、view=单条详情
     QA_MENU = f"{Business.QA.value}:{Action.MENU.value}"
     QA_ASK = f"{Business.QA.value}:{Action.ASK.value}"
-    QA_PAGE = f"{Business.QA.value}:{Action.PAGE.value}"
-    QA_VIEW = f"{Business.QA.value}:{Action.VIEW.value}"
-    QA_LIST = f"{Business.QA.value}:{Action.LIST.value}"
+    # 问答结果
+    QA_RESULT_PAGE = f"{Business.QA_RESULT.value}:{Action.PAGE.value}"
+    QA_RESULT_VIEW = f"{Business.QA_RESULT.value}:{Action.VIEW.value}"
+    QA_RESULT_REVIEW = f"{Business.QA_RESULT.value}:{Action.REVIEW.value}"
+    # 问答会话
+    QA_SESSION_PAGE = f"{Business.QA_SESSION.value}:{Action.PAGE.value}"
+    QA_SESSION_ADD = f"{Business.QA_SESSION.value}:{Action.ADD.value}"
+    QA_SESSION_VIEW = f"{Business.QA_SESSION.value}:{Action.VIEW.value}"
+    QA_SESSION_DELETE = f"{Business.QA_SESSION.value}:{Action.DELETE.value}"
+    # 问答文件
+    QA_FILE_UPLOAD = f"{Business.QA_FILE.value}:{Action.UPLOAD.value}"
+    QA_FILE_DOWNLOAD = f"{Business.QA_FILE.value}:{Action.DOWNLOAD.value}"
+    QA_FILE_PAGE = f"{Business.QA_FILE.value}:{Action.PAGE.value}"
+    QA_FILE_VIEW = f"{Business.QA_FILE.value}:{Action.VIEW.value}"
 
     INTERVIEW_MENU = f"{Business.INTERVIEW.value}:{Action.MENU.value}"
     INTERVIEW_PAGE = f"{Business.INTERVIEW.value}:{Action.PAGE.value}"
@@ -206,18 +219,14 @@ class Scope:
 
     EXAM_MENU = f"{Business.EXAM.value}:{Action.MENU.value}"
     EXAM_PAGE = f"{Business.EXAM.value}:{Action.PAGE.value}"
-    EXAM_ADD = f"{Business.EXAM.value}:{Action.ADD.value}"
-    EXAM_UPDATE = f"{Business.EXAM.value}:{Action.UPDATE.value}"
+    EXAM_UPLOAD = f"{Business.EXAM.value}:{Action.UPLOAD.value}"
     EXAM_VIEW = f"{Business.EXAM.value}:{Action.VIEW.value}"
-    EXAM_ASK = f"{Business.EXAM.value}:{Action.ASK.value}"
+    EXAM_REVIEW = f"{Business.EXAM.value}:{Action.REVIEW.value}"
 
-    KNOWLEDGE_MENU = f"{Business.KNOWLEDGE.value}:{Action.MENU.value}"
-    KNOWLEDGE_PAGE = f"{Business.KNOWLEDGE.value}:{Action.PAGE.value}"
-    KNOWLEDGE_UPLOAD = f"{Business.KNOWLEDGE.value}:{Action.UPLOAD.value}"
-    KNOWLEDGE_DOWNLOAD = f"{Business.KNOWLEDGE.value}:{Action.DOWNLOAD.value}"
-    KNOWLEDGE_VIEW = f"{Business.KNOWLEDGE.value}:{Action.VIEW.value}"
-    KNOWLEDGE_DELETE = f"{Business.KNOWLEDGE.value}:{Action.DELETE.value}"
-    KNOWLEDGE_REVIEW = f"{Business.KNOWLEDGE.value}:{Action.REVIEW.value}"
+    EXAM_RESULT_PAGE = f"{Business.EXAM_RESULT.value}:{Action.PAGE.value}"
+    EXAM_RESULT_VIEW = f"{Business.EXAM_RESULT.value}:{Action.VIEW.value}"
+
+
 
 
 # 所有合法权限点，供 require_scope 校验声明合法性（Scope 不再是 Enum）
@@ -226,6 +235,27 @@ class Scope:
 VALID_SCOPES: frozenset[str] = frozenset(
     v for k, v in vars(Scope).items() if k.isupper() and isinstance(v, str)
 )
+
+
+# agent_type → 调用该 Agent 所需权限点（动态入口鉴权的单一权威来源）。
+# 编排/统一聊天在运行期才决定 agent_type，无法用静态 require_scope 声明，故按此表查权限点。
+# 注：resume / exam 业务域没有 :ask 权限点，沿用各自的 :upload 作为调用门槛。
+SCOPE_BY_AGENT: dict[str, str] = {
+    "qa": Scope.QA_ASK,
+    "resume": Scope.RESUME_UPLOAD,
+    "exam": Scope.EXAM_UPLOAD,
+    "interview": Scope.INTERVIEW_ASK,
+}
+
+
+def scope_for_agent(agent_type: str | None) -> str | None:
+    """取调用该 Agent 所需权限点；未登记类型返回 None（调用方应按拒绝处理）。"""
+    return SCOPE_BY_AGENT.get(agent_type) if agent_type else None
+
+
+def has_scope(scopes: list[str], required: str) -> bool:
+    """是否具备权限点（精确匹配，与 require_scope 语义一致；项目不使用通配）。"""
+    return required in scopes
 
 
 class RoleName(str, Enum):

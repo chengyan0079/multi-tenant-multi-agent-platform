@@ -64,8 +64,9 @@ def test_scope_enum_covers_menu_scopes() -> None:
         "agent:update",
         "model:page",
         "tenant:page",
-        "rbac:page",
-        "rbac:update",
+        "role:page",
+        "user:page",
+        "menu:page",
         "qa:page",
     }
     assert expected <= VALID_SCOPES

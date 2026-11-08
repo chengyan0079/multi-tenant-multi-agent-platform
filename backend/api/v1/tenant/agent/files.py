@@ -1,11 +1,9 @@
 """文件管理端点：分页 / 详情 / 上传（MinIO） / 下载（MinIO）。
 
-挂在 /api/v1/admin/files 下，但**不挂整组 require_super_admin**（见 api/router.py）：
-文件按租户开放给所有持相应 scope 的用户，端点各自 `require_scope`。
+挂在 /api/v1/tenant/agent/files 下（业务域 _BUSINESS），整组 require_tenant()：
+仅租户用户可访问（超管无租户，调用直接 403），端点各自 `require_scope(qa_file:*)`。
 
-隔离规则：
-- 普通用户 / 租户管理员：只能看、只能下载本租户文件（tenant_id = current.tenant_id）；
-- 平台超管（tenant_id=None）：可查全部、可按 tenant_id 过滤；自己上传的文件记平台级（tenant_id=NULL）。
+隔离规则：所有操作强制收敛到 current.tenant_id，忽略前端传入的 tenant_id，杜绝跨租户。
 """
 from __future__ import annotations
 
@@ -19,6 +17,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from backend.common.logger import logger
 from backend.common.response import success
 from backend.config import config
 from backend.data.clients.minio import get_storage
@@ -30,11 +29,11 @@ from backend.observability.exception import BizException, ErrCode
 from backend.security.rbac import Scope
 from backend.security.security import require_scope
 
-router = APIRouter(prefix="/files", tags=["admin"])
+router = APIRouter(prefix="/agent/files", tags=["agent-files"])
 
 def _max_upload_bytes() -> int:
-    """单文件大小上限（字节），由 FILE_MAX_UPLOAD_MB 配置，最小 1MB。"""
-    return max(1, config.file.max_upload_mb) * 1024 * 1024
+    """单文件大小上限（字节），由 QA_MAX_UPLOAD_MB 配置，最小 1MB。"""
+    return max(1, config.qa.max_upload_mb) * 1024 * 1024
 
 
 # 允许上传的扩展名 → MIME 类型（PDF / Markdown / TXT）
@@ -67,23 +66,21 @@ def _serialize(row: dict) -> dict:
 
 
 def _visible(row: dict, current: CurrentUser) -> bool:
-    """超管全量可见；其余只能看本租户（tenant_id 为 NULL 的平台文件仅超管可见）。"""
-    return current.is_super_admin or row["tenant_id"] == current.tenant_id
+    """仅本租户文件可见；租户用户无跨租户查看能力。"""
+    return row["tenant_id"] == current.tenant_id
 
 
 @router.get("", summary="文件列表（分页）")
 async def list_files(
     file_name: Optional[str] = Query(None, description="按文件名模糊搜索"),
-    tenant_id: Optional[int] = Query(None, description="超管可按租户筛选；其他角色忽略"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.FILE_PAGE)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_PAGE)),  # noqa: B008
 ):
-    # 非超管强制收敛到本租户，忽略前端传的 tenant_id
-    scope_tenant = tenant_id if current.is_super_admin else current.tenant_id
+    # 固定本租户，忽略前端可能传入的 tenant_id
     rows, total = await FileDao.list_latest(
-        tenant_id=scope_tenant, keyword=file_name, page=page, page_size=page_size
+        tenant_id=_tenant_id(current), keyword=file_name, page=page, page_size=page_size
     )
     return success(
         {
@@ -97,16 +94,70 @@ async def list_files(
 
 @router.get("/config", summary="文件上传配置")
 async def file_config(
-    _: object = Depends(require_scope(Scope.FILE_PAGE)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_PAGE)),  # noqa: B008
 ):
-    """返回前端所需的上传限制（单文件上限 MB）。"""
-    return success({"max_upload_mb": config.file.max_upload_mb})
+    """返回前端所需的上传限制与上传后行为。"""
+    return success({
+        "max_upload_mb": config.qa.max_upload_mb,
+        "auto_parse": config.qa.auto_parse,
+    })
+
+
+async def _enqueue_parse(row: dict, current: CurrentUser) -> str | None:
+    """上传成功后自动触发解析：先置 parsing，再写 Outbox。
+
+    返回消息 key；写 Outbox 失败返回 None，此时回退状态为 pending（不阻断上传，
+    用户仍可在文件列表手动点「解析」重试）。
+
+    入队 tenant_id 用文件归属租户（row["tenant_id"]），而非 current.tenant_id，
+    保证消费端严格按租户 id 校验时与落库口径一致，且租户隔离不被 current 视角破坏。
+    """
+    file_id = row["id"]
+    file_tenant = row.get("tenant_id")
+    try:
+        await FileDao.set_parse_status([file_id], "parsing", tenant_id=file_tenant)
+    except Exception as exc:  # noqa: BLE001 - 状态更新失败不应让上传（已成功）被判失败
+        logger.warning(f"上传后置 parsing 失败 file_id={file_id}：{exc}")
+
+    key: str | None = None
+    try:
+        key = await enqueue_task(
+            TaskType.QA_PARSE,
+            tenant_id=file_tenant,
+            user_id=current.user_id,
+            data={
+                "file_id": file_id,
+                "object_key": row["object_key"],
+                "bucket": row["bucket"],
+                "tenant_id": file_tenant,
+                "file_ext": row["file_ext"],
+                # 透传原始文件名：Milvus 的 file_name/source_location 用它，避免展示成 {uuid}_v1.pdf
+                "file_name": row.get("original_name") or row.get("file_name"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 入队异常同样不阻断上传
+        logger.error(f"上传后自动解析入队异常 file_id={file_id}：{exc}")
+
+    if key is None:
+        try:
+            await FileDao.set_parse_status([file_id], "pending", tenant_id=file_tenant)
+        except Exception as exc:  # noqa: BLE001 - 回退失败只记录，不影响上传结果
+            logger.warning(f"回退 pending 失败 file_id={file_id}：{exc}")
+        logger.warning(f"上传后自动解析入队失败 file_id={file_id}，请手动触发解析")
+    return key
+
+
+def _tenant_id(current: CurrentUser) -> int:
+    """本次操作的租户 id：固定取 current.tenant_id，不接受外部指定，杜绝跨租户。"""
+    if current.tenant_id is None:
+        raise BizException(ErrCode.PARAM_ERROR, "当前账号无租户归属，无法操作文件")
+    return current.tenant_id
 
 
 async def _process_one_upload(
     file: UploadFile, current: CurrentUser, remark: str | None
 ) -> dict[str, Any]:
-    """单个文件校验 → 去重判定 → 落库；返回 _serialize 后的视图。
+    """单个文件校验 → 去重判定 → 落库 →（可选）自动入队解析；返回 _serialize 后的视图。
 
     校验失败 / 重复上传会被转换为 BizException，由调用方决定是否向上抛出（批量接口会捕获并计入失败项）。
     """
@@ -123,10 +174,10 @@ async def _process_one_upload(
         raise BizException(ErrCode.PARAM_ERROR, "文件为空")
     if len(data) > _max_upload_bytes():
         raise BizException(
-            ErrCode.PARAM_ERROR, f"文件超过 {config.file.max_upload_mb}MB 上限"
+            ErrCode.PARAM_ERROR, f"文件超过 {config.qa.max_upload_mb}MB 上限"
         )
 
-    tenant_id = current.tenant_id  # 超管为 None → 平台级
+    tid = _tenant_id(current)
     checksum = hashlib.sha256(data).hexdigest()
     content_type = _ALLOWED_EXTS[ext]
 
@@ -134,7 +185,7 @@ async def _process_one_upload(
     #   - 内容与最新版一致 → 拦截（不落库）；
     #   - 否则版本 +1、沿用同一 file_uuid；不同名 → 新文件。
     result = await FileDao.save_new_version(
-        tenant_id=tenant_id,
+        tenant_id=tid,
         uploader_user_id=current.user_id,
         original_name=filename,
         data=data,
@@ -150,7 +201,15 @@ async def _process_one_upload(
             ErrCode.PARAM_ERROR,
             f"该文件已上传过（内容与最新版本一致），无需重复上传；最新版本ID：{latest_id}",
         )
-    return _serialize(result["row"])
+
+    row = result["row"]
+    view = _serialize(row)
+    if config.qa.auto_parse:
+        # 上传即解析：入队 qa.parse，消费端写入 Milvus 后回写 parse_status=parsed
+        view["parse_queued"] = await _enqueue_parse(row, current) is not None
+    else:
+        view["parse_queued"] = False
+    return view
 
 
 @router.post("/upload", summary="上传文件（MinIO）")
@@ -158,7 +217,7 @@ async def upload_file(
     file: UploadFile = File(...),  # noqa: B008
     remark: Optional[str] = Form(None),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.FILE_UPLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
 ):
     return success(await _process_one_upload(file, current, remark))
 
@@ -170,7 +229,7 @@ async def batch_upload_files(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.FILE_UPLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
 ) -> Any:
     results: list[dict[str, Any]] = []
     for f in files:
@@ -202,7 +261,7 @@ class ParseRequest(BaseModel):
 async def parse_files(
     body: ParseRequest,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.FILE_UPLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
 ):
     """把选中的文件提交到消息队列做解析向量化。
 
@@ -216,28 +275,40 @@ async def parse_files(
     if not visible:
         raise BizException(ErrCode.PARAM_ERROR, "没有可解析的文件（不存在或无权限）")
     ids = [r["id"] for r in visible]
-    await FileDao.set_parse_status(ids, "parsing", tenant_id=current.tenant_id)
+    await FileDao.set_parse_status(ids, "parsing", tenant_id=_tenant_id(current))
+
+    queued, failed = 0, []
     for r in visible:
-        await enqueue_task(
-            TaskType.DOC_PARSE,
-            tenant_id=current.tenant_id,
+        key = await enqueue_task(
+            TaskType.QA_PARSE,
+            tenant_id=r["tenant_id"],
             user_id=current.user_id,
             data={
                 "file_id": r["id"],
                 "object_key": r["object_key"],
                 "bucket": r["bucket"],
-                "tenant_id": current.tenant_id,
+                "tenant_id": r["tenant_id"],
                 "file_ext": r["file_ext"],
+                "file_name": r.get("original_name") or r.get("file_name"),
             },
         )
-    return success({"queued": len(ids)})
+        if key is None:
+            # 写 Outbox 失败：不能留在 parsing，否则永远等不到消费
+            failed.append(r["id"])
+        else:
+            queued += 1
+
+    if failed:
+        await FileDao.set_parse_status(failed, "pending", tenant_id=_tenant_id(current))
+        logger.warning(f"解析入队失败 {len(failed)} 个文件，已回退 pending: {failed}")
+    return success({"queued": queued, "failed": failed})
 
 
 @router.get("/{file_id}", summary="文件详情")
 async def get_file(
     file_id: int,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.FILE_VIEW)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_VIEW)),  # noqa: B008
 ):
     row = await FileDao.get(file_id)
     if row is None or not _visible(row, current):
@@ -250,7 +321,7 @@ async def get_file(
 async def download_file(
     file_id: int,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.FILE_DOWNLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.QA_FILE_DOWNLOAD)),  # noqa: B008
 ):
     row = await FileDao.get(file_id)
     if row is None or not _visible(row, current):
@@ -267,7 +338,8 @@ async def download_file(
     except Exception as exc:  # noqa: BLE001 - 对象丢失/存储异常统一按 404 提示
         raise BizException(ErrCode.NOT_FOUND, f"文件对象已丢失或不可读: {exc}")  # noqa: B904
 
-    filename = quote(row["file_name"])
+    # 用原始文件名下载：file_name 是含 uuid/版本的存储名，直接给用户会变成 a1b2...v1.pdf
+    filename = quote(row.get("original_name") or row["file_name"])
     headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
     return Response(
         content=data,

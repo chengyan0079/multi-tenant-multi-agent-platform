@@ -107,7 +107,8 @@ class ResumeState(TypedDict, total=False):
     tenant_id: str
     review_id: str  # 简历评审记录主键（agent_resume_reviews.id）
     pdf_minio_path: str  # 简历文件保存路径（云存储的 URI 或分布式文件系统标识符）
-    pdf_local_path: str
+    pdf_bytes: bytes  # 从 MinIO 读取的 PDF 字节（全内存解析，不落盘）
+    pdf_local_path: str  # 外部直连场景传入的本地文件路径（可选）
 
     # 解析中间结果（对应工作流的③节点）
     raw_text: str

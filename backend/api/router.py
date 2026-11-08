@@ -20,16 +20,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from backend.api.v1.tenant.agent.exam import router as exam_router
+from backend.api.v1.tenant.agent.files import router as files_router
 from backend.api.v1.tenant.agent.interview import router as interview_router
 from backend.api.v1.tenant.agent.qa import router as qa_router
+from backend.api.v1.tenant.agent.qa_results import router as qa_results_router
+from backend.api.v1.tenant.agent.qa_sessions import router as qa_sessions_router
 from backend.api.v1.tenant.agent.resume import router as resume_router
-from backend.api.v1.tenant.knowledge.queue import router as knowledge_queue_router
 from backend.api.v1 import dashboard as dashboard_api
 from backend.api.v1 import health as health_api
 from backend.api.v1.admin import agents as admin_agents
 from backend.api.v1.admin import audit as admin_audit
 from backend.api.v1.admin import config_center as admin_config
-from backend.api.v1.admin import files as admin_files
 from backend.api.v1.admin import models as admin_models
 from backend.api.v1.admin import plugins as admin_plugins
 from backend.api.v1.admin import menu as admin_menu
@@ -38,7 +39,6 @@ from backend.api.v1.admin import rbac as admin_rbac
 from backend.api.v1.admin import tenant as admin_tenant
 from backend.api.v1.auth import router as auth_router
 from backend.api.v1.tenant.agent import orchestrator
-from backend.api.v1.tenant.chat import escalations, threads, unified
 from backend.api.v1.tenant import audit as tenant_audit
 from backend.api.v1.tenant import messages as tenant_messages
 from backend.api.v1.tenant import roles as tenant_roles
@@ -70,14 +70,13 @@ _ADMIN = (
 # 统一收进 /api/v1/tenant/（按 token 鉴权，超管无租户一律 403）。
 _BUSINESS = (
     orchestrator.router,
-    unified.router,
-    threads.router,
-    escalations.router,
     qa_router,
+    qa_results_router,
+    qa_sessions_router,
+    files_router,
     resume_router,
     exam_router,
     interview_router,
-    knowledge_queue_router,
     tenant_users.router,
     tenant_roles.router,
     tenant_audit.router,
@@ -118,12 +117,6 @@ def build_api_router() -> APIRouter:
     # review/execute/delete 仅超管/租户管理员），不挂整组超管
     api.include_router(
         admin_config.router,
-        prefix=ADMIN_PREFIX,
-    )
-    # 文件管理：按租户开放（所有持 file:* scope 的用户；超管查全部），
-    # 端点级 require_scope，不挂整组超管
-    api.include_router(
-        admin_files.router,
         prefix=ADMIN_PREFIX,
     )
     for router in _BUSINESS:

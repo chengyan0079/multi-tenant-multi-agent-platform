@@ -62,43 +62,24 @@ async def list_roles(
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
 
-@router.get("/scopes", summary="全量权限点目录（分组+中文标签，供角色编辑多选）")
+@router.get("/scopes", summary="全量权限点目录（按 Scope 派生，供角色编辑多选）")
 async def list_scopes(
     _: object = Depends(require_scope(Scope.ROLE_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
-    # 以 Scope 为单一权威来源，新增权限点只需在 Scope 登记
-    resource_labels = {
-        "qa": "咨询问答", "interview": "模拟面试", "resume": "简历助手",
-        "exam": "考试助手", "knowledge": "知识库", "config": "配置中心",
-        "agent": "智能体", "model": "模型配置", "audit": "审计日志",
-        "message": "消息管理", "user": "用户管理", "rbac": "权限中心",
-        "role": "角色管理", "menu": "菜单管理", "tenant": "租户管理",
-        "file": "文件管理", "dashboard": "监控看板",
-    }
-    action_labels = {
-        "menu": "菜单", "ask": "问答", "page": "列表", "view": "详情",
-        "list": "全量", "add": "新增", "update": "编辑", "delete": "删除",
-        "upload": "上传", "download": "下载", "review": "复核",
-        "status": "启停", "execute": "执行", "rollback": "回滚",
-    }
-    groups: dict[str, list[dict[str, str]]] = {}
-    for scope in sorted(VALID_SCOPES):
+    # 单一权威来源是 security.rbac.Scope（VALID_SCOPES 由其派生）：
+    # 分组与清单都直接由 scope 字符串拆出资源得到，接口层不硬编码任何中文。
+    # 前端只用 items（扁平 scope 列表）自行分组展示。
+    grouped: dict[str, list[str]] = {}
+    for scope in VALID_SCOPES:
         if ":" not in scope:
             continue
-        res, act = scope.split(":", 1)
-        groups.setdefault(res, []).append({
-            "value": scope,
-            "label": action_labels.get(act, act),
-        })
+        res = scope.split(":", 1)[0]
+        grouped.setdefault(res, []).append(scope)
     return success({
         "groups": [
-            {
-                "resource": res,
-                "label": resource_labels.get(res, res),
-                "scopes": scopes,
-            }
-            for res, scopes in groups.items()
+            {"resource": res, "scopes": sorted(scopes)}
+            for res, scopes in sorted(grouped.items())
         ],
         "items": sorted(VALID_SCOPES),
     })
@@ -132,7 +113,13 @@ async def set_role_perms(
         if s not in VALID_SCOPES:
             raise BizException(ErrCode.PARAM_ERROR, f"非法权限点: {s}")
     roles = await RbacDao.list_roles_with_permissions()
-    old = next((r["scopes"] for r in roles if r["role_id"] == role_id), [])
+    role = next((r for r in roles if r["role_id"] == role_id), None)
+    if role is None:
+        raise BizException(ErrCode.NOT_FOUND, f"角色不存在: {role_id}")
+    # admin 为内置超管锚点，权限点由种子固化，禁止前端覆盖（避免误清空导致超管失权）
+    if role["name"] == RoleName.ADMIN.value:
+        raise BizException(ErrCode.PARAM_ERROR, "内置角色 admin 权限不可修改")
+    old = role["scopes"]
     await RbacDao.set_role_permissions(role_id, body.scopes)
     await AuditDao.write(
         action="rbac.role_permissions", target=str(role_id),
@@ -213,6 +200,8 @@ async def change_user_role(
     target = await UserDao.get(user_id)
     if target is None:
         raise BizException(ErrCode.NOT_FOUND, f"用户不存在: {user_id}")
+    if target.get("is_super_admin"):
+        raise BizException(ErrCode.FORBIDDEN, "超管账号不可修改角色")
     if target.get("tenant_id") != body.tenant_id:
         raise BizException(ErrCode.FORBIDDEN, "只能修改本租户用户角色")
     role_id = await RbacDao.get_role_id(body.role)

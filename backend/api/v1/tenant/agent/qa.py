@@ -1,9 +1,9 @@
 """智能问答直连接口（standalone，挂在 /api/v1/tenant/qa）。
 
-提供三类接口，对齐参考项目 backend/api/v1/qa.py 的形态：
+提供两类接口，对齐参考项目 backend/api/v1/qa.py 的形态：
 - POST /chat         非流式问答，统一信封 success() 返回
 - POST /chat/stream  SSE 流式问答（token 逐字推送）
-- GET  /sessions/{id}/history  会话历史与摘要
+（会话列表 / 详情 / 删除见 qa_sessions.py）
 
 鉴权与本项目一致：require_scope(Scope.QA_ASK) + get_current_user；数据按租户隔离。
 SSE 事件格式（data 内 JSON）：progress / token / meta / done / error。
@@ -11,20 +11,30 @@ SSE 事件格式（data 内 JSON）：progress / token / meta / done / error。
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+import time
+from typing import Any, List
+
+import uuid6
 
 from fastapi import APIRouter, Depends
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from backend.agents.qa.graph import build_qa_graph
 from backend.app_state import app_state
-from backend.common.logger import get_logger
+from backend.common.logger import get_logger, trace_id_ctx
+from backend.data.dao.business.qa_result_dao import QaResultDao
+from backend.data.sql.audit import audit_on_insert
 from backend.common.response import success
 from backend.middleware.auth import CurrentUser, get_current_user, tenant_of
 from backend.security.rbac import Scope
 from backend.security.security import require_scope
+from backend.services.qa_chat_stop import (
+    clear_chat_stop,
+    is_chat_stopped,
+    set_chat_stop,
+)
 
 logger = get_logger("qa_api")
 
@@ -54,6 +64,112 @@ async def _resolve_thread_id(tenant_id: int, user_id: int, session_id: str) -> s
     )
 
 
+async def _update_title_if_default(
+    thread_id: str, tenant_id: int, user_id: int, question: str
+) -> None:
+    """首问后把会话标题从「新会话」更新为问题主题（仅默认标题生效），失败只告警。"""
+    title = (question or "").strip()[:20]
+    if not title:
+        return
+    try:
+        from backend.data.dao.agent.thread_dao import ThreadDao
+
+        await ThreadDao.update_title_if_default(
+            thread_id=thread_id, tenant_id=tenant_id, user_id=user_id, title=title
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"qa_session.title_update_failed | thread={thread_id} | {exc}")
+
+
+def _contexts_from_state(state: Any) -> list[dict[str, Any]]:
+    """从图状态 ranked_chunks 提取 RAGAS 用的检索上下文（父块正文优先）。"""
+    chunks = (state or {}).get("ranked_chunks") or []
+    out: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            out.append(
+                {
+                    "doc_id": chunk.get("doc_id", ""),
+                    "score": chunk.get("score", 0),
+                    "source": chunk.get("source", ""),
+                    "content": chunk.get("parent_content") or chunk.get("content", ""),
+                }
+            )
+        else:
+            out.append(
+                {
+                    "doc_id": getattr(chunk, "doc_id", ""),
+                    "score": getattr(chunk, "score", 0),
+                    "source": getattr(chunk, "source", ""),
+                    "content": getattr(chunk, "parent_content", "")
+                    or getattr(chunk, "content", ""),
+                }
+            )
+    return out
+
+
+async def _persist_qa_result(
+    *,
+    tenant_id: int,
+    user_id: int,
+    session_id: str,
+    thread_id: str,
+    question: str,
+    answer: str,
+    answer_mode: str,
+    query_type: str | None,
+    confidence: float,
+    sources: list[str],
+    contexts: list[dict[str, Any]],
+    enable_web_search: bool,
+    latency_ms: int,
+) -> None:
+    """问答结果落库；失败只告警，不影响问答返回。"""
+    try:
+        await QaResultDao.insert(
+            record={
+                "id": str(uuid6.uuid7()),
+                "trace_id": trace_id_ctx.get(),
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "agent_type": "qa",
+                "question": question,
+                "answer": answer,
+                "answer_mode": answer_mode,
+                "query_type": query_type,
+                "confidence": float(confidence or 0),
+                "retrieved_contexts": contexts,
+                "sources": sources,
+                "reference_answer": None,
+                "latency_ms": latency_ms,
+                # TODO(qa_result): 图暂未回传 token 用量，先留空；接入 LLM usage 后写
+                #  {prompt, completion, total}，用于成本/质量分析。
+                "token_usage": None,
+                "enable_web_search": enable_web_search,
+                # TODO(qa_result): 目前只在成功路径落库；图异常/流式中断未写 failed 行，
+                #  后续在异常分支补 status='failed' + error_msg。
+                "status": "success",
+                "error_msg": None,
+                "extra": None,
+            },
+            audit=audit_on_insert(tenant_id=tenant_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"qa_result.persist_failed | session={session_id} | {exc}")
+
+    # 每条消息成功后刷新会话 updated_at，保证「会话列表」按最近活跃排序
+    try:
+        from backend.data.dao.agent.thread_dao import ThreadDao
+
+        await ThreadDao.touch_qa_session(
+            thread_id=thread_id, tenant_id=tenant_id, user_id=user_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"qa_result.touch_failed | session={session_id} | {exc}")
+
+
 # --------------------------------------------------------------------------- #
 # 请求/响应模型
 # --------------------------------------------------------------------------- #
@@ -63,9 +179,10 @@ class ChatRequest(BaseModel):
     enable_web_search: bool = Field(False, description="低置信度时是否启用 Web 搜索补充")
 
 
-class SessionMessage(BaseModel):
-    role: str
-    content: str
+class StopChatRequest(BaseModel):
+    """停止某会话进行中的流式生成。"""
+
+    session_id: str = Field(..., min_length=1, description="要停止的会话 ID")
 
 
 # --------------------------------------------------------------------------- #
@@ -81,6 +198,8 @@ async def chat(
     tenant_id = tenant_of(current)
     user_id = current.user_id
     thread_id = await _resolve_thread_id(tenant_id, user_id, req.session_id)
+    # 首问后把会话标题从「新会话」更新为问题主题（仅默认标题生效）
+    await _update_title_if_default(thread_id, tenant_id, user_id, req.message)
 
     initial_state = {
         "messages": [HumanMessage(content=req.message)],
@@ -94,11 +213,30 @@ async def chat(
     }
     config = {"configurable": {"thread_id": thread_id}}
 
+    started = time.perf_counter()
     try:
         result = await _get_graph().ainvoke(initial_state, config=config)
     except Exception as e:  # noqa: BLE001 - 交由全局异常处理器统一包装
         logger.error(f"chat.invoke_error | session={req.session_id} | {e}", exc_info=True)
         raise
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    # 落库（RAGAS 样本源）；失败不阻断问答
+    await _persist_qa_result(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        session_id=req.session_id,
+        thread_id=thread_id,
+        question=req.message,
+        answer=result.get("answer", ""),
+        answer_mode=result.get("answer_mode", "llm_direct"),
+        query_type=result.get("query_type"),
+        confidence=result.get("confidence", 0.0),
+        sources=result.get("sources", []),
+        contexts=_contexts_from_state(result),
+        enable_web_search=req.enable_web_search,
+        latency_ms=latency_ms,
+    )
 
     return success({
         "session_id": req.session_id,
@@ -123,6 +261,8 @@ async def chat_stream(
     tenant_id = tenant_of(current)
     user_id = current.user_id
     thread_id = await _resolve_thread_id(tenant_id, user_id, req.session_id)
+    # 首问后把会话标题从「新会话」更新为问题主题（仅默认标题生效）
+    await _update_title_if_default(thread_id, tenant_id, user_id, req.message)
 
     initial_state = {
         "messages": [HumanMessage(content=req.message)],
@@ -149,11 +289,26 @@ async def chat_stream(
     }
 
     async def event_generator():
+        started = time.perf_counter()
         answer_mode = "llm_direct"
         confidence = 0.0
         sources: List[str] = []
+        answer_parts: List[str] = []
+        stopped = False
         try:
+            # 先发一帧，确保 SSE 响应头尽快建立（避免长耗时节点导致客户端/代理超时）
+            yield {
+                "data": json.dumps(
+                    {"type": "progress", "stage": "准备中..."}, ensure_ascii=False
+                )
+            }
+            # 进入前清掉可能残留的停止标记，避免误停本次生成
+            await clear_chat_stop(tenant_id, user_id, req.session_id)
             async for event in _get_graph().astream_events(initial_state, config=config, version="v2"):
+                # 每个事件产出前检查停止标记（Redis，跨 worker 生效）
+                if await is_chat_stopped(tenant_id, user_id, req.session_id):
+                    stopped = True
+                    break
                 evt = event.get("event")
                 node = event.get("metadata", {}).get("langgraph_node", "")
 
@@ -168,6 +323,7 @@ async def chat_stream(
                 elif evt == "on_chat_model_stream" and node in _GENERATE_NODES:
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and chunk.content:
+                        answer_parts.append(chunk.content)
                         yield {
                             "data": json.dumps(
                                 {"type": "token", "content": chunk.content}, ensure_ascii=False
@@ -192,8 +348,41 @@ async def chat_stream(
                 )
             }
             return
+        finally:
+            await clear_chat_stop(tenant_id, user_id, req.session_id)
 
-        # ④ 推送完整元数据帧
+        # 被用户停止：不落库（与 RAG-Ultra / rag-pro 一致），仅告知前端结束
+        if stopped:
+            yield {"data": json.dumps({"type": "stopped"}, ensure_ascii=False)}
+            yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
+            return
+
+        # ④ 落库（从图状态取检索上下文；失败不影响流式输出）
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        try:
+            snapshot = await _get_graph().aget_state(config)
+            state_values = snapshot.values if snapshot and snapshot.values else {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"chat_stream.state_error | session={req.session_id} | {exc}")
+            state_values = {}
+
+        await _persist_qa_result(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=req.session_id,
+            thread_id=thread_id,
+            question=req.message,
+            answer="".join(answer_parts) or state_values.get("answer", ""),
+            answer_mode=answer_mode,
+            query_type=state_values.get("query_type"),
+            confidence=confidence,
+            sources=sources,
+            contexts=_contexts_from_state(state_values),
+            enable_web_search=req.enable_web_search,
+            latency_ms=latency_ms,
+        )
+
+        # ⑤ 推送完整元数据帧
         yield {
             "data": json.dumps(
                 {
@@ -206,50 +395,21 @@ async def chat_stream(
                 ensure_ascii=False,
             )
         }
-        # ⑤ 结束标志
+        # ⑥ 结束标志
         yield {"data": json.dumps({"type": "done"})}
 
     return EventSourceResponse(event_generator())
 
 
-@router.get("/sessions/{session_id}/history")
-async def get_session_history(
-    session_id: str,
+@router.post("/chat/stop", summary="停止当前会话的流式生成")
+async def chat_stop(
+    req: StopChatRequest,
     _: object = Depends(require_scope(Scope.QA_ASK)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """获取指定会话的历史消息与摘要。
+    """写 Redis 停止标记；流式生成器在下一个事件前停止（跨 worker 生效）。"""
+    await set_chat_stop(tenant_of(current), current.user_id, req.session_id)
+    return success({"session_id": req.session_id, "stopped": True})
 
-    数据来源：
-      - 摘要（summary）：从 checkpointer 持久化的 state.existing_summary 读取（由 save_memory_node 写回）。
-      - 完整消息列表：从 LangGraph checkpointer 读取该 thread_id 的 messages 字段。
-    读取失败仅告警，不影响其他字段返回。
-    """
-    tenant_id = tenant_of(current)
-    user_id = current.user_id
-    thread_id = await _resolve_thread_id(tenant_id, user_id, session_id)
 
-    summary: Optional[str] = None
-    messages: List[SessionMessage] = []
-    total_turns = 0
-    try:
-        state_snap = await _get_graph().aget_state({"configurable": {"thread_id": thread_id}})
-        if state_snap and state_snap.values:
-            values = state_snap.values
-            summary = values.get("existing_summary")
-            for msg in values.get("messages", []):
-                content = msg.text if hasattr(msg, "text") and not callable(msg.text) else str(msg.content)
-                if isinstance(msg, HumanMessage):
-                    messages.append(SessionMessage(role="user", content=content))
-                elif isinstance(msg, AIMessage):
-                    messages.append(SessionMessage(role="assistant", content=content))
-            total_turns = sum(1 for m in messages if m.role == "user")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"history.checkpoint_error | session={session_id} | {e}")
 
-    return success({
-        "session_id": session_id,
-        "messages": [m.model_dump() for m in messages],
-        "summary": summary,
-        "total_turns": total_turns,
-    })

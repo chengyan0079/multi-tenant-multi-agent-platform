@@ -37,10 +37,21 @@ class MenuStatusIn(BaseModel):
 async def list_menus(
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(50, ge=1, le=200, description="每页条数"),
+    name: Optional[str] = Query(None, description="名称（模糊）"),
+    path: Optional[str] = Query(None, description="路径（模糊）"),
+    scope: Optional[str] = Query(None, description="权限点（模糊）"),
+    visible: Optional[bool] = Query(None, description="显隐"),
     _: object = Depends(require_scope(Scope.MENU_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
-    rows, total = await MenuDao.list_paged(page=page, page_size=page_size)
+    rows, total = await MenuDao.list_paged(
+        page=page,
+        page_size=page_size,
+        name=name,
+        path=path,
+        scope=scope,
+        visible=visible,
+    )
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
 

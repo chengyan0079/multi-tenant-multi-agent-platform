@@ -28,7 +28,7 @@ def _current(
         role_name="admin" if (is_super_admin or is_tenant_admin) else "student",
         is_super_admin=is_super_admin,
         is_tenant_admin=is_tenant_admin,
-        scopes=["*"] if is_super_admin else ["qa:ask"],
+        scopes=["qa:ask"],
     )
 
 

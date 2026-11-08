@@ -22,7 +22,7 @@ from backend.broker.types import TaskType
 from backend.common.logger import get_logger
 from backend.common.response import success
 from backend.config import config
-from backend.data.clients.minio import get_storage
+from backend.data.clients.minio import build_object_key, get_storage
 from backend.data.sql import fetch_page, session_scope
 from backend.middleware.auth import CurrentUser, get_current_user
 from backend.security.rbac import Scope
@@ -32,7 +32,7 @@ logger = get_logger("resume_api")
 
 router = APIRouter(prefix="/resume", tags=["resume"])
 
-# 业务约束（MAX_PDF_SIZE 来自 config.file.max_upload_mb；REVIEW_TIMEOUT 来自 config.scheduler.resume_timeout_min）
+# 业务约束（MAX_PDF_SIZE 来自 config.qa.max_upload_mb；REVIEW_TIMEOUT 来自 config.scheduler.resume_timeout_min）
 ALLOWED_EXT = {".pdf"}
 
 _LIST_REVIEWS = text("""
@@ -77,8 +77,8 @@ async def upload_resume(
 
     # 2. 读取并校验大小
     file_bytes = await file.read()
-    if len(file_bytes) > config.file.max_upload_mb * 1024 * 1024:
-        raise HTTPException(status_code=413, detail=f"文件超过 {config.file.max_upload_mb}MB 上限")
+    if len(file_bytes) > config.qa.max_upload_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"文件超过 {config.qa.max_upload_mb}MB 上限")
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="空文件")
 
@@ -87,7 +87,7 @@ async def upload_resume(
     tenant_id = current.tenant_id
     user_id = current.user_id
     review_id = str(uuid6.uuid7())
-    minio_key = f"resumes/{tenant_id}/{user_id}/{review_id}.pdf"
+    minio_key = build_object_key(filetype="resumes", tenant_id=tenant_id, user_id=user_id, name=review_id, ext="pdf")
 
     # 4. 上传到 MinIO
     try:

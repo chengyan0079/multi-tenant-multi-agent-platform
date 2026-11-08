@@ -13,12 +13,12 @@ from backend.api.router import api_router
 
 
 def test_openapi_schema_generates() -> None:
-    """能生成完整 schema，且会话/人工队列路由都在文档里。"""
+    """能生成完整 schema，且会话路由都在文档里。"""
     app = FastAPI()
     app.include_router(api_router)
 
     schema = app.openapi()
 
     paths = schema["paths"]
-    assert "/api/v1/tenant/threads/{thread_id}" in paths
-    assert "/api/v1/tenant/escalations" in paths
+    assert "/api/v1/tenant/qa/sessions" in paths
+    assert "/api/v1/tenant/orchestrator/resume" in paths

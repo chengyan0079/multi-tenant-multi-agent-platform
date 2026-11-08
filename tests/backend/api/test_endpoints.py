@@ -57,7 +57,7 @@ def client():
         "backend.data.dao.auth.menu_dao.MenuDao.build",
         new=AsyncMock(return_value=[{"id": 1, "name": "租户管理", "path": "/tenants", "children": []}]),
     ), patch(
-        "backend.data.dao.auth.tenant_dao.TenantDao.list_with_stats", new=AsyncMock(return_value=[])
+        "backend.data.dao.auth.tenant_dao.TenantDao.list_with_stats", new=AsyncMock(return_value=([], 0))
     ):
         app = FastAPI()
         app.include_router(api_router)

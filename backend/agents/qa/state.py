@@ -1,8 +1,8 @@
 """智能问答状态定义。
 
-与参考项目 agents/qa/state.py 结构保持一致（total=False TypedDict），仅把 tenant_id
-改为 int 以贴合本项目的租户 id 类型；额外保留可选 query 字段，兼容统一聊天入口直接传
-query（而非 messages）的调用方式。
+与参考项目 agents/qa/state.py 结构保持一致（total=False TypedDict）；仅把 tenant_id
+改为 int 以贴合本项目的租户 id 类型。list[dict] 按 resume/state.py 范式收敛为 list[具体对象]
+（RankedChunk / WebSearchResult），序列化/反序列化用 pydantic。
 """
 from __future__ import annotations
 
@@ -10,7 +10,30 @@ from typing import Annotated, Optional
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
+
+
+class RankedChunk(BaseModel):
+    """知识库检索精排后的单条片段（父子片：content 为命中子片）。"""
+    content: str = Field(default='', description='命中子片正文（精排输入）')
+    score: float = Field(default=0.0, description='相似度得分')
+    source: str = Field(default='', description='来源标识')
+    doc_id: str = Field(default='', description='所属文档 ID')
+    chunk_id: str = Field(default='', description='子片 ID')
+    metadata: dict = Field(default_factory=dict, description='附加元数据')
+    parent_id: str = Field(default='', description='所属父片 ID')
+    parent_content: str = Field(default='', description='父片全文（small-to-big 上下文）')
+    highlighted_content: str = Field(default='', description='父片内高亮命中子片的文本，供生成节点使用')
+    chunk_type: str = Field(default='child', description='块类型：child / parent')
+    extra: dict = Field(default_factory=dict, description='额外元数据')
+
+
+class WebSearchResult(BaseModel):
+    """联网检索单条结果。"""
+    url: str = Field(default='', description='链接')
+    title: str = Field(default='', description='标题')
+    snippet: str = Field(default='', description='摘要')
 
 
 class QAState(TypedDict, total=False):
@@ -32,10 +55,10 @@ class QAState(TypedDict, total=False):
     hyde_document: Optional[str]
 
     # 检索与精排结果
-    ranked_chunks: list[dict]
+    ranked_chunks: list[RankedChunk]
     confidence: float
     is_high_confidence: bool
-    web_search_results: list[dict]
+    web_search_results: list[WebSearchResult]
 
     # 生成结果与控制标记
     answer: str

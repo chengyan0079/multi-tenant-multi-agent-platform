@@ -60,10 +60,16 @@ async def login_logs(
 @router.get("/api-logs", summary="API 调用日志（可筛租户，分页）")
 async def api_logs(
     tenant_id: int | None = Query(None, description="不传查全量（仅超管）"),
+    path_prefix: str | None = Query(None, description="路径前缀，如 /api/v1/tenant/"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     _: object = Depends(require_scope(Scope.AUDIT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
-    rows, total = await ApiLogDao.query(tenant_id=tenant_id, page=page, page_size=page_size)
+    rows, total = await ApiLogDao.query(
+        tenant_id=tenant_id,
+        page=page,
+        page_size=page_size,
+        path_prefix=path_prefix,
+    )
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})

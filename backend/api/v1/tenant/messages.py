@@ -26,17 +26,21 @@ VALID_STATUS = {"pending", "done", "failed"}
 
 class StatusIn(BaseModel):
     status: str
+    error: Optional[str] = None
 
 
 @router.get("/queue", summary="本租户消息队列（outbox）列表")
 async def list_queue(
     status: Optional[str] = Query(None, pattern="^(pending|sent|done|failed)$"),
+    message_kind: Optional[str] = Query(None, pattern="^(task|broadcast)$", description="投递语义筛选"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.MESSAGE_PAGE)),  # noqa: B008
 ) -> Any:
-    rows, total = await OutboxDao.list_outbox(page, page_size, status, current.tenant_id)
+    rows, total = await OutboxDao.list_outbox(
+        page, page_size, status, current.tenant_id, message_kind
+    )
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
 
@@ -66,7 +70,7 @@ async def change_status(
     # 租户管理员只能改本租户消息；tenant_id 为 NULL（无租户归属）同样禁止
     if current.tenant_id is not None and row.get("tenant_id") != current.tenant_id:
         raise BizException(ErrCode.FORBIDDEN, "只能操作本租户的消息")
-    await OutboxDao.update_status(msg_id, body.status, current.tenant_id)
+    await OutboxDao.update_status(msg_id, body.status, current.tenant_id, body.error)
     return success({"id": msg_id, "status": body.status})
 
 

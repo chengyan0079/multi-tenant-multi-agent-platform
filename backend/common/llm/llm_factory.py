@@ -10,10 +10,12 @@ LLM（生成+复杂路由）/ bge-m3（嵌入）/ bge-reranker-v2-m3（重排）
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, List, Optional, Type
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from backend.app_state import app_state
@@ -194,18 +196,22 @@ class LLMFactory:
         return client
 
     async def get_structured_llm(self, agent_type: str, schema: Any, model_type: str = "llm") -> Any:
-        """返回支持结构化输出的 LLM Runnable。
+        """返回结构化输出包装器。
 
-        用 with_structured_output(schema, method='function_calling') 把 agent 的 Pydantic
-        schema 绑定到对应 LLM 上，供抽取类任务（简历解析、维度评分等）直接拿结构化结果。
+        不用 with_structured_output(function_calling)：当前 MaaS 会拒绝带 tools 的请求
+        （400001）。改为普通 chat + JSON Schema 指令 + 解析重试，兼容性更好。
         """
         llm = await self.get_llm(agent_type, model_type)
-        return llm.with_structured_output(schema, method="function_calling")
+        return StructuredLLM(llm, schema)
 
     # ---------- 全局模型（embed/rerank/classify，由 ModelManager 预加载） ----------
 
-    async def embed(self, texts: List[str]) -> dict:
-        """bge-m3 向量化，返回 {'dense': [...], 'sparse': [...]}。"""
+    async def embed(self, texts: List[str], *, query: bool = False) -> dict:
+        """bge-m3 向量化，返回 {'dense': [...], 'sparse': [...]}。
+
+        milvus_model 的 BGEM3EmbeddingFunction 只暴露 encode_documents / encode_queries，
+        不再有 encode；这里按用途选择，并兼容旧版仅有 encode 的实现。
+        """
         embedder = self._cache.get("embedding")
         if embedder is None:
             cfg = await ModelDao.get_active("embedding")
@@ -213,7 +219,18 @@ class LLMFactory:
                 raise ModelError("Embedding 未配置（model_registry 无 enabled 的 embedding 记录）")
             embedder = self.build_embedder(cfg)
             self._cache["embedding"] = embedder
-        return await asyncio.to_thread(embedder.encode, texts)
+        encoder = getattr(embedder, "encode", None)
+        if encoder is None:
+            encoder = getattr(
+                embedder,
+                "encode_queries" if query else "encode_documents",
+                None,
+            )
+        if encoder is None:
+            raise ModelError(
+                "Embedding 模型不支持 encode / encode_documents / encode_queries"
+            )
+        return await asyncio.to_thread(encoder, texts)
 
     async def rerank(self, query: str, documents: List[str], top_n: int = 5) -> List[float]:
         """bge-reranker-v2-m3 精排，返回与 documents 对齐的相关性分数。"""
@@ -260,6 +277,90 @@ class LLMFactory:
         self._cache = {}
 
 
+class StructuredLLM:
+    """把普通聊天模型包装成结构化输出：显式给 JSON Schema，解析失败自动重试。
+
+    不依赖 provider 的 tools/function_calling 或 response_format。
+    """
+
+    def __init__(self, llm: BaseChatModel, schema: Type[BaseModel], max_attempts: int = 2):
+        self._llm = llm
+        self._schema = schema
+        self._max_attempts = max(1, max_attempts)
+
+    def _schema_prompt(self) -> str:
+        schema_json = json.dumps(
+            self._schema.model_json_schema(), ensure_ascii=False
+        )
+        return (
+            "请严格输出一个 JSON 对象，不要输出 Markdown 代码块、解释或任何前后缀。"
+            "JSON 必须符合以下 JSON Schema：\n"
+            f"{schema_json}"
+        )
+
+    def _with_schema(self, messages: list[Any]) -> list[Any]:
+        instruction = self._schema_prompt()
+        out = list(messages)
+        if out and isinstance(out[0], SystemMessage):
+            out[0] = SystemMessage(content=f"{out[0].content}\n\n{instruction}")
+        else:
+            out.insert(0, SystemMessage(content=instruction))
+        return out
+
+    @staticmethod
+    def _content_text(response: Any) -> str:
+        content = getattr(response, "content", response)
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    parts.append(str(part.get("text", "")))
+                else:
+                    parts.append(str(part))
+            return "".join(parts)
+        return str(content)
+
+    def _parse(self, text: str) -> BaseModel:
+        raw = text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+            if raw.rstrip().endswith("```"):
+                raw = raw.rstrip()[:-3]
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("输出中未找到 JSON 对象")
+        data = json.loads(raw[start : end + 1])
+        return self._schema.model_validate(data)
+
+    async def ainvoke(self, messages: list[Any], config: Any = None, **kwargs: Any) -> BaseModel:
+        base = self._with_schema(messages)
+        last_error: Exception | None = None
+        last_text = ""
+        for attempt in range(self._max_attempts):
+            response = await self._llm.ainvoke(base, config=config, **kwargs)
+            last_text = self._content_text(response)
+            try:
+                return self._parse(last_text)
+            except Exception as exc:  # noqa: BLE001 - 解析失败用修复提示重试
+                last_error = exc
+                if attempt + 1 >= self._max_attempts:
+                    break
+                base = self._with_schema(messages) + [
+                    AIMessage(content=last_text),
+                    HumanMessage(
+                        content=(
+                            "上一条输出不是合法 JSON，错误："
+                            f"{exc}。请只输出符合 JSON Schema 的 JSON 对象，不要解释。"
+                        )
+                    ),
+                ]
+        raise ValueError(
+            f"结构化输出解析失败（{self._schema.__name__}）：{last_error}；"
+            f"最后输出：{last_text[:500]}"
+        )
+
+
 async def get_llm(agent_type: str) -> BaseChatModel:
     """按 agent 创建并缓存其 LLM 客户端（委托运行中的工厂单例）。
 
@@ -272,7 +373,7 @@ async def get_llm(agent_type: str) -> BaseChatModel:
 
 
 async def get_structured_llm(agent_type: str, schema: Type[BaseModel]) -> Any:
-    """按 agent 创建支持结构化输出的 LLM Runnable（method='function_calling'）。
+    """按 agent 创建结构化输出包装器（JSON Schema + 解析重试）。
 
     底层为异步解析，调用方需 await。
     """

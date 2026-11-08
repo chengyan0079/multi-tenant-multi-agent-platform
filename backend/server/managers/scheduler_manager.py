@@ -1,12 +1,11 @@
 """定时任务（通用定时器，见 docs/消息队列对接设计 §10）。
 
 支持注册多个扫描任务（job），每个 job 按各自间隔独立调度；job 协程异常被捕获并记录，
-不影响其它 job。不依赖 broker：job 是否用 MQ 由各自实现决定（escalation 用 Outbox，
-broker 关时提醒缓冲不丢；resume 超时仅本地 UPDATE，无需 MQ）。
+不影响其它 job。各 job 是否使用 MQ 由自身实现决定（当前 resume 超时仅本地 UPDATE，无需 MQ）。
 
 现有 job：
-- escalation_timeout：HITL 转人工超时提醒（publish notify.send，经 Outbox → MQ 外发）；
-- resume_review_timeout：resume 评审 processing 超时未完成的记录批量标 failed。
+- resume_review_timeout：resume 评审 processing 超时未完成的记录批量标 failed；
+- config_refresh_poll：拉取 Redis 配置刷新版本号，变更时刷新本副本内存注册表。
 
 新增扫描任务：在 _register_default_jobs 里 register(name, interval, coro) 即可。
 """
@@ -19,10 +18,9 @@ from typing import Awaitable, Callable
 from sqlalchemy import text
 
 from backend.app_state import app_state
-from backend.broker.publish import enqueue_task
-from backend.broker.types import TaskType
 from backend.common.logger import logger
-from backend.data.sql import execute_write, fetch_all, session_scope
+from backend.data.sql import execute_write, session_scope
+from backend.services.config_refresh import poll_once as poll_config_refresh
 from backend.server.base_manager import BaseManager, HealthInfo
 
 
@@ -35,14 +33,6 @@ class ScanJob:
     coro: Callable[[], Awaitable[None]]
     _next_run: float = 0.0
 
-
-_ESCALATION_SCAN = text(
-    "SELECT id, tenant_id, user_id, thread_id, reason FROM agent_escalation "
-    "WHERE status='pending' AND last_reminder_at IS NULL "
-    "AND create_at < now() - make_interval(mins => :timeout) "
-    "ORDER BY create_at ASC LIMIT :limit"
-)
-_MARK_REMINDED = text("UPDATE agent_escalation SET last_reminder_at=now() WHERE id=:id")
 
 _RESUME_TIMEOUT_UPDATE = text(
     "UPDATE agent_resume_reviews "
@@ -64,8 +54,8 @@ class SchedulerManager(BaseManager):
 
     def _register_default_jobs(self) -> None:
         s = app_state.settings.scheduler
-        self.register("escalation_timeout", s.scan_interval, self._scan_escalation)
         self.register("resume_review_timeout", s.scan_interval, self._scan_resume_timeout)
+        self.register("config_refresh_poll", s.config_refresh_interval, poll_config_refresh)
 
     async def start(self) -> None:
         self._register_default_jobs()
@@ -105,31 +95,6 @@ class SchedulerManager(BaseManager):
                 continue
 
     # ---- job 实现 ----
-
-    async def _scan_escalation(self) -> None:
-        """HITL 转人工超时提醒：扫超时 pending，发 notify.send，写 last_reminder_at 防重复。"""
-        async with session_scope() as session:
-            rows = await fetch_all(
-                session,
-                _ESCALATION_SCAN,
-                {"timeout": app_state.settings.scheduler.escalation_timeout_min, "limit": 50},
-            )
-        for r in rows:
-            await enqueue_task(
-                TaskType.NOTIFY_SEND,
-                tenant_id=r["tenant_id"],
-                user_id=r["user_id"],
-                data={
-                    "channel": "webhook",
-                    "content": (
-                        f"HITL 转人工超时提醒：会话 {r['thread_id']} 待处理"
-                        f"（原因：{r['reason']}）"
-                    ),
-                    "escalation_id": r["id"],
-                },
-            )
-            async with session_scope() as session:
-                await execute_write(session, _MARK_REMINDED, {"id": r["id"]})
 
     async def _scan_resume_timeout(self) -> None:
         """resume 评审兜底：processing 且超过 resume_timeout_min 未完成的记录批量标 failed。"""

@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 class OrchestratorRunIn(BaseModel):
     """运行 agent 或 pipeline 的请求体。"""
     agent_type: Optional[str] = Field(None, description="目标 agent 类型（与 pipeline_plan 二选一）")
-    pipeline_plan: Optional[list[dict[str, Any]]] = Field(default_factory=list, description="pipeline 计划")
+    # 与 Orchestrator.run_pipeline(List[str]) 对齐：每项是一个 agent_type
+    pipeline_plan: Optional[list[str]] = Field(default_factory=list, description="串联执行的 agent_type 列表")
     # thread_id 必填：checkpointer 以 thread_id 作为 checkpoint 分区键，缺省 "default" 会让所有
     # 未传 thread_id 的请求共享同一会话、互相覆盖多轮状态。必须是当前用户归属的 thread。
     thread_id: str = Field(..., description="会话 ID（必填，须为当前用户归属的 thread）")

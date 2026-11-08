@@ -1,13 +1,13 @@
-"""索引类业务的实现入口：文档解析与知识库回流。
+"""索引类业务的实现入口：委托 backend/rag 完成文档解析与知识库回流。
 
 两条链路的共同终点是 Milvus（dense + sparse 双向量），差别在数据来源：
-- 文档解析：MinIO 文件 → 解析 → 分块；
-- 知识回流：知识补充队列里的问答对 → 拼装文本。
+- 文档解析（qa.parse）：MinIO 文件 → 解析 → 父子片切分 → 子片向量化写 Milvus
+  （父片全文冗余在子片行，检索命中后回填上下文并按命中子片高亮）；
 """
 from __future__ import annotations
 
 from backend.common.logger import logger
-from backend.data.dao.business.file_dao import FileDao
+from backend.rag.indexing import index_document, mark_parse_failed
 
 
 async def parse_document(
@@ -17,37 +17,26 @@ async def parse_document(
     bucket: str | None,
     file_ext: str | None,
     tenant_id: int | None,
+    file_name: str | None = None,
 ) -> None:
-    """解析上传文件并写入向量库。
+    """解析上传文件并写入向量库（qa.parse 消息 handler 调用）。
 
-    TODO(doc.parse)：
-    1. storage.get_bytes(object_key) 取文件；
-    2. 按扩展名解析：.pdf → pymupdf 提取文本与版面，.md → 直接读文本；
-    3. 智能分块（标题感知 / 递归字符）；
-    4. LLMFactory.embed 向量化：dense(1024, IP) + sparse(倒排, IP)；
-    5. DocumentMilvusStore.add_chunks(...) 写入 Milvus（tenant_id 作分区键）；
-    6. FileDao.set_parse_status([file_id], "parsed", tenant_id=tenant_id)。
-    解析过程中的异常向上抛，由消费端重试；重试超限后由定时任务兜底标 failed。
+    成功由 backend/rag/indexing 回写 parsed；失败回写 failed 并把异常上抛，
+    由消费端重试，重试超限后落死信表。
     """
-    logger.warning(
-        f"[doc.parse] 解析链路未接入 file_id={file_id} key={object_key} "
-        f"bucket={bucket} ext={file_ext} tenant={tenant_id}，回写 failed"
-    )
-    # 入队前状态已置 parsing，这里不回写会让文件永远停在"解析中"
-    if file_id is not None:
-        await FileDao.set_parse_status([file_id], "failed", tenant_id=tenant_id)
-
-
-async def reindex_knowledge(*, kpq_id: int | None, tenant_id: int | None) -> None:
-    """把知识补充内容回流索引。
-
-    TODO(knowledge.reindex)：
-    1. KnowledgePendingQueueDao 按 kpq_id 取出补充内容（已由人工确认）；
-    2. 拼装成可索引文本（问题 + 答案 + 来源）；
-    3. LLMFactory.embed 向量化（dense + sparse）；
-    4. DocumentMilvusStore.add_chunks(...) 写入，按 kpq_id 幂等（重复索引前先删除同源块）；
-    5. 回写队列状态为 processed，避免被重复消费。
-    """
-    logger.warning(
-        f"[knowledge.reindex] 回流索引未接入 kpq_id={kpq_id} tenant={tenant_id}"
-    )
+    try:
+        written = await index_document(
+            file_id=file_id,
+            object_key=object_key or "",
+            file_ext=file_ext,
+            tenant_id=tenant_id,
+            file_name=file_name,
+        )
+        logger.info(
+            f"[qa.parse] 解析完成 file_id={file_id} key={object_key} "
+            f"bucket={bucket} ext={file_ext} tenant={tenant_id} chunks={written}"
+        )
+    except Exception as exc:
+        await mark_parse_failed(file_id, tenant_id)
+        logger.error(f"[qa.parse] 解析失败 file_id={file_id}：{exc}")
+        raise

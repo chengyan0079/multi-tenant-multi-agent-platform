@@ -38,8 +38,9 @@ def _token(user_id: int, tenant_id: int | None = None) -> str:
 
 
 _SA_SCOPES = [
-    "tenant:page", "tenant:update",
+    "tenant:page", "tenant:update", "tenant:delete", "tenant:status",
     "rbac:page", "rbac:add", "rbac:update", "rbac:delete",
+    "role:page", "role:add", "role:update", "role:delete",
     "user:page",
     "audit:page",
     "menu:page", "menu:add", "menu:update", "menu:delete",
@@ -64,16 +65,15 @@ def client():
         "backend.data.dao.auth.menu_dao.MenuDao.build",
         new=AsyncMock(return_value=[{"id": 1, "name": "租户管理", "path": "/tenants", "children": []}]),
     ), patch(
-        "backend.data.dao.auth.tenant_dao.TenantDao.list_with_stats", new=AsyncMock(return_value=[])
-    ), patch(
-        "backend.data.dao.auth.menu_dao.MenuDao.list_all",
-        new=AsyncMock(return_value=[
-            {"id": 1, "name": "租户管理", "path": "/tenants", "icon": "", "parent_id": 0,
-             "sort_order": 1, "visible": True, "scope": "tenant:read"}
-        ]),
+        "backend.data.dao.auth.tenant_dao.TenantDao.list_with_stats", new=AsyncMock(return_value=([], 0))
     ), patch(
         "backend.data.dao.auth.menu_dao.MenuDao.build_tree",
         new=MagicMock(return_value=[{"id": 1, "name": "租户管理", "children": []}]),
+    ), patch(
+        "backend.data.dao.auth.menu_dao.MenuDao.list_paged",
+        new=AsyncMock(
+            return_value=([{"id": 1, "name": "租户管理", "path": "/tenants", "children": []}], 1)
+        ),
     ), patch(
         "backend.data.dao.auth.menu_dao.MenuDao.create", new=AsyncMock(return_value=99)
     ), patch(
@@ -194,3 +194,21 @@ def test_menu_write_requires_rbac_write(client):
     # 缺 rbac:write 时 require_scope 抛 TenantError(AgentError)，按约定返回 200 + code=FORBIDDEN
     assert resp.status_code == 200
     assert resp.json()["code"] == ErrCode.FORBIDDEN
+
+
+def test_tenant_delete_super_admin_tenant_rejected(client):
+    token = _login(client)
+    resp = client.delete("/api/v1/admin/tenants/0", headers=_auth(token))
+    assert resp.status_code == 200
+    assert resp.json()["code"] == ErrCode.PARAM_ERROR
+
+
+def test_tenant_status_super_admin_tenant_rejected(client):
+    token = _login(client)
+    resp = client.patch(
+        "/api/v1/admin/tenants/0/status",
+        headers=_auth(token),
+        json={"enabled": False},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == ErrCode.PARAM_ERROR
