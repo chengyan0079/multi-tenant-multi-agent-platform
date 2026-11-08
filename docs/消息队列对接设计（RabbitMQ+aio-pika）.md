@@ -96,7 +96,7 @@ handler 只做三件事：鉴权、从 `data` 取参数、调 `services/` 并让
 ```json
 {
   "key": "01a1a678-903f-763a-85ec-fd603b45c6a3",
-  "type": "doc.parse",
+  "type": "qa.parse",
   "header": {
     "version": 1,
     "tenant_id": 1,
@@ -134,12 +134,15 @@ handler 只做三件事：鉴权、从 `data` 取参数、调 `services/` 并让
 | 枚举 | 值 | 队列 prefetch |
 |---|---|---|
 | `AGENT_RUN` | `agent.run` | 1 |
-| `DOC_PARSE` | `doc.parse` | 2 |
+| `QA_PARSE` | `qa.parse` | 2 |
+| `QA_RAGAS_REVIEW` | `qa.ragas_review` | 1 |
 | `RESUME_REVIEW` | `resume.review` | 1 |
-| `KNOWLEDGE_REINDEX` | `knowledge.reindex` | 2 |
+| `EXAM_REVIEW` | `exam.review` | 1 |
 | `NOTIFY_SEND` | `notify.send` | 10 |
 | `AUDIT_FLUSH` | `audit.flush` | 20 |
-| `CONFIG_REFRESH` | `config.refresh` | 广播（FANOUT） |
+
+> `CONFIG_REFRESH` 已移出消息队列：跨副本配置刷新改用 Redis 版本号拉取（见 §8），
+> 故当前 `BROADCAST_TYPES` 为空；FANOUT 广播交换机 / `on_broadcast` 策略作为基础设施保留，暂无业务使用。
 
 命名约定 `域.动作`（全小写、点分隔）。用枚举而不是字符串 + 运行时正则，是因为拼写错误在编码期就会被类型系统拦住；启动期 `topology.validate_handler_coverage()` 再校验"枚举 / 队列 / handler"三者一致，缺一侧直接启动失败。
 
@@ -170,8 +173,9 @@ RabbitMQ 的投递语义是 **at-least-once**（不丢，但可能重投）。�
 at-least-once 语义下，网络重投、消费者重启、DLX 重试都会让同一业务被消费多次。多租户多智能体协作平台**统一走 Outbox（§6.4）**，幂等由 outbox 状态机天然保证（无需额外 Redis 去重表）：
 
 - **去重依据**：每条消息信封里的 `key` 即 `agent_outbox.id`；消费端处理前查 `agent_outbox.status`：
-  - 已是 `done` → 直接 `ack` 跳过（重投 / 死信重试不会重复生效）；
+  - 已是 `done` 或 `failed` → 直接 `ack` 跳过（重投 / 死信重试不会重复生效）；
   - 正常处理 → 处理后标 `done`。
+  - 需要人工重跑失败消息时，应先把 outbox 状态重置为 `pending`（或换新 key），否则会被终态幂等跳过。
 - 这覆盖了 at-least-once 的“重投去重”。生产侧“同业务重复触发”由业务层保证只写一次 outbox（或 payload 带业务唯一键）。
 - 幂等是 at-least-once 下的**必须项**；Outbox 模式把幂等与投递状态合一，省去独立去重存储。
 
@@ -233,14 +237,25 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 | 功能 | type（TaskType） | 处理 |
 |---|---|---|
-| 长任务 | `AGENT_RUN` / `agent.run` | 执行多 Agent 串联，结果经回传桥推前端（待实现） |
-| 文档解析 | `DOC_PARSE` / `doc.parse` | 取 MinIO 文件 → 解析 → 分块 → 向量化写 Milvus（待实现） |
+| 长任务 | `AGENT_RUN` / `agent.run` | 执行多 Agent 串联；handler 存在，当前仓库内无生产端（统一入口已下线） |
+| qa 知识库文档解析 | `QA_PARSE` / `qa.parse` | `backend/rag` 自研闭环：MinIO 字节 → 解析 → **父子片两阶段切分** → 子片 BGE-M3 向量化写 Milvus（父片全文冗余在子片行）→ 回写 `parse_status` |
 | 简历评审 | `RESUME_REVIEW` / `resume.review` | 上传后异步跑 LangGraph，结果回写 `agent_resume_reviews` |
-| 重索引 | `KNOWLEDGE_REINDEX` / `knowledge.reindex` | 取补充内容 → 向量化 → 写 Milvus，按 kpq_id 幂等（待实现） |
-| 通知 | `NOTIFY_SEND` / `notify.send` | 邮件 / 企微 / Webhook；retry + 死信（渠道待实现） |
-| 审计 | `AUDIT_FLUSH` / `audit.flush` | 批量落库削峰 |
-| 配置刷新 | `CONFIG_REFRESH` / `config.refresh` | 广播到所有副本，刷新插件 / 模型 / Agent 注册表 |
-| HITL 超时 | `NOTIFY_SEND` | `SchedulerManager` 扫 PG 表发现超时后发提醒（§10） |
+| 考试批改 | `EXAM_REVIEW` / `exam.review` | 提交后跑 LangGraph 三轨批改，到教师复核 `interrupt()` 暂停，确认后恢复 |
+| QA 测评 | `QA_RAGAS_REVIEW` / `qa.ragas_review` | 异步跑 RAGAS，写 `agent_qa_ragas_evals` |
+| 通知 | `NOTIFY_SEND` / `notify.send` | 邮件 / 企微 / Webhook；retry + 死信（外发渠道仍待实现） |
+| 审计 | `AUDIT_FLUSH` / `audit.flush` | handler 存在，当前无生产端 |
+| HITL 超时 / resume 超时 | `NOTIFY_SEND` / 直接 UPDATE | `SchedulerManager` 扫 `agent_escalation` 发提醒；resume 超时直接标 `failed` |
+
+**跨副本配置刷新（不走 MQ）**：`AgentRegistry` / `LLMFactory` / `PluginRegistry` 是各副本的进程内缓存，
+超管改配置后只有处理请求的副本刷新了内存。现由 `backend/services/config_refresh.py` 承担：
+变更方对 `agent:config:refresh:{target}` 三个独立 key 执行 `INCR` 写版本号（DB 仍是权威源，Redis 只放信号）；
+每个副本由 `SchedulerManager` 的 `config_refresh_poll` job（默认 5s）`MGET` 比对本地版本号，
+仅对变化的 target 调用 reload。Redis 不可用时退化为定时全量 reload。
+`publish_config_refresh(*targets)` 保留原签名委托该 service，管理端调用点无需改动。
+
+**`agent_outbox.message_kind`**：记录投递语义，`task`（工作队列/竞争消费）/ `broadcast`（发布订阅/每副本一份），
+值在 `enqueue_task` 中由 `routing.route(type).kind` 自动推导，调用方不传、不硬编码。
+当前业务消息全为 `task`，`broadcast` 作为预留值保留。
 
 ## 9. 结果回传桥（Redis Stream，必补）
 
@@ -267,7 +282,7 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 - 重试 / 死信 / 定时 / 监控需自行实现（量不大，但 Celery 是白送的）。
 - **结果回传桥必补**，否则长任务结果丢失。
 - 消费协程要 `try/except` 隔离，单个消息失败只 `nack`，不能拖垮消费循环。
-- 幂等：消息级由信封 `key` + `agent_outbox.status` 保证（§6.3）；业务级（同一业务对象被重复触发）仍需 handler 自己判断，如 `resume.review` 检查状态非 `processing`、`doc.parse` 检查 `parse_status`。
+- 幂等：消息级由信封 `key` + `agent_outbox.status` 保证（§6.3）；业务级（同一业务对象被重复触发）仍需 handler 自己判断，如 `resume.review` 检查状态非 `processing`、`qa.parse` 检查 `parse_status`。
 - 连接数：worker 与 HTTP 进程各自建池，注意 PG / Milvus 总连接数。
 
 ## 13. demo 与验证
@@ -317,10 +332,10 @@ python demo/mq/03_fanout_pubsub.py  # 单独运行某个
 
 | 项 | 现状 | 建议 |
 |---|---|---|
-| 配置刷新去重 | 模块级 `_seen_ts` + 共享 Outbox，多副本各自扫表会 N 倍投递，靠时间戳去重；副本离线错过广播后不会自愈 | 改用 Redis 单调版本号 + 直发 fanout + `SchedulerManager` 定时比对版本兜底 |
-| Outbox 重复投递 | 多副本时每个副本的投递协程都会扫到同一批 `pending`，业务消息靠下游幂等兜住，广播消息靠 `ts` 去重，属于"能对但浪费" | 投递侧用 `SELECT ... FOR UPDATE SKIP LOCKED` 抢占后再发 |
+| ~~配置刷新去重~~ | **已解决**：配置刷新不再走 MQ，改由 `services/config_refresh.py` 用 Redis 单调版本号 + 定时拉取，各副本按需 reload；晚启动副本天然自愈 | — |
+| Outbox 重复投递 | 多副本时每个副本的投递协程都会扫到同一批 `pending`；广播消息已移出 Outbox，业务消息仍靠下游幂等兜住，属于"能对但浪费" | 投递侧用 `SELECT ... FOR UPDATE SKIP LOCKED` 抢占后再发 |
 | 重试无退避 | `RETRY_TTL_MS` 固定 30s，三次重试间隔相同 | 按退避档位拆多个 `.retry` 队列，或引入延迟消息插件 |
 | Quorum 队列 | 业务队列为 classic 队列 | 多节点部署时换 `x-queue-type=quorum`，避免网络分区下双消费 |
 | 业务幂等键 | `key` 仅保证消息级幂等，业务重复提交仍需 handler 自行判断 | 若要统一，给 Outbox 加 `message_key` 唯一索引，入队即冲突 |
 | 信封签名 | `header` 未做 HMAC 防篡改 | 跨团队共用 broker 时再加 |
-| 业务实现未接入 | `agent.run` / `doc.parse` / `knowledge.reindex` / `notify.send` 的 handler 已收缩为"鉴权 + 调 service"，具体逻辑在 `backend/services/` 内为 TODO 桩；`doc.parse` 未实现时回写 `parse_status=failed`，避免文件卡在 `parsing` | 按 `services/` 内 TODO 顺序补齐 |
+| 业务实现未接入 | `qa.parse`、`resume.review`、`exam.review`、`qa.ragas_review` 已接通；`agent.run` / `notify.send` / `audit.flush` 仍是 TODO 或暂无生产端 | 按 `services/` 内 TODO 顺序补齐 |

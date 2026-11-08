@@ -106,7 +106,8 @@ flowchart TB
 
 ### 2.2 Nacos 接入现状（已落地，Python 侧）
 
-- `NacosConfigManager`：对接 Nacos Config（Prompt/参数动态推送）。
+- `NacosConfigManager`：对接 Nacos Config，承载配置中心审批与 Prompt 动态读取。
+- Prompt 消费已落地：QA / 简历 / 考试各自 `resolve_prompt()` 按 `group=PROMPT` 读取 `qa_*` / `resume_*` / `exam_*` 小写 data_id；Nacos 缺失/不可达时回退代码内置默认值。
 - `NacosDiscoverManager`：对接 Nacos Discovery。
 - `NacosAIManager`（**已新建，单测 5 passed**）：启动时把**平台 MCP Server** `release_mcp_server` 到 Nacos AI（`order=75`）。
   - 限制：当前 SDK（`v2.nacos.ai`）仅支持 `release_mcp_server` 与 `release_agent_card` 两类发布；**Prompt / Skill 无发布接口**（消费侧 `get/subscribe` 可用）。
@@ -242,9 +243,10 @@ RAG-ultra 若提供 MCP Server，平台经 `MCPRegistry`/`PluginRegistry` 发现
 - [ ] 确认 Prompt 走 Nacos Config。
 - [ ] 单测：Agent Card 构造/发布/禁用跳过、环境无 SDK 时软降级。
 
-### P2 · RAG 经 MCP 接入
-- [ ] 确认 RAG-ultra 形态（MCP / REST / 需适配）；平台经 Nacos AI 发现并接入，封装 `rag_retrieve` 类工具（插件协议 + 租户开关 + 错误边界）。
-- [ ] 多租户：调用透传 `tenant_id` → Milvus partition key。
+### P2 · RAG
+- [x] 已改为 `backend/rag/` 自研闭环（读写同库 `agent_rag_docs`），移除外部 MCP/包导入/HTTP 适配层。
+- [x] 多租户：`tenant_id` 作为 Milvus partition key，写入与检索两侧都带租户隔离。
+- [ ] 若将来需跨系统共享检索能力，再经 Nacos AI 发现并以插件协议暴露（租户开关 + 错误边界）。
 
 ### P3 · Java 侧承接身份/admin
 - [ ] 新建 Java 侧（IdP + 用户/租户/角色 + RBAC + 配置中心 + 身份类审计），库表从 Python 迁 Java。

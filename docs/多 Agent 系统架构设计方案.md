@@ -21,9 +21,9 @@
 | API·tenant | `backend/api/v1/tenant/` | users / roles / audit / messages / agent / knowledge / chat（含 unified） | 存在 |
 | 业务 Agent | `backend/agents/{exam,interview,qa,resume}/` | 各含 `agent.py` `graph.py` `nodes.py` `state.py` | 见 §2 |
 | 编排 | `backend/orchestration/` | `orchestrator.py` `agent_registry.py` | 存在（§3） |
-| MCP / 插件 | `backend/mcp/` | `protocol` `registry` `loader` `retrieval` `builtin/` | 存在（§5） |
-| RAG 写入 | `backend/data/milvus/store.py` | `DocumentMilvusStore`（BGE-M3 双向量 + 混合检索） | 存在，未接 QA 热路径 |
-| RAG 适配 | `backend/mcp/retrieval/` | `rag_retrieve` / `RagClient`（委派外部服务） | 存在 |
+| MCP / 插件 | `backend/mcp/` | `protocol` `registry` `loader` `builtin/` | 存在（§5） |
+| RAG 自研 | `backend/rag/` | `loaders`（MinIO 字节解析）/ `splitters`（分块）/ `indexing`（解析入库）/ `retrieval`（混合召回+精排）/ `ranked` | 存在，读写同库闭环 |
+| RAG 存储 | `backend/data/milvus/store.py` | `DocumentMilvusStore`（BGE-M3 双向量 + 混合检索 + 按 file_id 删除） | 存在，已接 QA 热路径 |
 | 模型工厂 | `backend/common/llm/llm_factory.py` | `LLMFactory`（embed / rerank / classify） | 存在 |
 | 消息队列 | `backend/broker/` | `types` `envelope` `topology` `routing` `publish` `outbox_publisher` `consumer` `handlers` `security` | 存在且完整（§6） |
 | 业务服务 | `backend/services/` | `agent_run.py` `indexing.py` `notification.py` | 存在，多为 stub（§7） |
@@ -36,7 +36,7 @@
 
 ## 2. 业务 Agent 实况
 
-四个业务 Agent 的**节点函数大多已写**，但**图的装配程度不一**。形态落地小结：设计里宣称的 fan-out/fan-in 三轨并行与 HITL，代码里除 `exam` 节点里写了 `interrupt()` 外，没有任何 agent 真正接成可达图。
+四个业务 Agent 的节点函数均已写；**QA、Resume、Exam 三张图已装配并可执行，Interview 图仍未接线**。Exam 已把三轨批改、汇总、薄弱点和 `interrupt()` 教师复核串成可达图。
 
 ### 2.1 qa —— 已落地（LangGraph 受控图）
 
@@ -56,13 +56,20 @@
 
 形态：**线性流水线**。⚠️ `builder.compile()` **未绑 checkpointer**，无多轮会话态 / HITL 持久化。
 
-### 2.3 exam —— 半完成（节点齐、图未装配）
+### 2.3 exam —— 已落地（线性三轨 + HITL）
 
-`backend/agents/exam/nodes.py` 节点函数齐全（含 `human_review` 用 `langgraph.types.interrupt` 做 HITL）；但 `backend/agents/exam/graph.py` 第 23 行 `# todo 图待定`，**全部 `add_node` / `add_edge` 被注释**，编译的是空图。设计里的「三轨并行 fan-out + fan-in 汇总 + HITL」**未接线**。
+`backend/agents/exam/graph.py` `build_exam_graph()` 已装配 9 个节点：
+
+`parse_word → load_questions_meta → run_three_tracks → aggregate_results → analyze_weak_points → notify_teacher → teacher_review → apply_teacher_decision → publish_results`
+
+- `run_three_tracks` 内部并行处理客观题/简答题/代码题；
+- `teacher_review` 用 `langgraph.types.interrupt()` 暂停，API 通过 `Command(resume=decision)` 恢复；
+- 图绑定统一 `app_state.checkpointer`，thread_id 为 `submission_id`；
+- 后端提交/复核/确认接口已接；**前端考试页仍是 mock**。
 
 ### 2.4 interview —— 半完成（节点齐、图未装配）
 
-`backend/agents/interview/nodes.py` 含 `init_session` / `ask` / `evaluate` / `respond` / `make_report` / `route_stage`；但 `backend/agents/interview/graph.py` 第 22 行 `# todo 图待定`，**节点/边全注释**。设计里的「状态机 init→question↔evaluate→report→done + SSE 多轮」**未接线**。
+`backend/agents/interview/nodes.py` 含 `init_session` / `ask` / `evaluate` / `respond` / `make_report` / `route_stage`；但 `backend/agents/interview/graph.py` 的 `add_node` / `add_edge` 仍全部注释，编译的是空图。设计里的「状态机 init→question↔evaluate→report→done + SSE 多轮」**未接线**；`/tenant/interview/start` 只回显入参。
 
 ---
 
@@ -73,24 +80,25 @@
 - **Orchestrator**：`backend/orchestration/orchestrator.py`：
   - `run_agent(agent_type, thread_id, inputs)` → `registry.get()` 取图 → `graph.ainvoke(inputs, configurable={"thread_id": ...})`（**单 agent 直达**）；
   - `run_pipeline(pipeline_plan, ...)` → 顺序 `run_agent` 串联、前输出作后输入（**多 agent 串联**，但**未被统一入口使用**）；
-  - `resume(agent_type, thread_id, value)` → 向被 `interrupt()` 挂起的图注入决策（HITL 恢复，因 exam 图未装配故不可达）。
-- **统一入口 unified_chat**：`backend/api/v1/tenant/chat/unified.py` `chat()`（`POST /chat`，SSE）：会话归属校验 → 规则前置拦截(零 Token) → `factory.classify`(bert-chinese 粗分) → LLM 路由 → 权限点校验 → `app_state.orchestrator.run_agent(...)`。⚠️ **只走单 agent 直达，未用 `run_pipeline`**；其 LLM 路由是占位实现（注释「真实实现见 M7」，直接把 `general` 兜底成 `qa`）。
+  - `resume(agent_type, thread_id, value)` → 向被 `interrupt()` 挂起的图注入决策；Exam 图已装配，教师复核恢复链路可用。
+- **统一入口 unified_chat（已下线）**：原 `backend/api/v1/tenant/chat/unified.py` 已删除，后续整合全部智能体后再做；原实现 `chat()`（`POST /chat`，SSE）：会话归属校验 → 规则前置拦截(零 Token) → `factory.classify`(bert-chinese 粗分) → LLM 路由 → 权限点校验 → `app_state.orchestrator.run_agent(...)`。⚠️ **只走单 agent 直达，未用 `run_pipeline`**；其 LLM 路由是占位实现（注释「真实实现见 M7」，直接把 `general` 兜底成 `qa`）。
 
 ---
 
 ## 4. RAG（双层适配）
 
-仓库内**不持有完整检索算法**，而是「适配层 + 外部检索服务」双层：
+仓库内**自研 RAG 闭环**，读写同库（`agent_rag_docs`），不再委派外部检索服务。
+实现参考 `thy-edu-agent/backend/core` 的解析与精排策略，按本项目架构落地：
 
-- **仓库内适配层** `backend/mcp/retrieval/`：
-  - `adapter.py`：`rag_retrieve(query, tenant_id, top_k)` + `Chunk` 数据类（向 QA 暴露的检索工具）；
-  - `client.py`：`RagClient.retrieve()`，三方委派优先级 **MCP 服务(`RAG_MCP_URL`) > 包导入(`core.rag_retriever.retriever.RagRetriever`, `RAG_IMPORT_PATH`) > HTTP(`RAG_HTTP_BASE`)**。
-- **索引写入侧（文档→向量库）** `backend/data/milvus/store.py` `DocumentMilvusStore`：`add_chunks()`（BGE-M3 dense+sparse 双向量写入）、`hybrid_search()`（dense HNSW+IP / sparse `SPARSE_INVERTED_INDEX` 两路召回 + RRF/Weighted 融合，按 `tenant_id` 分区键隔离）。**接 Milvus：是**（`AsyncMilvusClient`）。
+- **解析/分块** `backend/rag/loaders.py` + `splitters.py`：MinIO 字节 → PDF 逐页 / MD 标题感知 / TXT → **父子片两阶段切分**（参照 `RAG-Ultra`）；全内存、不落盘；`.pdf/.md/.txt` 全支持；父片 1200 字作上下文、子片 300 字参与向量召回，参数由 `QA_PARENT_*` / `QA_CHILD_*` 配置。RAG-Ultra 父片用 BGE 语义切分（需 `langchain_experimental`），本项目未装该依赖，改用已有 `RecursiveCharacterTextSplitter` 大块 + Markdown 标题块，零新增依赖。
+- **写入侧** `backend/rag/indexing.py` → `backend/data/milvus/store.py` `DocumentMilvusStore.add_chunks()`：集合只存**子片**（才有 dense+sparse 向量），每片冗余存 `parent_id` / `parent_content`；另有 `chunk_type` / `source_location` / `extra`(JSON) 全部**显式声明**（动态字段无法可靠出现在 `output_fields`）。重新解析前按 `file_id` 删除旧块保证幂等，完成后回写 `agent_file.parse_status=parsed`（失败 `failed` 并由 broker 重试）。由 `qa.parse` 消息触发。
+- **读取侧** `backend/rag/retrieval.py` → `DocumentMilvusStore.hybrid_search()`：dense HNSW+IP（写入/查询两侧 L2 归一化）/ sparse `SPARSE_INVERTED_INDEX` 两路召回 + RRF/Weighted 融合，按 `tenant_id` 分区键隔离；再经 `LLMFactory.rerank()` 精排取 Top-K，首条精排分即 `confidence`（精排不可用时降级为粗排 distance）。检索结果按 `parent_id` 分组，用 `<mark>` 在父片原文里高亮所有命中子片。
+- **qa 接入**：`agents/qa/nodes.py::retrieve_node` 调 `backend.rag.retrieval.retrieve`；`generate_rag_node` 按父片去重后把**高亮父片**作为上下文，`RAG_ANSWER_PROMPT` 说明 `<mark>` 是命中重点、未标记部分是上下文，以标记部分为主要依据作答。
 - **模型封装** `backend/common/llm/llm_factory.py` `LLMFactory`：
   - `bge-m3`：`build_embedder()` 用 `BGEM3EmbeddingFunction`，`embed()` 返回 `{'dense','sparse'}`；
-  - `bge-reranker-v2-m3`：`build_reranker()` 用 `BGERerankFunction`，`rerank()` 已实现；
+  - `bge-reranker-v2-m3`：`build_reranker()` 用 `BGERerankFunction`，`rerank()` 已实现并被自研检索链路调用；
   - `bert-chinese`：`classify()` 中文意图分类（未配置降级 `general`）。
-- ⚠️ **接线落差**：`DocumentMilvusStore.hybrid_search` 已实现但**不在 QA 热路径上**（QA 走外部 RAG 服务）；`LLMFactory.rerank` 已定义但**仓库内未被任何检索路径调用**（重排发生在外部检索工程里）。
+- ⚠️ **schema 升级**：Milvus 不支持给已有集合加字段。`ensure_collection()` 会用 `describe_collection` 校验必需字段，发现旧集合时 fail-fast 提示调用 `rebuild_collection()`；重建会清空向量，需重新 `/parse` 导入。
 
 ---
 
@@ -107,24 +115,25 @@
 
 ## 6. 消息队列（`broker`）
 
-- **消息类型枚举**：`backend/broker/types.py` `class TaskType(str, Enum)`：`AGENT_RUN` / `DOC_PARSE` / `RESUME_REVIEW` / `KNOWLEDGE_REINDEX` / `NOTIFY_SEND` / `AUDIT_FLUSH` / `CONFIG_REFRESH`。
+- **消息类型枚举**：`backend/broker/types.py` `class TaskType(str, Enum)`：`AGENT_RUN` / `QA_PARSE` / `QA_RAGAS_REVIEW` / `RESUME_REVIEW` / `EXAM_REVIEW` / `NOTIFY_SEND` / `AUDIT_FLUSH`（均为 `task` 工作队列语义；`agent_outbox.message_kind` 由 `routing.Kind` 推导，另预留 `broadcast`）。
 - **唯一发消息入口**：`backend/broker/publish.py` `enqueue_task(type, ...)`（只写 `agent_outbox` 表，由 `outbox_publisher.py` 协程异步投递；broker 关时缓冲不丢）。
-- **消费者/handler 全映射**：`backend/broker/handlers/__init__.py` 把 7 个 `TaskType` 全部映射到 handler；消费策略在 `backend/broker/consumer/strategies.py`（业务/广播/死信，含幂等与死信落库）。
+- **消费者/handler 全映射**：`backend/broker/handlers/__init__.py` 把 7 个 `TaskType` 全部映射到 handler；消费策略在 `backend/broker/consumer/strategies.py`（业务/广播/死信，含幂等与死信落库）。跨副本配置刷新改由 `services/config_refresh.py` 用 Redis 版本号 + 定时拉取实现，不再占用 MQ 消息类型。
 - **生产端引用（仓库内实际 `enqueue_task` 的位置）**：
-  - `DOC_PARSE`：`backend/api/v1/admin/files.py:221`（上传后入队解析）；
+  - `QA_PARSE`：`backend/api/v1/tenant/agent/files.py`（`/parse` 端点上传后入队解析）；
   - `RESUME_REVIEW`：`backend/api/v1/tenant/agent/resume.py:131`；
   - `NOTIFY_SEND`：`backend/server/managers/scheduler_manager.py:118`（HITL 转人工超时提醒）；
-  - `CONFIG_REFRESH`：`backend/broker/publish.py:57`（跨副本刷新注册表）。
-  - ⚠️ `AUDIT_FLUSH` / `AGENT_RUN` / `KNOWLEDGE_REINDEX` 有 handler，但**仓库内未找到对应 `enqueue_task` 生产端**。
+  - `EXAM_REVIEW`：`backend/api/v1/tenant/agent/exam.py`（提交试卷后入队批改）；
+  - `QA_RAGAS_REVIEW`：`backend/api/v1/tenant/agent/qa_results.py`（问答测评）。
+  - ⚠️ `AUDIT_FLUSH` / `AGENT_RUN` 有 handler，但仓库内未找到对应 `enqueue_task` 生产端。
 - ⚠️ **broker 默认关闭**：`backend/server/register.py:55` `if config.broker.enabled:` 才注册 `BrokerManager`（默认 `RABBITMQ_ENABLED=false`）；`ObservabilityManager` 亦被注释 `// todo`。
 
 ---
 
 ## 7. 业务服务层（`services`）
 
-- `backend/services/agent_run.py` `run_long_task(...)`：TODO 接 Orchestrator。
-- `backend/services/indexing.py` `parse_document(...)`：仅 `logger.warning(...)` 并把文件标 `failed`；`reindex_knowledge(...)` 仅告警。**即 `DocumentMilvusStore.add_chunks` 写入链路未接通**。
-- `backend/services/notification.py`：`CHANNELS: dict = {}`，注释 `TODO(notify.send)`；`send_notification` 仅记告警（email/wecom/webhook/ticket 未实现）。
+- `backend/services/agent_run.py` `run_long_task(...)`：TODO 接 Orchestrator；`agent_run` 台账尚未写入。
+- `backend/services/indexing.py` `parse_document(...)`：已接通 `backend.rag.indexing` → MinIO 读取 → 分块 → BGE-M3 向量化 → Milvus 写入，并回写 `agent_file.parse_status`；失败标 `failed` 并交给 broker 重试。
+- `backend/services/notification.py`：`CHANNELS: dict = {}`，`send_notification` 仍只记告警（email/wecom/webhook/ticket 未实现）。
 - handler 只做三件事：鉴权、从 `data` 取参数、调 `services/`，并让异常上抛；业务实现全部落在 `services/`，补齐时不需要再改 handler。
 
 ---
@@ -139,16 +148,16 @@
 
 ## 9. 明确未实现清单
 
-1. **exam 图未装配** — `backend/agents/exam/graph.py:23` `# todo 图待定`，`add_node/add_edge` 全注释 → 编译空图，三轨并行 + HITL 不可达。
-2. **interview 图未装配** — `backend/agents/interview/graph.py:22` `# todo 图待定`，同上 → 状态机 / SSE 多轮不可达。
-3. **文档解析 / 知识回流未接入** — `backend/services/indexing.py:23` `parse_document` 仅告警并标 `failed`；`reindex_knowledge` 仅告警。
-4. **通知渠道未实现** — `backend/services/notification.py:30` `CHANNELS: dict = {}`，`send_notification` 仅记告警。
-5. **统一入口 LLM 路由占位** — `backend/api/v1/tenant/chat/unified.py:101-104` 注释「占位 LLM 路由；真实实现见 M7」，直接把 `general` 兜底成 `qa`。
-6. **`core` / `rag` / `plugins` 顶层包缺失** — 能力迁移到 `orchestration` / `mcp` / `data`+`common.llm`。
-7. **resume 图未绑 checkpointer** — `backend/agents/resume/graph.py:45` `builder.compile()` 无 checkpointer → 无多轮会话态 / HITL 持久化。
-8. **rerank 在仓库内未被调用** — `common/llm/llm_factory.py` `rerank()` 已实现，但 QA 检索走外部 RAG 服务，内部 `DocumentMilvusStore.hybrid_search` 亦不在 QA 热路径。
-9. **ObservabilityManager 未注册** — `backend/server/register.py:51` 注释 `// todo`，可观测性未接入。
-10. **HITL 休眠** — `interrupt()` 仅写于 `backend/agents/exam/nodes.py:55`，因 exam 图未装配而永不触发；统一入口与 `Orchestrator.resume` 已就绪但无可达图。
+1. **interview 图未装配** — `backend/agents/interview/graph.py` 的 `add_node/add_edge` 仍注释，状态机 / SSE 多轮不可达。
+2. **考试前端未接** — 后端考试图与接口已就绪，但 `dashboard/src/pages/agent/exam/*` 仍是 mock。
+3. **通知渠道未实现** — `backend/services/notification.py` `CHANNELS: dict = {}`，`send_notification` 仅记告警。
+4. **统一入口已下线** — `backend/api/v1/tenant/chat/unified.py` 已删除，后续整合全部智能体时再实现统一入口与模型路由。
+5. **`core` / `rag` / `plugins` 顶层包缺失** — 能力迁移到 `orchestration` / `mcp` / `data`+`common.llm`。
+6. **resume 图未绑 checkpointer** — `backend/agents/resume/graph.py` `builder.compile()` 无 checkpointer → 无多轮会话态 / HITL 持久化。
+7. **ObservabilityManager 未注册** — `backend/server/register.py` 中仍注释，可观测性未接入。
+8. **`agent_run` 台账未写入** — 表与字段已有，但 QA/简历/考试执行完没有写 run/token；看板成功率/占比暂用 API 日志兜底。
+9. **业务审计覆盖不全** — `agent_audit_log` 主要覆盖管理动作，QA/简历/文件等业务操作未逐条写审计。
+10. **Token 统计缺失** — 尚无 Callback 汇总 prompt/completion tokens；历史消耗只能看模型供应商控制台。
 
 ---
 
@@ -159,7 +168,7 @@
 | `core/` 编排核心包 | 实为 `orchestration/` |
 | `rag/` 自研检索包 | 实为 `mcp/retrieval/` + `data/milvus/` + 外部 RAG 服务委派 |
 | `plugins/` 插件包 | 实为 `mcp/` 模块（协议/注册/发现） |
-| 四 Agent 均按 LangGraph 受控图实现 | qa(条件路由)、resume(线性) 已落地；exam、interview 节点齐但图未装配 |
-| 多 Agent 串联 Pipeline 由统一入口调度 | `run_pipeline` 存在但统一入口只用单 agent 直达 |
-| 自研 RAG 全链路召回/重排 | 仓库内仅适配层 + Milvus 写入；实际召回/重排委托外部服务 |
-| broker 承载长任务/重索引/通知 | 框架完备，默认关闭；业务消费体多为 stub，部分 TaskType 无生产端 |
+| 四 Agent 均按 LangGraph 受控图实现 | qa(条件路由)、resume(线性)、exam(三轨+HITL) 已落地；interview 图未装配 |
+| 多 Agent 串联 Pipeline 由统一入口调度 | `run_pipeline` 存在但统一入口已下线，当前各 Agent 独立入口 |
+| 自研 RAG 全链路召回/重排 | `backend/rag` + Milvus 闭环已接 QA 热路径；embedding/rerank 均在本仓库调用 |
+| broker 承载长任务/重索引/通知 | 框架完备；QA parse、resume、exam、RAGAS、通知有生产端，`agent.run`/`audit.flush` 暂无生产端 |

@@ -5,9 +5,9 @@
 --
 -- 特性：① 数据库不存在则创建  ② 自动切换数据库  ③ 每表用 IF NOT EXISTS 存在判断（不删已有表）
 --       ④ 表落入专属 agent_platform schema（CREATE SCHEMA + SET search_path，不污染 public）
---       ⑤ 末尾加载 RBAC 默认数据（幂等，可重复执行）。
+-- 种子数据不在此文件：初始化后另行执行 scripts/seed_data.sql（平台基础 + 超管）。
 -- 用法： psql -U <管理员> -h <host> -f scripts/schema.sql
---       首次执行需具备建库权限；重复执行安全（CREATE IF NOT EXISTS / INSERT ON CONFLICT）。
+--       首次执行需具备建库权限；重复执行安全（CREATE IF NOT EXISTS）。
 -- ============================================================
 
 \set ON_ERROR_STOP on
@@ -95,7 +95,7 @@ COMMENT ON COLUMN "agent_api_call_log".user_id IS '用户ID（取自 JWT 的 use
 COMMENT ON COLUMN "agent_api_call_log".tenant_id IS '租户ID（取自 JWT 的 tenant_id，可为空，BigInteger）';
 COMMENT ON COLUMN "agent_api_call_log".method IS 'HTTP方法（GET/POST/...）';
 COMMENT ON COLUMN "agent_api_call_log".path IS '请求路径（不含query）';
-COMMENT ON COLUMN "agent_api_call_log".route IS '匹配路由模板（如/admin/files/{oss_key}）';
+COMMENT ON COLUMN "agent_api_call_log".route IS '匹配路由模板（如/api/v1/tenant/agent/files/{file_id}）';
 COMMENT ON COLUMN "agent_api_call_log".query_string IS '查询字符串';
 COMMENT ON COLUMN "agent_api_call_log".req_headers IS '请求头（JSON；敏感头已脱敏）';
 COMMENT ON COLUMN "agent_api_call_log".req_time IS '请求时间';
@@ -107,7 +107,7 @@ COMMENT ON COLUMN "agent_api_call_log".updated_at IS '更新时间（更新时�
 
 CREATE TABLE IF NOT EXISTS agent_audit_log (
 	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
-	tenant_id BIGINT NOT NULL, 
+	tenant_id BIGINT, 
 	user_id BIGINT NOT NULL, 
 	action VARCHAR(64) NOT NULL, 
 	target VARCHAR(128) NOT NULL, 
@@ -124,7 +124,7 @@ CREATE INDEX IF NOT EXISTS ix_agent_audit_log_tenant_time ON agent_audit_log (te
 
 COMMENT ON TABLE "agent_audit_log" IS '审计日志（业务操作）';
 COMMENT ON COLUMN "agent_audit_log".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_audit_log".tenant_id IS '租户ID（隔离边界，BigInteger）';
+COMMENT ON COLUMN "agent_audit_log".tenant_id IS '租户ID（隔离边界，BigInteger；超管无租户为 NULL）';
 COMMENT ON COLUMN "agent_audit_log".user_id IS '操作人（user_id，BigInteger）';
 COMMENT ON COLUMN "agent_audit_log".action IS '操作类型';
 COMMENT ON COLUMN "agent_audit_log".target IS '操作对象';
@@ -259,42 +259,6 @@ COMMENT ON COLUMN "agent_dead_letter".retry_count IS '重试次数';
 COMMENT ON COLUMN "agent_dead_letter".tenant_id IS '租户ID';
 COMMENT ON COLUMN "agent_dead_letter".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_dead_letter".updated_at IS '更新时间（更新时由库触发器刷新）';
-
-CREATE TABLE IF NOT EXISTS agent_escalation (
-	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
-	tenant_id BIGINT NOT NULL, 
-	user_id BIGINT NOT NULL, 
-	thread_id UUID NOT NULL, 
-	reason VARCHAR(255) NOT NULL, 
-	status VARCHAR(32) NOT NULL, 
-	assigned_user_id BIGINT, 
-	resolved_at TIMESTAMP(0) WITHOUT TIME ZONE, 
-	last_reminder_at TIMESTAMP(0) WITHOUT TIME ZONE, 
-	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	PRIMARY KEY (id)
-);
-
-CREATE INDEX IF NOT EXISTS ix_agent_escalation_assigned_user_id ON agent_escalation (assigned_user_id);
-
-CREATE INDEX IF NOT EXISTS ix_agent_escalation_tenant_id ON agent_escalation (tenant_id);
-
-CREATE INDEX IF NOT EXISTS ix_agent_escalation_thread_id ON agent_escalation (thread_id);
-
-CREATE INDEX IF NOT EXISTS ix_agent_escalation_user_id ON agent_escalation (user_id);
-
-COMMENT ON TABLE "agent_escalation" IS '人工转接队列（HITL）';
-COMMENT ON COLUMN "agent_escalation".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_escalation".tenant_id IS '租户ID（隔离边界，BigInteger）';
-COMMENT ON COLUMN "agent_escalation".user_id IS '用户ID（转接人，BigInteger）';
-COMMENT ON COLUMN "agent_escalation".thread_id IS '关联会话ID';
-COMMENT ON COLUMN "agent_escalation".reason IS '转接原因';
-COMMENT ON COLUMN "agent_escalation".status IS '状态（pending/resolved）';
-COMMENT ON COLUMN "agent_escalation".assigned_user_id IS '处理人ID（user_id，未分配为空）';
-COMMENT ON COLUMN "agent_escalation".resolved_at IS '解决时间';
-COMMENT ON COLUMN "agent_escalation".last_reminder_at IS '最近一次超时提醒时间';
-COMMENT ON COLUMN "agent_escalation".create_at IS '创建时间';
-COMMENT ON COLUMN "agent_escalation".updated_at IS '更新时间（更新时由库触发器刷新）';
 
 CREATE TABLE IF NOT EXISTS agent_exam_reviews (
 	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
@@ -444,7 +408,7 @@ CREATE TABLE IF NOT EXISTS agent_file (
 	file_version INTEGER NOT NULL, 
 	checksum VARCHAR(64), 
 	remark VARCHAR(512), 
-	parse_status VARCHAR(16) NOT NULL, 
+	parse_status VARCHAR(16) DEFAULT 'pending' NOT NULL, 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	create_user_id BIGINT NOT NULL, 
@@ -696,38 +660,6 @@ COMMENT ON COLUMN "agent_menu".sort_order IS '排序号（升序）';
 COMMENT ON COLUMN "agent_menu".visible IS '是否显示';
 COMMENT ON COLUMN "agent_menu".scope IS '访问该菜单所需权限点（NULL=登录即可见）';
 
-CREATE TABLE IF NOT EXISTS agent_message (
-	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
-	tenant_id BIGINT NOT NULL, 
-	user_id BIGINT NOT NULL, 
-	thread_id UUID NOT NULL, 
-	run_id UUID, 
-	role VARCHAR(32) NOT NULL, 
-	type VARCHAR(32) NOT NULL, 
-	payload TEXT NOT NULL, 
-	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	PRIMARY KEY (id)
-);
-
-CREATE INDEX IF NOT EXISTS ix_agent_message_tenant_id ON agent_message (tenant_id);
-
-CREATE INDEX IF NOT EXISTS ix_agent_message_thread_id ON agent_message (thread_id);
-
-CREATE INDEX IF NOT EXISTS ix_agent_message_user_id ON agent_message (user_id);
-
-COMMENT ON TABLE "agent_message" IS '消息轨迹（append-only）';
-COMMENT ON COLUMN "agent_message".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_message".tenant_id IS '租户ID（隔离边界，BigInteger）';
-COMMENT ON COLUMN "agent_message".user_id IS '归属用户ID（冗余，BigInteger）';
-COMMENT ON COLUMN "agent_message".thread_id IS '关联会话ID';
-COMMENT ON COLUMN "agent_message".run_id IS '关联运行ID';
-COMMENT ON COLUMN "agent_message".role IS '角色（user/assistant/system/tool）';
-COMMENT ON COLUMN "agent_message".type IS '消息类型';
-COMMENT ON COLUMN "agent_message".payload IS '消息内容（JSON）';
-COMMENT ON COLUMN "agent_message".create_at IS '创建时间';
-COMMENT ON COLUMN "agent_message".updated_at IS '更新时间（更新时由库触发器刷新）';
-
 CREATE TABLE IF NOT EXISTS agent_model (
 	agent_id BIGINT NOT NULL, 
 	model_id BIGINT NOT NULL, 
@@ -796,6 +728,7 @@ COMMENT ON COLUMN "agent_model_registry".update_user_id IS '更新人ID（写 SQ
 CREATE TABLE IF NOT EXISTS agent_outbox (
 	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
 	topic VARCHAR(64) NOT NULL, 
+	message_kind VARCHAR(16) DEFAULT 'task' NOT NULL, 
 	payload JSONB NOT NULL, 
 	status VARCHAR(16) DEFAULT 'pending' NOT NULL, 
 	retry_count BIGINT DEFAULT 0 NOT NULL, 
@@ -807,6 +740,8 @@ CREATE TABLE IF NOT EXISTS agent_outbox (
 	PRIMARY KEY (id)
 );
 
+CREATE INDEX IF NOT EXISTS ix_agent_outbox_message_kind ON agent_outbox (message_kind);
+
 CREATE INDEX IF NOT EXISTS ix_agent_outbox_status ON agent_outbox (status);
 
 CREATE INDEX IF NOT EXISTS ix_agent_outbox_topic ON agent_outbox (topic);
@@ -814,6 +749,7 @@ CREATE INDEX IF NOT EXISTS ix_agent_outbox_topic ON agent_outbox (topic);
 COMMENT ON TABLE "agent_outbox" IS '本地消息表（Outbox）：业务与写本表同事务，投递协程扫 pending 发 MQ';
 COMMENT ON COLUMN "agent_outbox".id IS '主键（UUID，同时作为 MQ 消息 message_id）';
 COMMENT ON COLUMN "agent_outbox".topic IS '消息 type / routing_key，如 audit.flush';
+COMMENT ON COLUMN "agent_outbox".message_kind IS '投递语义：task（工作队列/竞争消费）| broadcast（发布订阅/每副本一份）；由 routing.Kind 推导';
 COMMENT ON COLUMN "agent_outbox".payload IS '完整消息体（含 tenant_id/user_id/type/payload）';
 COMMENT ON COLUMN "agent_outbox".status IS 'pending（待投递）| sent（已发 MQ）| done（消费端已处理）| failed（消费失败超限）';
 COMMENT ON COLUMN "agent_outbox".retry_count IS '投递 / 消费重试次数';
@@ -862,40 +798,135 @@ COMMENT ON COLUMN "agent_plugin".update_user_id IS '更新人ID（写 SQL 时注
 COMMENT ON COLUMN "agent_plugin".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
 COMMENT ON COLUMN "agent_plugin".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
 
-CREATE TABLE IF NOT EXISTS agent_qa_sessions (
+CREATE TABLE IF NOT EXISTS agent_qa_ragas_evals (
 	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
+	qa_result_id UUID NOT NULL, 
+	trace_id VARCHAR(64), 
 	tenant_id BIGINT NOT NULL, 
-	user_id BIGINT NOT NULL, 
-	thread_id UUID NOT NULL, 
-	summary TEXT NOT NULL, 
-	summary_version INTEGER NOT NULL, 
+	evaluator VARCHAR(64) NOT NULL, 
+	evaluator_model VARCHAR(128), 
+	dataset_version VARCHAR(64), 
+	faithfulness NUMERIC(6, 4), 
+	answer_relevancy NUMERIC(6, 4), 
+	context_precision NUMERIC(6, 4), 
+	context_recall NUMERIC(6, 4), 
+	answer_correctness NUMERIC(6, 4), 
+	metrics JSON, 
+	status VARCHAR(16) NOT NULL, 
+	error_msg TEXT, 
+	eval_at TIMESTAMP(0) WITHOUT TIME ZONE, 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	create_user_id BIGINT NOT NULL, 
 	update_user_id BIGINT NOT NULL, 
 	create_tenant_id BIGINT, 
 	update_tenant_id BIGINT, 
-	PRIMARY KEY (id), 
-	CONSTRAINT uq_qa_sessions_thread UNIQUE (thread_id)
+	PRIMARY KEY (id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_qa_sessions_tenant_id ON agent_qa_sessions (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_qa_ragas_qa_result ON agent_qa_ragas_evals (qa_result_id);
 
-CREATE INDEX IF NOT EXISTS idx_qa_sessions_user_id ON agent_qa_sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_qa_ragas_status ON agent_qa_ragas_evals (status);
 
-COMMENT ON TABLE "agent_qa_sessions" IS '问答会话';
-COMMENT ON COLUMN "agent_qa_sessions".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_qa_sessions".tenant_id IS '租户ID（隔离边界，BigInteger）';
-COMMENT ON COLUMN "agent_qa_sessions".user_id IS '用户ID（user_id，BigInteger）';
-COMMENT ON COLUMN "agent_qa_sessions".thread_id IS '关联 agent_thread.id（会话）';
-COMMENT ON COLUMN "agent_qa_sessions".summary IS '摘要';
-COMMENT ON COLUMN "agent_qa_sessions".summary_version IS '摘要版本';
-COMMENT ON COLUMN "agent_qa_sessions".create_at IS '创建时间';
-COMMENT ON COLUMN "agent_qa_sessions".updated_at IS '更新时间（更新时由库触发器刷新）';
-COMMENT ON COLUMN "agent_qa_sessions".create_user_id IS '创建人ID（写 SQL 时注入）';
-COMMENT ON COLUMN "agent_qa_sessions".update_user_id IS '更新人ID（写 SQL 时注入）';
-COMMENT ON COLUMN "agent_qa_sessions".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
-COMMENT ON COLUMN "agent_qa_sessions".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+CREATE INDEX IF NOT EXISTS idx_qa_ragas_tenant_time ON agent_qa_ragas_evals (tenant_id, eval_at);
+
+CREATE INDEX IF NOT EXISTS idx_qa_ragas_trace ON agent_qa_ragas_evals (trace_id);
+
+COMMENT ON TABLE "agent_qa_ragas_evals" IS 'RAGAS 评估结果（一次评估一行，支持多次评估留痕）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".id IS '主键（UUID）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".qa_result_id IS '关联 agent_qa_results.id';
+COMMENT ON COLUMN "agent_qa_ragas_evals".trace_id IS '链路追踪ID';
+COMMENT ON COLUMN "agent_qa_ragas_evals".tenant_id IS '租户ID（隔离边界，BigInteger）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".evaluator IS '评估器（ragas）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".evaluator_model IS '评估模型（LLM/embedding 名称与版本）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".dataset_version IS '数据集/标注版本';
+COMMENT ON COLUMN "agent_qa_ragas_evals".faithfulness IS '忠实度（回答是否被上下文支持）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".answer_relevancy IS '答案相关性';
+COMMENT ON COLUMN "agent_qa_ragas_evals".context_precision IS '上下文精确率';
+COMMENT ON COLUMN "agent_qa_ragas_evals".context_recall IS '上下文召回率';
+COMMENT ON COLUMN "agent_qa_ragas_evals".answer_correctness IS '答案正确性';
+COMMENT ON COLUMN "agent_qa_ragas_evals".metrics IS '全量指标（JSON，含自定义/新增指标，避免频繁改表）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".status IS '评估状态（pending/running/success/failed）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".error_msg IS '失败原因';
+COMMENT ON COLUMN "agent_qa_ragas_evals".eval_at IS '评估时间';
+COMMENT ON COLUMN "agent_qa_ragas_evals".create_at IS '创建时间';
+COMMENT ON COLUMN "agent_qa_ragas_evals".updated_at IS '更新时间（更新时由库触发器刷新）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".create_user_id IS '创建人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".update_user_id IS '更新人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+COMMENT ON COLUMN "agent_qa_ragas_evals".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+
+CREATE TABLE IF NOT EXISTS agent_qa_results (
+	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
+	trace_id VARCHAR(64), 
+	tenant_id BIGINT NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	session_id VARCHAR(128) NOT NULL, 
+	thread_id UUID, 
+	agent_type VARCHAR(32) NOT NULL, 
+	question TEXT NOT NULL, 
+	answer TEXT, 
+	answer_mode VARCHAR(32), 
+	query_type VARCHAR(32), 
+	confidence NUMERIC(5, 4), 
+	retrieved_contexts JSON, 
+	sources JSON, 
+	reference_answer TEXT, 
+	latency_ms INTEGER, 
+	token_usage JSON, 
+	enable_web_search BOOLEAN NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	error_msg TEXT, 
+	extra JSON, 
+	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	create_user_id BIGINT NOT NULL, 
+	update_user_id BIGINT NOT NULL, 
+	create_tenant_id BIGINT, 
+	update_tenant_id BIGINT, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_results_session ON agent_qa_results (session_id);
+
+CREATE INDEX IF NOT EXISTS idx_qa_results_status ON agent_qa_results (status);
+
+CREATE INDEX IF NOT EXISTS idx_qa_results_tenant_time ON agent_qa_results (tenant_id, create_at);
+
+CREATE INDEX IF NOT EXISTS idx_qa_results_thread ON agent_qa_results (thread_id);
+
+CREATE INDEX IF NOT EXISTS idx_qa_results_trace ON agent_qa_results (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_qa_results_user_time ON agent_qa_results (user_id, create_at);
+
+COMMENT ON TABLE "agent_qa_results" IS '问答结果（一次问答一行，供 RAGAS 质量验证）';
+COMMENT ON COLUMN "agent_qa_results".id IS '主键（UUID）';
+COMMENT ON COLUMN "agent_qa_results".trace_id IS '链路追踪ID（与 agent_api_call_log.trace_id 对齐，可关联）';
+COMMENT ON COLUMN "agent_qa_results".tenant_id IS '租户ID（隔离边界，BigInteger）';
+COMMENT ON COLUMN "agent_qa_results".user_id IS '提问用户ID（user_id，BigInteger）';
+COMMENT ON COLUMN "agent_qa_results".session_id IS '会话标识（qa 的 session_id / agent_thread.session_key）';
+COMMENT ON COLUMN "agent_qa_results".thread_id IS '关联 agent_thread.id（会话）';
+COMMENT ON COLUMN "agent_qa_results".agent_type IS '智能体类型（默认 qa）';
+COMMENT ON COLUMN "agent_qa_results".question IS '用户问题（RAGAS user_input）';
+COMMENT ON COLUMN "agent_qa_results".answer IS '模型回答（RAGAS response）';
+COMMENT ON COLUMN "agent_qa_results".answer_mode IS '回答模式（rag/llm_direct/general/fallback）';
+COMMENT ON COLUMN "agent_qa_results".query_type IS '查询类型（如 PRECISE/BROAD）';
+COMMENT ON COLUMN "agent_qa_results".confidence IS '置信度（0-1）';
+COMMENT ON COLUMN "agent_qa_results".retrieved_contexts IS '检索上下文（JSON 数组：content/doc_id/score，RAGAS retrieved_contexts）';
+COMMENT ON COLUMN "agent_qa_results".sources IS '引用来源（JSON，展示用）';
+COMMENT ON COLUMN "agent_qa_results".reference_answer IS '参考答案（RAGAS reference；人工标注或知识库标准答案，可空）';
+COMMENT ON COLUMN "agent_qa_results".latency_ms IS '端到端耗时（毫秒）';
+COMMENT ON COLUMN "agent_qa_results".token_usage IS 'Token 用量（JSON：prompt/completion/total）';
+COMMENT ON COLUMN "agent_qa_results".enable_web_search IS '是否启用联网检索';
+COMMENT ON COLUMN "agent_qa_results".status IS '执行结果（success/failed/partial）';
+COMMENT ON COLUMN "agent_qa_results".error_msg IS '失败原因';
+COMMENT ON COLUMN "agent_qa_results".extra IS '扩展信息（JSON：模型名/图版本/实验标记等）';
+COMMENT ON COLUMN "agent_qa_results".create_at IS '创建时间';
+COMMENT ON COLUMN "agent_qa_results".updated_at IS '更新时间（更新时由库触发器刷新）';
+COMMENT ON COLUMN "agent_qa_results".create_user_id IS '创建人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_qa_results".update_user_id IS '更新人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_qa_results".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+COMMENT ON COLUMN "agent_qa_results".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
 
 CREATE TABLE IF NOT EXISTS agent_questions (
 	id UUID DEFAULT uuid_generate_v4() NOT NULL, 
@@ -1113,6 +1144,7 @@ CREATE TABLE IF NOT EXISTS agent_thread (
 	status VARCHAR(32) NOT NULL, 
 	graph_name VARCHAR(64) NOT NULL, 
 	session_key VARCHAR(255), 
+	title VARCHAR(255) DEFAULT '新会话' NOT NULL, 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	PRIMARY KEY (id), 
@@ -1134,6 +1166,7 @@ COMMENT ON COLUMN "agent_thread".user_id IS '归属用户ID（隔离边界，Big
 COMMENT ON COLUMN "agent_thread".status IS '状态（active/archived）';
 COMMENT ON COLUMN "agent_thread".graph_name IS '运行的图名称';
 COMMENT ON COLUMN "agent_thread".session_key IS '会话维度键（如 qa 的 session_id），用于同用户多会话区分与 find-or-create';
+COMMENT ON COLUMN "agent_thread".title IS '会话标题（创建默认「新会话」，首问后按问题主题更新）';
 COMMENT ON COLUMN "agent_thread".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_thread".updated_at IS '更新时间（更新时由库触发器刷新）';
 
@@ -1199,6 +1232,11 @@ COMMENT ON COLUMN "agent_user_tenant".role_id IS '该用户在租户内的唯一
 COMMENT ON COLUMN "agent_user_tenant".created_at IS '分配时间';
 
 -- ============================================================
+-- 菜单路径唯一索引（种子 ON CONFLICT (path) 依赖）
+-- ============================================================
+CREATE UNIQUE INDEX IF NOT EXISTS uk_menu_path ON agent_menu (path);
+
+-- ============================================================
 -- 自动更新 updated_at 触发器
 -- 覆盖所有含 updated_at 列的表（表名由模型动态生成）
 -- ============================================================
@@ -1222,7 +1260,6 @@ BEGIN
         'agent_config_approval',
         'agent_config_review',
         'agent_dead_letter',
-        'agent_escalation',
         'agent_exam_reviews',
         'agent_exam_submissions',
         'agent_exams',
@@ -1231,12 +1268,12 @@ BEGIN
         'agent_interview_sessions',
         'agent_knowledge_pending_queue',
         'agent_long_term_memory',
-        'agent_message',
         'agent_model',
         'agent_model_registry',
         'agent_outbox',
         'agent_plugin',
-        'agent_qa_sessions',
+        'agent_qa_ragas_evals',
+        'agent_qa_results',
         'agent_questions',
         'agent_resume_reviews',
         'agent_role',
@@ -1253,218 +1290,8 @@ BEGIN
             CREATE TRIGGER trg_%I_updated_at
             BEFORE UPDATE ON %I
             FOR EACH ROW
-            WHEN (OLD IS DISTINCT FROM NEW)
             EXECUTE FUNCTION update_updated_at_column();
         ', t, t, t, t);
     END LOOP;
 END;
 $$;
-
--- ============================================================
--- 默认数据：平台超管账号（登录认证主表）
--- 超管身份只认 agent_user.is_super_admin，不挂租户（tenant_id 为 NULL）；
--- 租户、其他账号、角色/权限分配一律由超管在前端手动创建，脚本不预置。
--- 密码 123456，明文存储；登录只查 user.username。
--- ============================================================
-
-INSERT INTO "agent_user" (username, name, password, tenant_id, is_super_admin) VALUES
-('admin', 'admin', '123456', NULL, true)
-ON CONFLICT (username) DO NOTHING;
-
-
--- ============================================================
--- 默认数据：RBAC 种子（仅 admin 角色 + 超管权限点）
--- 角色判定一律按 agent_role.name，代码不读 role_id 数字；
--- 超管身份以 agent_user.is_super_admin 标记为准（不依赖本表记录）；
--- 其余角色（含 tenant_admin）不在此预置，由超管在前端手动创建；
--- scope 格式：资源:动作（资源=agent/基础设施名，动作=ask/page/update/add/delete/upload/download/review/status）
--- 幂等可重复执行（ON CONFLICT DO NOTHING）。
--- ============================================================
-
-INSERT INTO agent_role (role_id, name, description, create_at, create_user_id, update_user_id) VALUES
-(1, 'admin', '平台超管（全局唯一，以 agent_user.is_super_admin 为准）', date_trunc('second', now()), (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
-ON CONFLICT (role_id) DO NOTHING;
-
-INSERT INTO agent_role_permission (role_id, scope) VALUES
--- 1=平台超管：基建域 config/agent/model + 平台域 audit/message/auth/user/rbac/menu/tenant/file 全权限；
---   不含任何业务域（qa/interview/resume/exam/knowledge），故业务菜单对超管自动隐藏。
---   权限点按 page/view/add/update/delete/status/review/ask/upload/download 拆分；
---   菜单可见性统一用 xxx:menu（与 agent_menu.scope 对齐），超管据此看到全部基建菜单。
-(1, 'dashboard:menu'),
-(1, 'dashboard:view'),
-(1, 'config:menu'),
-(1, 'config:page'),
-(1, 'config:view'),
-(1, 'config:add'),
-(1, 'config:update'),
-(1, 'config:execute'),
-(1, 'config:delete'),
-(1, 'agent:menu'),
-(1, 'agent:page'),
-(1, 'agent:list'),
-(1, 'agent:view'),
-(1, 'agent:add'),
-(1, 'agent:update'),
-(1, 'agent:delete'),
-(1, 'agent:status'),
-(1, 'model:menu'),
-(1, 'model:page'),
-(1, 'model:view'),
-(1, 'model:add'),
-(1, 'model:update'),
-(1, 'model:delete'),
-(1, 'model:status'),
-(1, 'rbac:menu'),
-(1, 'role:menu'),
-(1, 'role:page'),
-(1, 'role:add'),
-(1, 'role:update'),
-(1, 'role:delete'),
-(1, 'user:menu'),
-(1, 'user:page'),
-(1, 'user:view'),
-(1, 'user:add'),
-(1, 'user:update'),
-(1, 'user:delete'),
-(1, 'user:status'),
-(1, 'tenant:menu'),
-(1, 'tenant:page'),
-(1, 'tenant:view'),
-(1, 'tenant:add'),
-(1, 'tenant:update'),
-(1, 'tenant:delete'),
-(1, 'tenant:status'),
-(1, 'audit:menu'),
-(1, 'audit:page'),
-(1, 'audit:view'),
-(1, 'message:menu'),
-(1, 'message:page'),
-(1, 'message:view'),
-(1, 'message:status'),
-(1, 'menu:menu'),
-(1, 'menu:page'),
-(1, 'menu:add'),
-(1, 'menu:update'),
-(1, 'menu:delete'),
-(1, 'menu:status'),
-(1, 'file:menu'),
-(1, 'file:page'),
-(1, 'file:view'),
-(1, 'file:upload'),
-(1, 'file:download'),
-(1, 'tool:menu'),
-(1, 'tool:page'),
-(1, 'tool:add'),
-(1, 'tool:update'),
-(1, 'tool:delete'),
-(1, 'tool:status')
-ON CONFLICT (role_id, scope) DO NOTHING;
-
-
--- ============================================================
--- 默认数据：menu（菜单按 scope 下发）
--- scope=NULL 表示登录即可见；
--- /agents /tools /models 只授予超管角色；/config 为协同流程（所有角色可见）；
--- /audit 授予超管与 tenant_admin。
--- 审计日志/配置中心/权限中心下设子菜单；租户管理已移入权限中心。
--- ============================================================
-
-CREATE UNIQUE INDEX IF NOT EXISTS uk_menu_path ON agent_menu (path);
-
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('监控概览', '/dashboard', 'DashboardOutlined', 0, 1, true, 'dashboard:menu'),
-('会话运行', '/sessions', 'MessageOutlined', 0, 2, true, 'qa:menu'),
-('智能体管理', '/agents', 'RobotOutlined', 0, 3, true, 'agent:menu'),
-('工具与插件', '/tools', 'ToolOutlined', 0, 4, true, 'tool:menu'),
-('模型配置', '/models', 'DeploymentUnitOutlined', 0, 5, true, 'model:menu'),
-('配置中心', '/config', 'SettingOutlined', 0, 6, true, 'config:menu'),
-('审计日志', '/audit', 'FileSearchOutlined', 0, 7, true, 'audit:menu'),
-('权限中心', '/rbac', 'SafetyCertificateOutlined', 0, 8, true, 'rbac:menu'),
-('咨询问答', '/qa', 'CommentOutlined', 0, 9, true, 'qa:menu')
-ON CONFLICT (path) DO NOTHING;
-
--- 审计日志：三个审计表的分页查询/过滤（业务审计 / 登录日志 / API 调用日志）
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('业务审计', '/audit/operation', 'FileTextOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 1, true, 'audit:menu'),
-('登录日志', '/audit/login', 'LoginOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 2, true, 'audit:menu'),
-('调用日志', '/audit/api', 'ApiOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 3, true, 'audit:menu')
-ON CONFLICT (path) DO NOTHING;
-
--- 配置中心：配置申请 / 配置审核
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('配置列表', '/config/request', 'FormOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 1, true, 'config:menu'),
-('配置审核', '/config/review', 'AuditOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 2, true, 'config:menu')
-ON CONFLICT (path) DO NOTHING;
-
--- 权限中心：租户管理（从顶级移入） + 用户管理 + 角色管理 + 菜单管理
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('租户管理', '/tenants', 'TeamOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 1, true, 'tenant:menu'),
-('用户管理', '/users', 'UserOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 2, true, 'user:menu'),
-('角色管理', '/roles', 'KeyOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 3, true, 'role:menu'),
-('菜单管理', '/menus', 'MenuOutlined', (SELECT id FROM agent_menu WHERE path='/rbac'), 4, true, 'menu:menu')
-ON CONFLICT (path) DO NOTHING;
-
--- 文件管理：文件列表（分页 / 详情 / 上传 / 下载），按租户隔离，超管查全部
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('文件管理', '/files', 'FolderOpenOutlined', 0, 10, true, 'file:menu')
-ON CONFLICT (path) DO NOTHING;
-
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('文件列表', '/files/list', 'FileOutlined', (SELECT id FROM agent_menu WHERE path='/files'), 1, true, 'file:menu')
-ON CONFLICT (path) DO NOTHING;
-
--- 消息管理：消息队列 / 死信队列（运行时功能，库已存在，补入种子保持脚本与库一致）
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('消息管理', '/messages', 'MailOutlined', 0, 10, true, 'message:menu')
-ON CONFLICT (path) DO NOTHING;
-
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('消息队列', '/messages/queue', 'SendOutlined', (SELECT id FROM agent_menu WHERE path='/messages'), 1, true, 'message:page'),
-('死信队列', '/messages/dead-letters', 'ExceptionOutlined', (SELECT id FROM agent_menu WHERE path='/messages'), 2, true, 'message:page')
-ON CONFLICT (path) DO NOTHING;
-
--- 配置中心：配置审核日志（运行时功能，库已存在，补入种子）
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('审核记录', '/config/review-log', 'AuditOutlined', (SELECT id FROM agent_menu WHERE path='/config'), 3, true, 'config:page')
-ON CONFLICT (path) DO NOTHING;
-
-
-
--- ============================================================
--- 默认数据：agent（Agent 目录，agent_type 与代码注册一致）
--- 仅持久化可展示元数据；build_graph 由代码注册，本表不存图结构。
--- ============================================================
-
-INSERT INTO agent (
-    agent_type, name, description, input_schema,
-    enabled, version, create_user_id, update_user_id) VALUES
-('qa', '问答助手', '智能问答与多轮对话', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('exam', '考试助手', '组卷、答题与评测', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('resume', '简历助手', '简历解析与优化建议', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('interview', '面试助手', '模拟面试与反馈', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
-ON CONFLICT (agent_type) DO NOTHING;
-
-
--- ============================================================
--- 默认数据：agent_model_registry（模型配置注册表）
--- 4 类默认模型各一条；api_key 留空，由超管在 /models 界面填；
--- 其余字段取当前 .env 默认（LLM_API_BASE / LLM_MODEL 等）。
--- ============================================================
-
-INSERT INTO agent_model_registry (
-    model_type, name, provider, base_url, api_key, endpoint_path,
-    temperature, timeout_s, max_retries, enabled, sort_order, description,
-    create_user_id, update_user_id) VALUES
-('llm', 'deepseek/deepseek-flash', 'openai', 'https://tokenhub.tencentmaas.com/plan/v3', 'sk-tp-BsnoIOov68JV8zesz4YF6xPQreDKOxRHzgVS1ySZUWld8f8d', NULL,
-    0.2, 60, 2, true, 1, '默认 LLM（DeepSeek，经 OpenAI 兼容网关）', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('embedding', 'bge-m3', 'local', NULL, NULL, 'models/BAAI/bge-m3',
-    NULL, NULL, NULL, true, 1, 'BGE-M3 向量化（本地 FlagEmbedding）', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('reranker', 'bge-reranker-v2-m3', 'local', NULL, NULL, 'models/BAAI/bge-reranker-v2-m3',
-    NULL, NULL, NULL, true, 1, 'BGE-Reranker-v2-m3 精排（本地）', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('classifier', 'intent_classifier', 'local', NULL, NULL, 'models/classifier/intent_classifier',
-    NULL, NULL, NULL, true, 1, '中文意图分类（离线训练产物）', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
-ON CONFLICT (model_type, name) DO NOTHING;
