@@ -1,12 +1,5 @@
-"""登录日志模型（agent_login_log）：每次登录尝试一行。
+"""登录日志模型（agent_login_log）：每次登录尝试一行，含失败记录，user_id 可空。"""
 
-与 agent_audit_log 的分工：
-- audit 记「谁改了什么」（业务操作留痕，只有成功动作）；
-- login 记「谁从哪进来」（认证事件，成功与失败都记）。
-
-因此本表 user_id 可为空：登录失败时用户名未必对应真实账号，只保留尝试输入的值
-（username 列），这是排查撞库/爆破的关键信息。
-"""
 from __future__ import annotations
 
 from datetime import datetime

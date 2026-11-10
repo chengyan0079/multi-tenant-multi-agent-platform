@@ -2,6 +2,7 @@
 
 新增渠道只需实现 NotifyChannel 并注册到 CHANNELS，handler 与调用方都不用改。
 """
+
 from __future__ import annotations
 
 from typing import Any, Protocol
@@ -42,10 +43,7 @@ async def send_notification(
     impl = CHANNELS.get(channel or "")
     if impl is None:
         logger.warning(
-            f"[notify] 渠道未注册 channel={channel} tenant={tenant_id} "
-            f"已注册={sorted(CHANNELS)}"
+            f"[notify] 渠道未注册 channel={channel} tenant={tenant_id} 已注册={sorted(CHANNELS)}"
         )
         return
-    await impl.send(
-        tenant_id=tenant_id, user_id=user_id, content=content, **extra
-    )
+    await impl.send(tenant_id=tenant_id, user_id=user_id, content=content, **extra)

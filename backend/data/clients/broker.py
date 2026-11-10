@@ -1,15 +1,5 @@
-"""RabbitMQ 异步客户端（aio-pika）。
+"""RabbitMQ 异步客户端：连接与收发原语，消息持久+publisher confirm+独立 channel 消费。"""
 
-只做连接与收发原语：连接管理、发布（持久消息 + publisher confirm）、
-按队列开独立 channel 消费（手动 ack）。拓扑怎么声明由 broker/topology 决定，
-本层不认识业务队列。
-
-设计要点（见 docs/消息队列对接设计 §6）：
-- 队列 / 交换器 durable=True，消息 delivery_mode=PERSISTENT → broker 重启不丢；
-- publisher confirm 保证"发出去被 broker 接收"，防静默丢失；
-- 每个队列一条独立 channel：AMQP 的 basic.qos 作用域是 channel，
-  共用 channel 会让所有队列共享一个 prefetch，退化成整进程串行消费。
-"""
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable

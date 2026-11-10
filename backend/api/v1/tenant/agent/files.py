@@ -1,10 +1,5 @@
-"""文件管理端点：分页 / 详情 / 上传（MinIO） / 下载（MinIO）。
+"""文件管理接口：列表 / 详情 / 上传 / 下载，强制收敛到当前租户防跨租户。"""
 
-挂在 /api/v1/tenant/agent/files 下（业务域 _BUSINESS），整组 require_tenant()：
-仅租户用户可访问（超管无租户，调用直接 403），端点各自 `require_scope(qa_file:*)`。
-
-隔离规则：所有操作强制收敛到 current.tenant_id，忽略前端传入的 tenant_id，杜绝跨租户。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -30,6 +25,7 @@ from backend.security.rbac import Scope
 from backend.security.security import require_scope
 
 router = APIRouter(prefix="/agent/files", tags=["agent-files"])
+
 
 def _max_upload_bytes() -> int:
     """单文件大小上限（字节），由 QA_MAX_UPLOAD_MB 配置，最小 1MB。"""
@@ -78,6 +74,12 @@ async def list_files(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.QA_FILE_PAGE)),  # noqa: B008
 ):
+    """分页查询当前租户文件，支持按文件名模糊搜索。
+
+    请求：query { file_name?, page, page_size }
+    权限：qa_file:page
+    返回：items / total / page / page_size
+    """
     # 固定本租户，忽略前端可能传入的 tenant_id
     rows, total = await FileDao.list_latest(
         tenant_id=_tenant_id(current), keyword=file_name, page=page, page_size=page_size
@@ -96,11 +98,18 @@ async def list_files(
 async def file_config(
     _: object = Depends(require_scope(Scope.QA_FILE_PAGE)),  # noqa: B008
 ):
-    """返回前端所需的上传限制与上传后行为。"""
-    return success({
-        "max_upload_mb": config.qa.max_upload_mb,
-        "auto_parse": config.qa.auto_parse,
-    })
+    """返回前端所需的上传配置。
+
+    请求：无
+    权限：qa_file:page
+    返回：{ max_upload_mb, auto_parse }
+    """
+    return success(
+        {
+            "max_upload_mb": config.qa.max_upload_mb,
+            "auto_parse": config.qa.auto_parse,
+        }
+    )
 
 
 async def _enqueue_parse(row: dict, current: CurrentUser) -> str | None:
@@ -117,7 +126,7 @@ async def _enqueue_parse(row: dict, current: CurrentUser) -> str | None:
     try:
         await FileDao.set_parse_status([file_id], "parsing", tenant_id=file_tenant)
     except Exception as exc:  # noqa: BLE001 - 状态更新失败不应让上传（已成功）被判失败
-        logger.warning(f"上传后置 parsing 失败 file_id={file_id}：{exc}")
+        logger.exception(f"上传后置 parsing 失败 file_id={file_id}：{exc}")
 
     key: str | None = None
     try:
@@ -136,13 +145,13 @@ async def _enqueue_parse(row: dict, current: CurrentUser) -> str | None:
             },
         )
     except Exception as exc:  # noqa: BLE001 - 入队异常同样不阻断上传
-        logger.error(f"上传后自动解析入队异常 file_id={file_id}：{exc}")
+        logger.exception(f"上传后自动解析入队异常 file_id={file_id}：{exc}")
 
     if key is None:
         try:
             await FileDao.set_parse_status([file_id], "pending", tenant_id=file_tenant)
         except Exception as exc:  # noqa: BLE001 - 回退失败只记录，不影响上传结果
-            logger.warning(f"回退 pending 失败 file_id={file_id}：{exc}")
+            logger.exception(f"回退 pending 失败 file_id={file_id}：{exc}")
         logger.warning(f"上传后自动解析入队失败 file_id={file_id}，请手动触发解析")
     return key
 
@@ -173,9 +182,7 @@ async def _process_one_upload(
     if not data:
         raise BizException(ErrCode.PARAM_ERROR, "文件为空")
     if len(data) > _max_upload_bytes():
-        raise BizException(
-            ErrCode.PARAM_ERROR, f"文件超过 {config.qa.max_upload_mb}MB 上限"
-        )
+        raise BizException(ErrCode.PARAM_ERROR, f"文件超过 {config.qa.max_upload_mb}MB 上限")
 
     tid = _tenant_id(current)
     checksum = hashlib.sha256(data).hexdigest()
@@ -219,6 +226,12 @@ async def upload_file(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
 ):
+    """上传单个文件（MinIO），按去重策略落库并可选触发解析。
+
+    请求：form { file: UploadFile, remark?: str }
+    权限：qa_file:upload
+    返回：文件视图（含 parse_queued）
+    """
     return success(await _process_one_upload(file, current, remark))
 
 
@@ -231,6 +244,12 @@ async def batch_upload_files(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
 ) -> Any:
+    """批量上传文件，单文件失败计入失败项不中断整体。
+
+    请求：form { files: list[UploadFile], remark?: str }
+    权限：qa_file:upload
+    返回：count / items(ok/error) / total / page / page_size
+    """
     results: list[dict[str, Any]] = []
     for f in files:
         try:
@@ -243,17 +262,20 @@ async def batch_upload_files(
     # todo 数据源为本次上传的内存结果而非 DB 查询，此处无法走 fetch_page
     total = len(results)
     start = (page - 1) * page_size
-    return success({
-        "count": total,
-        "items": results[start:start + page_size],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    })
+    return success(
+        {
+            "count": total,
+            "items": results[start : start + page_size],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 class ParseRequest(BaseModel):
     """触发解析的请求体：选中的文件 id 列表。"""
+
     file_ids: list[int]
 
 
@@ -263,10 +285,13 @@ async def parse_files(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
 ):
-    """把选中的文件提交到消息队列做解析向量化。
+    """触发文档解析（向量化入 Milvus，走消息队列）。
 
-    仅处理当前用户可见的文件（越权/不存在的 id 忽略）；提交成功先把状态置 parsing，
-    真正的「MinIO 取文件 → 切分 → BGE-M3 向量化（稠密+稀疏）→ 写 Milvus」由消费者完成。
+    说明：仅处理当前用户可见的文件；提交成功先置 parsing，消费端完成
+          「MinIO 取文件 → 切分 → BGE-M3 向量化 → 写 Milvus」并回写 parse_status。
+    请求：body { file_ids: list[int] }
+    权限：qa_file:upload
+    返回：{ queued, failed }
     """
     if not body.file_ids:
         raise BizException(ErrCode.PARAM_ERROR, "file_ids 不能为空")
@@ -310,6 +335,12 @@ async def get_file(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.QA_FILE_VIEW)),  # noqa: B008
 ):
+    """获取文件详情与版本列表。
+
+    请求：path { file_id }
+    权限：qa_file:view
+    返回：文件视图 + versions[]
+    """
     row = await FileDao.get(file_id)
     if row is None or not _visible(row, current):
         raise BizException(ErrCode.NOT_FOUND, f"文件不存在: {file_id}")
@@ -323,6 +354,12 @@ async def download_file(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     _: object = Depends(require_scope(Scope.QA_FILE_DOWNLOAD)),  # noqa: B008
 ):
+    """下载文件（MinIO），仅限最新版本。
+
+    请求：path { file_id }
+    权限：qa_file:download
+    返回：文件字节流（附件）
+    """
     row = await FileDao.get(file_id)
     if row is None or not _visible(row, current):
         raise BizException(ErrCode.NOT_FOUND, f"文件不存在: {file_id}")

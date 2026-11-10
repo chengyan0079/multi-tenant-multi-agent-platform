@@ -2,6 +2,7 @@
 
 handler 只做鉴权与消息结构，渠道分发见 services/notification.py。
 """
+
 from __future__ import annotations
 
 from backend.broker.envelope import TaskMessage

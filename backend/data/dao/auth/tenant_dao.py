@@ -1,17 +1,23 @@
 """租户 DAO：租户 CRUD 与「本租户管理员」查询（tenant 表，无审计列）。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 
 _GET = text("SELECT id, name, enabled FROM agent_tenant WHERE id = :tenant_id")
 _LIST = text("SELECT id, name, enabled FROM agent_tenant ORDER BY id")
-_INSERT = text(
-    "INSERT INTO agent_tenant (name, enabled) VALUES (:name, true) RETURNING id"
-)
+_INSERT = text("INSERT INTO agent_tenant (name, enabled) VALUES (:name, true) RETURNING id")
 _GET_BY_NAME = text("SELECT id, name, enabled FROM agent_tenant WHERE name = :name LIMIT 1")
 # 只允许改名/启停：租户没有任何身份标记列可在更新时改动，超管身份只认 agent_user.is_super_admin
 _UPDATE = text(
@@ -135,8 +141,12 @@ class TenantDao:
         params = {"name": name, "created_from": created_from, "created_to": created_to}
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST_STATS, _COUNT_STATS, params,
-                page=page, page_size=page_size,
+                session,
+                _LIST_STATS,
+                _COUNT_STATS,
+                params,
+                page=page,
+                page_size=page_size,
             )
 
     @staticmethod

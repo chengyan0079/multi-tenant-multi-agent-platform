@@ -1,10 +1,5 @@
-"""消息管理端点（/api/v1/admin/messages）：消息队列（outbox）/ 死信队列列表 + 状态变更。
+"""消息管理端点：outbox / 死信队列列表与状态变更，超管与租户管理员可按租户过滤。"""
 
-权限：超管与租户管理员（端点级 require_scope(Scope.MESSAGE_PAGE)，装配处不挂整组超管）；
-- 超管可传 tenant_id 看任意租户，不传看全量；
-- 租户管理员（有租户上下文）强制只看本租户，且只能改本租户消息。
-只读 + 状态变更（重投 pending / 标记完成 done / 标记失败 failed），无新增 / 删除。
-"""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -37,13 +32,22 @@ def _effective_tenant(current: CurrentUser, query_tenant: Optional[int]) -> Opti
 @router.get("/queue", summary="消息队列（outbox）列表")
 async def list_queue(
     status: Optional[str] = Query(None, pattern="^(pending|sent|done|failed)$"),
-    message_kind: Optional[str] = Query(None, pattern="^(task|broadcast)$", description="投递语义筛选"),
+    message_kind: Optional[str] = Query(
+        None, pattern="^(task|broadcast)$", description="投递语义筛选"
+    ),
     tenant_id: Optional[int] = Query(None, description="仅超管可用，按租户过滤"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     _: object = Depends(require_scope(Scope.MESSAGE_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """消息队列（outbox）分页列表。
+
+    说明：超管可传 tenant_id 看任意租户；租户管理员只看本租户；可按状态/语义筛选。
+    请求：query { status?, message_kind?, tenant_id?, page, page_size }
+    权限：message:page
+    返回：items / total / page / page_size
+    """
     eff = _effective_tenant(current, tenant_id)
     rows, total = await OutboxDao.list_outbox(page, page_size, status, eff, message_kind)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
@@ -57,6 +61,13 @@ async def list_dead_letters(
     _: object = Depends(require_scope(Scope.MESSAGE_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """死信队列分页列表。
+
+    说明：超管可传 tenant_id 看任意租户；租户管理员只看本租户。
+    请求：query { tenant_id?, page, page_size }
+    权限：message:page
+    返回：items / total / page / page_size
+    """
     eff = _effective_tenant(current, tenant_id)
     rows, total = await DeadLetterDao.list_dead_letters(page, page_size, eff)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
@@ -69,6 +80,13 @@ async def change_status(
     _: object = Depends(require_scope(Scope.MESSAGE_STATUS)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """变更消息状态（重投 pending / 标记完成 done / 标记失败 failed）。
+
+    说明：租户管理员只能改本租户消息；tenant_id 为 NULL 的消息禁止操作。
+    请求：path { msg_id }, body { status, error? }
+    权限：message:status
+    返回：{ id, status }
+    """
     if body.status not in VALID_STATUS:
         raise BizException(ErrCode.PARAM_ERROR, f"非法状态：{body.status}")
     row = await OutboxDao.get(msg_id)
@@ -87,6 +105,12 @@ async def get_queue_msg(
     _: object = Depends(require_scope(Scope.MESSAGE_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """消息详情。
+
+    请求：path { msg_id }
+    权限：message:view
+    返回：单条消息明细
+    """
     row = await OutboxDao.get_detail(msg_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"消息不存在: {msg_id}")
@@ -99,6 +123,12 @@ async def get_dead_letter(
     _: object = Depends(require_scope(Scope.MESSAGE_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """死信详情。
+
+    请求：path { dl_id }
+    权限：message:view
+    返回：单条死信明细
+    """
     row = await DeadLetterDao.get(dl_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"死信不存在: {dl_id}")

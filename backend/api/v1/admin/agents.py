@@ -1,14 +1,5 @@
-"""Agent 管理端点（超管）：元数据目录 + 全局启停 + 租户级开通策略。
+"""Agent 管理端点（超管）：元数据目录、全局启停、租户级开通策略与模型绑定。"""
 
-挂在 /api/v1/admin/agents 下，鉴权由装配处统一挂 require_super_admin()。
-
-数据来源：
-- `agent` 表：可持久化的元数据（展示名 / 描述 / 输入 schema / 全局开关 / 版本）；
-- `AgentRegistry`（app_state）：代码注册的图构造器，运行时同步启停状态。
-
-说明：Agent 是否可用 = 全局开关（agent.enabled）AND 租户策略
-（agent_capability_policy，未配置视为开通）；启停写库后同步刷新 registry 内存。
-"""
 from __future__ import annotations
 
 import json
@@ -73,6 +64,12 @@ async def list_agents(
     _: object = Depends(require_scope(Scope.AGENT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """分页查询 Agent 目录。
+
+    请求：query { tenant_id?, only_enabled?, page, page_size }
+    权限：agent:page
+    返回：items(含 registered/tenant_enabled) / total / page / page_size
+    """
     registered = _registered_types()
     rows, total = await AgentDao.list_agents_paged(
         tenant_id=tenant_id,
@@ -91,7 +88,17 @@ async def list_agents(
 
 
 @router.get("/{agent_type}", summary="Agent 详情")
-async def get_agent(agent_type: str, _: object = Depends(require_scope(Scope.AGENT_VIEW)), __: object = Depends(get_current_user)):  # noqa: B008
+async def get_agent(
+    agent_type: str,
+    _: object = Depends(require_scope(Scope.AGENT_VIEW)),
+    __: object = Depends(get_current_user),
+):  # noqa: B008
+    """获取单个 Agent 详情（库行 + 注册状态）。
+
+    请求：path { agent_type }
+    权限：agent:view
+    返回：包含 registered 的 Agent 视图
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
@@ -105,6 +112,13 @@ async def set_enabled(
     _: object = Depends(require_scope(Scope.AGENT_STATUS)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """全局启停 Agent，并同步运行时 registry。
+
+    说明：库未登记但已注册时补登记；registry 未就绪则仅写库。
+    请求：path { agent_type }, body { enabled: bool }
+    权限：agent:status
+    返回：{ agent_type, enabled }
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         # 库未登记但该类型已注册时补登记，保证启停可持久化
@@ -141,26 +155,42 @@ async def list_capabilities(
     _: object = Depends(require_scope(Scope.AGENT_LIST)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """分页查询某租户的 Agent 开通策略列表。
+
+    请求：path { tenant_id }, query { page, page_size }
+    权限：agent:list
+    返回：items(global_enabled/enabled/configured) / total / page / page_size
+    """
     rows, total = await AgentDao.list_agents_paged(
         tenant_id=tenant_id, page=page, page_size=page_size
     )
-    items = [{
-        "agent_type": r["agent_type"],
-        "name": r["name"],
-        "global_enabled": r["enabled"],
-        "enabled": r["tenant_enabled"],
-        "configured": r["policy_configured"],
-    } for r in rows]
+    items = [
+        {
+            "agent_type": r["agent_type"],
+            "name": r["name"],
+            "global_enabled": r["enabled"],
+            "enabled": r["tenant_enabled"],
+            "configured": r["policy_configured"],
+        }
+        for r in rows
+    ]
     return success({"items": items, "total": total, "page": page, "page_size": page_size})
 
 
 @router.put("/tenants/{tenant_id}/capabilities", summary="设置租户开通策略")
 async def set_capabilities(
-    tenant_id: int, items: list[CapabilityIn], _: object = Depends(require_scope(Scope.AGENT_UPDATE)), __: object = Depends(get_current_user),  # noqa: B008
+    tenant_id: int,
+    items: list[CapabilityIn],
+    _: object = Depends(require_scope(Scope.AGENT_UPDATE)),
+    __: object = Depends(get_current_user),  # noqa: B008
 ):
-    await AgentDao.set_policies(
-        tenant_id, [(it.agent_type, it.enabled) for it in items]
-    )
+    """批量设置某租户的 Agent 开通策略并刷新运行时缓存。
+
+    请求：path { tenant_id }, body { items: list[{agent_type, enabled}] }
+    权限：agent:update
+    返回：{ tenant_id, updated }
+    """
+    await AgentDao.set_policies(tenant_id, [(it.agent_type, it.enabled) for it in items])
 
     # 刷新运行时租户策略缓存
     reg = app_state.agent_registry
@@ -203,6 +233,12 @@ async def create_agent(
     _: object = Depends(require_scope(Scope.AGENT_ADD)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """新增 Agent 元数据（agent_type 唯一）。
+
+    请求：body { agent_type, name, description?, version, enabled, input_schema? }
+    权限：agent:add
+    返回：{ id, agent_type }
+    """
     if await AgentDao.get_by_type(body.agent_type) is not None:
         raise BizException(ErrCode.PARAM_ERROR, f"agent_type 已存在: {body.agent_type}")
     _validate_input_schema(body.input_schema)
@@ -225,6 +261,12 @@ async def update_agent(
     _: object = Depends(require_scope(Scope.AGENT_UPDATE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """更新 Agent 元数据。
+
+    请求：path { agent_type }, body { name, description?, version, enabled, input_schema? }
+    权限：agent:update
+    返回：{ agent_type }
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
@@ -247,6 +289,13 @@ async def delete_agent(
     _: object = Depends(require_scope(Scope.AGENT_DELETE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """删除 Agent（有模型绑定时禁止）。
+
+    说明：存在模型绑定需先到「配置」解绑。
+    请求：path { agent_type }
+    权限：agent:delete
+    返回：{ agent_type }
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
@@ -269,6 +318,12 @@ async def list_agent_models(
     _: object = Depends(require_scope(Scope.AGENT_VIEW)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """分页查询 Agent 的模型绑定列表。
+
+    请求：path { agent_type }, query { page, page_size }
+    权限：agent:view
+    返回：items / total / page / page_size
+    """
     if await AgentDao.get_by_type(agent_type) is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
     items, total = await AgentModelRelDao.list_by_agent_paged(agent_type, page, page_size)
@@ -282,6 +337,13 @@ async def add_agent_model(
     _: object = Depends(require_scope(Scope.AGENT_UPDATE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """为 Agent 添加模型绑定，默认项同类互斥。
+
+    说明：is_default 为真时先清同 model_type 其他绑定默认标记；变更失效 LLM 缓存。
+    请求：path { agent_type }, body { model_id, is_default?, priority? }
+    权限：agent:update
+    返回：{ agent_type, model_id }
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
@@ -307,6 +369,13 @@ async def update_agent_model(
     _: object = Depends(require_scope(Scope.AGENT_UPDATE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """更新模型绑定的默认标记与优先级。
+
+    说明：设为默认时同类互斥；变更失效 LLM 缓存；绑定不存在返回 404。
+    请求：path { agent_type, model_id }, body { is_default?, priority? }
+    权限：agent:update
+    返回：{ agent_type, model_id }
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")
@@ -332,6 +401,12 @@ async def remove_agent_model(
     _: object = Depends(require_scope(Scope.AGENT_DELETE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """解绑 Agent 的模型（失效 LLM 缓存）。
+
+    请求：path { agent_type, model_id }
+    权限：agent:delete
+    返回：{ agent_type, model_id }
+    """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"Agent 未登记: {agent_type}")

@@ -1,19 +1,5 @@
-"""
-milvus_store - 文档 RAG 向量存储（解析 MinIO 文件 → 切分 → BGE-M3 稠密+稀疏 → 写 Milvus）。
+"""文档 RAG 向量存储：父子片写入 Milvus（子片带向量，父片冗余），字段显式声明，复用 LLMFactory 向量化。"""
 
-集合字段：chunk_id(主键) / tenant_id(分区键) / file_id / file_name / parent_id / parent_content /
-chunk_type / chunk_index / page / source_location / content(子片文本) / extra(JSON 额外字段) /
-dense(1024 维, 内积 IP + L2 归一化 == 余弦) / sparse(倒排, 内积)。
-
-父子片（small-to-big，参照 RAG-Ultra）：集合只存**子片**（子片才有向量做精准召回），
-每个子片冗余存父片全文 parent_content；命中子片后由 retrieval 把父片里对应子片高亮，
-交给 LLM 时既保留上下文又标明命中重点。
-
-所有需要返回/过滤的字段都**显式声明**：Milvus 的 output_fields 不能可靠取回动态字段，
-早期版本把 source_location/doc_type/file_hash 塞进动态字段导致检索时取不到值。
-
-向量化复用已预热的 LLMFactory（bge-m3），全部 IO 异步。长记忆已不再走 Milvus，改落 PG。
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -73,14 +59,29 @@ class DocumentMilvusStore:
 
     # 检索输出字段（必须显式声明在 schema 中，动态字段无法可靠返回）
     OUTPUT_FIELDS: tuple[str, ...] = (
-        "chunk_id", "tenant_id", "file_id", "file_name",
-        "parent_id", "parent_content", "chunk_type", "chunk_index", "page",
-        "source_location", "content", "extra",
+        "chunk_id",
+        "tenant_id",
+        "file_id",
+        "file_name",
+        "parent_id",
+        "parent_content",
+        "chunk_type",
+        "chunk_index",
+        "page",
+        "source_location",
+        "content",
+        "extra",
     )
     # schema 版本校验用的必需字段：集合缺任一字段即视为旧 schema，需要重建
-    REQUIRED_FIELDS: frozenset[str] = frozenset({
-        "parent_id", "parent_content", "chunk_type", "source_location", "extra",
-    })
+    REQUIRED_FIELDS: frozenset[str] = frozenset(
+        {
+            "parent_id",
+            "parent_content",
+            "chunk_type",
+            "source_location",
+            "extra",
+        }
+    )
 
     def build_schema(self) -> CollectionSchema:
         """构建 RAG 文档集合的 CollectionSchema（父子片 + 显式额外字段 + 双向量）。"""
@@ -88,12 +89,16 @@ class DocumentMilvusStore:
         return CollectionSchema(
             fields=[
                 FieldSchema(
-                    name="chunk_id", dtype=DataType.VARCHAR,
-                    is_primary=True, max_length=128,
+                    name="chunk_id",
+                    dtype=DataType.VARCHAR,
+                    is_primary=True,
+                    max_length=128,
                 ),
                 FieldSchema(
-                    name="tenant_id", dtype=DataType.VARCHAR,
-                    max_length=64, is_partition_key=True,
+                    name="tenant_id",
+                    dtype=DataType.VARCHAR,
+                    max_length=64,
+                    is_partition_key=True,
                 ),
                 FieldSchema(name="file_id", dtype=DataType.VARCHAR, max_length=64),
                 FieldSchema(name="file_name", dtype=DataType.VARCHAR, max_length=256),
@@ -104,7 +109,9 @@ class DocumentMilvusStore:
                 FieldSchema(name="chunk_index", dtype=DataType.INT32),
                 FieldSchema(name="page", dtype=DataType.INT32),
                 FieldSchema(
-                    name="source_location", dtype=DataType.VARCHAR, max_length=512,
+                    name="source_location",
+                    dtype=DataType.VARCHAR,
+                    max_length=512,
                 ),
                 FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
                 # 额外字段统一收口（doc_type / file_hash / 标题路径 / 其它元数据）
@@ -126,21 +133,27 @@ class DocumentMilvusStore:
             raise RuntimeError("MilvusClient 未绑定，无法构建索引参数")
         index_params = self.client.prepare_index_params()
         index_params.add_index(
-            field_name="dense", index_name="dense_index",
-            index_type="HNSW", metric_type="IP",  # IP + 写入/查询两侧 L2 归一化 == 余弦
+            field_name="dense",
+            index_name="dense_index",
+            index_type="HNSW",
+            metric_type="IP",  # IP + 写入/查询两侧 L2 归一化 == 余弦
             params={"M": 16, "efConstruction": 128},
         )
         index_params.add_index(
-            field_name="sparse", index_name="sparse_index",
-            index_type="SPARSE_INVERTED_INDEX", metric_type="IP",
+            field_name="sparse",
+            index_name="sparse_index",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="IP",
             params={"drop_ratio_build": 0.2},
         )
         index_params.add_index(
-            field_name="file_id", index_name="file_id_index",
+            field_name="file_id",
+            index_name="file_id_index",
             index_type="INVERTED",
         )
         index_params.add_index(
-            field_name="parent_id", index_name="parent_id_index",
+            field_name="parent_id",
+            index_name="parent_id_index",
             index_type="INVERTED",
         )
         return index_params
@@ -199,28 +212,30 @@ class DocumentMilvusStore:
             raise RuntimeError("MilvusClient 未绑定")
         total = 0
         for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
+            batch = chunks[i : i + batch_size]
             emb = await app_state.llm_factory.embed([c["text"] for c in batch])
             data = []
             for idx, c in enumerate(batch):
                 parent_id = str(c.get("parent_id") or "")
                 child_seq = int(c.get("child_index", c.get("chunk_index", idx)))
-                data.append({
-                    "chunk_id": c.get("chunk_id") or f"{parent_id}:child:{child_seq}",
-                    "tenant_id": _tenant_key(c["tenant_id"]),
-                    "file_id": str(c.get("file_id", "")),
-                    "file_name": c.get("file_name", ""),
-                    "parent_id": parent_id,
-                    "parent_content": c.get("parent_content") or c["text"],
-                    "chunk_type": c.get("chunk_type") or "child",
-                    "chunk_index": int(c.get("chunk_index", 0)),
-                    "page": int(c.get("page", 0) or 0),
-                    "source_location": c.get("source_location", ""),
-                    "content": c["text"],
-                    "extra": c.get("extra") or {},
-                    "dense": _l2_normalize(emb["dense"][idx]),
-                    "sparse": _parse_sparse_row(emb["sparse"], idx),
-                })
+                data.append(
+                    {
+                        "chunk_id": c.get("chunk_id") or f"{parent_id}:child:{child_seq}",
+                        "tenant_id": _tenant_key(c["tenant_id"]),
+                        "file_id": str(c.get("file_id", "")),
+                        "file_name": c.get("file_name", ""),
+                        "parent_id": parent_id,
+                        "parent_content": c.get("parent_content") or c["text"],
+                        "chunk_type": c.get("chunk_type") or "child",
+                        "chunk_index": int(c.get("chunk_index", 0)),
+                        "page": int(c.get("page", 0) or 0),
+                        "source_location": c.get("source_location", ""),
+                        "content": c["text"],
+                        "extra": c.get("extra") or {},
+                        "dense": _l2_normalize(emb["dense"][idx]),
+                        "sparse": _parse_sparse_row(emb["sparse"], idx),
+                    }
+                )
             await self.client.upsert(collection_name=self._name, data=data)
             total += len(data)
             logger.debug(f"批次 [{i // batch_size + 1}] 写入 {len(data)} 条子片向量")
@@ -268,18 +283,23 @@ class DocumentMilvusStore:
 
         cfg = app_state.settings.milvus
         dense_req = AnnSearchRequest(
-            data=[dense_vec], anns_field="dense",
+            data=[dense_vec],
+            anns_field="dense",
             param={"metric_type": "IP", "params": {"ef": 64}},
-            limit=top_k, expr=expr,
+            limit=top_k,
+            expr=expr,
         )
         sparse_req = AnnSearchRequest(
-            data=[sparse_vec], anns_field="sparse",
+            data=[sparse_vec],
+            anns_field="sparse",
             param={"metric_type": "IP", "params": {"drop_ratio_search": 0.2}},
-            limit=top_k, expr=expr,
+            limit=top_k,
+            expr=expr,
         )
         ranker = (
             WeightedRanker(cfg.dense_weight, cfg.sparse_weight)
-            if fusion == "weighted" else RRFRanker(k=cfg.rrf_k)
+            if fusion == "weighted"
+            else RRFRanker(k=cfg.rrf_k)
         )
         results = await self.client.hybrid_search(
             collection_name=self._name,
@@ -291,7 +311,4 @@ class DocumentMilvusStore:
         if not results or not results[0]:
             return []
         # 保留 distance 作为粗排分数：精排不可用时可作为降级依据，也便于排查召回质量
-        return [
-            {**hit["entity"], "score": float(hit.get("distance") or 0.0)}
-            for hit in results[0]
-        ]
+        return [{**hit["entity"], "score": float(hit.get("distance") or 0.0)} for hit in results[0]]

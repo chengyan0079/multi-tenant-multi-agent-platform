@@ -41,6 +41,7 @@ dependencies = [
     "PyYAML==6.0.3",
     "httpx==0.28.1",
     "requests==2.34.2",
+    "langfuse==5.2.0",  # Langfuse 可观测（SDK 5.x 对应服务端 4.x，OTEL 采集；软降级）
     "pyjwt==2.15.1",
     "cryptography==50.0.2",
     "python-dotenv==1.2.4",

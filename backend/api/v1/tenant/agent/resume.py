@@ -1,12 +1,5 @@
-"""
-api - 简历审查 API
+"""简历审查接口：上传触发异步评审，结果按租户与用户隔离。"""
 
-挂在 /api/v1/tenant/resume（由 api/router.py 以 require_tenant() 挂载）。
-上传 -> 直接存 MinIO -> 写骨架行(status=processing, 含审计列) -> 发 resume.review 消息 -> 消费者经 Orchestrator 异步跑 LangGraph -> 节点回写结果。
-查询/删除/列表均按 tenant_id + user_id 做数据隔离。
-
-Author: 骆昊
-"""
 from __future__ import annotations
 
 import asyncio
@@ -61,7 +54,7 @@ async def _mark_review_failed(review_id: str, error_msg: str) -> None:
                 {"error_msg": (error_msg or "unknown error")[:2000], "review_id": review_id},
             )
     except Exception as e:  # noqa: BLE001 - 标记失败本身不能再抛错
-        logger.error(f"_mark_review_failed failed: {e}")
+        logger.exception(f"_mark_review_failed failed: {e}")
 
 
 @router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
@@ -70,7 +63,14 @@ async def upload_resume(
     file: UploadFile = File(..., description="简历 PDF 文件"),
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """上传简历并触发后台评审，立即返回 review_id（202）。"""
+    """上传简历并触发后台评审，立即返回 review_id。
+
+    说明：校验类型与大小后存 MinIO，写骨架行并投 resume.review 消息，由消费者经
+          Orchestrator 跑 LangGraph 回写结果。
+    请求：form { file: UploadFile(.pdf) }
+    权限：resume:upload
+    返回：{ review_id, status, message }
+    """
     # 1. 校验类型
     if not (file.filename and file.filename.lower().endswith(tuple(ALLOWED_EXT))):
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
@@ -87,14 +87,18 @@ async def upload_resume(
     tenant_id = current.tenant_id
     user_id = current.user_id
     review_id = str(uuid6.uuid7())
-    minio_key = build_object_key(filetype="resumes", tenant_id=tenant_id, user_id=user_id, name=review_id, ext="pdf")
+    minio_key = build_object_key(
+        filetype="resumes", tenant_id=tenant_id, user_id=user_id, name=review_id, ext="pdf"
+    )
 
     # 4. 上传到 MinIO
     try:
         storage = await get_storage()
-        await asyncio.to_thread(storage.put_bytes, minio_key, file_bytes, content_type="application/pdf")
+        await asyncio.to_thread(
+            storage.put_bytes, minio_key, file_bytes, content_type="application/pdf"
+        )
     except Exception as e:  # noqa: BLE001
-        logger.error(f"upload_resume minio failed: {e}")
+        logger.exception(f"upload_resume minio failed: {e}")
         raise HTTPException(status_code=502, detail="文件存储失败")
 
     # 5. 写骨架行（JSON 列留空，评审完成后回填；审计列按要求注入）
@@ -123,7 +127,7 @@ async def upload_resume(
                 },
             )
     except Exception as e:  # noqa: BLE001
-        logger.error(f"upload_resume db failed: {e}")
+        logger.exception(f"upload_resume db failed: {e}")
         raise HTTPException(status_code=500, detail="写入评审记录失败")
 
     # 6. 发消息队列，异步跑评审（消费者 handle_resume_review 经 Orchestrator 执行 LangGraph）。
@@ -155,23 +159,33 @@ async def get_review(
     _: object = Depends(require_scope(Scope.RESUME_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """查询单条评审结果（含超时兜底标记）。"""
+    """查询单条评审结果，含超时兜底标记。
+
+    说明：processing 超过阈值时标记 failed 再返回。
+    请求：path { review_id }
+    权限：resume:view
+    返回：status / weighted_score / dimension_scores / issues / summary / ...
+    """
     tenant_id = current.tenant_id
     user_id = current.user_id
     async with session_scope() as session:
         row = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT id, status, weighted_score, scores, issues, summary,
                            pdf_minio_path, error_msg, create_at, updated_at
                     FROM agent_resume_reviews
                     WHERE id = :id AND tenant_id = :tenant_id AND user_id = :user_id
                     """
-                ),
-                {"id": review_id, "tenant_id": tenant_id, "user_id": user_id},
+                    ),
+                    {"id": review_id, "tenant_id": tenant_id, "user_id": user_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
 
     if row is None:
         raise HTTPException(status_code=404, detail="评审记录不存在")
@@ -181,7 +195,11 @@ async def get_review(
         created = row["create_at"]
         import datetime
 
-        if created and (datetime.datetime.now() - created).total_seconds() > config.scheduler.resume_timeout_min * 60:
+        if (
+            created
+            and (datetime.datetime.now() - created).total_seconds()
+            > config.scheduler.resume_timeout_min * 60
+        ):
             await _mark_review_failed(review_id, "评审超时")
             row = {**dict(row), "status": "failed", "error_msg": "评审超时"}
 
@@ -189,7 +207,9 @@ async def get_review(
         {
             "review_id": str(row["id"]),
             "status": row["status"],
-            "weighted_score": float(row["weighted_score"]) if row["weighted_score"] is not None else None,
+            "weighted_score": float(row["weighted_score"])
+            if row["weighted_score"] is not None
+            else None,
             "dimension_scores": row["scores"],
             "issues": row["issues"],
             "summary": row["summary"],
@@ -207,7 +227,12 @@ async def delete_review(
     _: object = Depends(require_scope(Scope.RESUME_DELETE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """删除一条评审记录（仅限本人同租户）。"""
+    """删除一条评审记录（仅限本人同租户）。
+
+    请求：path { review_id }
+    权限：resume:delete
+    返回：{ review_id, deleted }
+    """
     tenant_id = current.tenant_id
     user_id = current.user_id
     async with session_scope() as session:
@@ -232,18 +257,30 @@ async def list_reviews(
     _: object = Depends(require_scope(Scope.RESUME_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
+    """分页查询当前用户的评审记录。
+
+    请求：query { page, page_size }
+    权限：resume:page
+    返回：items / total / page / page_size
+    """
     params = {"tenant_id": current.tenant_id, "user_id": current.user_id}
     async with session_scope() as session:
         rows, total = await fetch_page(
-            session, _LIST_REVIEWS, _COUNT_REVIEWS, params,
-            page=page, page_size=page_size,
+            session,
+            _LIST_REVIEWS,
+            _COUNT_REVIEWS,
+            params,
+            page=page,
+            page_size=page_size,
         )
 
     items = [
         {
             "review_id": str(r["id"]),
             "status": r["status"],
-            "weighted_score": float(r["weighted_score"]) if r["weighted_score"] is not None else None,
+            "weighted_score": float(r["weighted_score"])
+            if r["weighted_score"] is not None
+            else None,
             "pdf_minio_path": r["pdf_minio_path"],
             "created_at": r["create_at"].isoformat() if r["create_at"] else None,
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,

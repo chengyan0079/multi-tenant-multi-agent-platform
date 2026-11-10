@@ -1,10 +1,5 @@
-"""
-security - 护栏与 RBAC 依赖（设计文档 §9）
+"""护栏与 RBAC 依赖：接入层调输入/输出护栏；require_role/scope/tenant 为路由级依赖。"""
 
-输入/输出护栏（违禁词、长度、注入痕迹）在接入层调用；require_role/require_scope/require_tenant
-是 FastAPI 依赖，路由注册时声明最小权限。身份解析在 middleware/auth.py，这里的守卫直接依赖
-get_current_user，不读 request.state——router 级依赖先于路由函数执行，那时 state 还没写入。
-"""
 from __future__ import annotations
 
 import re
@@ -19,7 +14,9 @@ from backend.observability.exception import GuardrailError, TenantError
 
 # //todo 占位违禁词字典；真实清单走配置/外部审核插件挂载（见 plugins 设计 §15.2）
 _FORBIDDEN: Set[str] = set()
-_INJECT_HINT = re.compile(r"(ignore\s+(previous|above|all)\s+instructions|disregard\s+(the\s+)?system)", re.I)
+_INJECT_HINT = re.compile(
+    r"(ignore\s+(previous|above|all)\s+instructions|disregard\s+(the\s+)?system)", re.I
+)
 
 
 def check_input(text: str) -> str:

@@ -1,9 +1,5 @@
-"""handler 注册表：消息类型 → 处理函数。
+"""handler 注册表：TaskType → 处理函数，三处（枚举/队列/注册）须一致，handler 内先做鉴权。"""
 
-新增业务类型时，在 TaskType 加枚举、在 topology.TASK_QUEUES 加队列、在此注册 handler，
-三处必须一致（启动期由 topology.validate_handler_coverage 校验）。
-每个 handler 内部应先调用 authorize_task 做租户 / scope 鉴权（见 broker/security.py）。
-"""
 from backend.broker.handlers.agent import handle_agent_run
 from backend.broker.handlers.audit import handle_audit_flush
 from backend.broker.handlers.qa_parse import handle_qa_parse

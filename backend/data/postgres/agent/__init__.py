@@ -1,4 +1,5 @@
 """agent 子包：Agent 运行时域的 DDL 模型（定义/模型关联/线程/消息/运行/工具/插件/记忆/升级）。"""
+
 from backend.data.postgres.agent.agent import AgentCapabilityPolicy, AgentModel
 from backend.data.postgres.agent.agent_model import AgentModelRel
 from backend.data.postgres.agent.memory import AgentLongTermMemory

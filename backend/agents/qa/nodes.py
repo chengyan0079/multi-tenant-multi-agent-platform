@@ -1,14 +1,5 @@
-"""问答节点：意图分类 / HyDE / Multi-Query / 检索 / 生成 / Web 兜底 / 记忆。
+"""问答节点：意图分类/HyDE/Multi-Query/检索/生成/Web 兜底/记忆，基础设施映射 LLMFactory 与 rag.retrieval。"""
 
-核心逻辑对齐参考项目 agents/qa/nodes.py，基础设施映射如下：
-- get_llm(agent_type)        -> 本项目 LLMFactory（无独立 GENERAL agent，统一用 "qa"）
-- core.reranker.retrieve      -> backend.rag.retrieval.retrieve(query, tenant_id, top_k)（混合召回 + BGE 精排）
-- get_classifier_instance     -> LLMFactory.classify（仅作 general 软提示，且只在分类器真实加载时采信）
-- call_mcp_tool               -> app_state.plugin_registry.call("web_search", query=...)
-- qa_sessions / pending_queue -> 摘要由 checkpointer 状态承载（save_memory_node 写回 existing_summary）；
-  低置信度待审问题走 agent_knowledge_pending_queue（KnowledgePendingQueueDao），与 MemoryStore 无关
-- core.memory 摘要/压缩      -> 本项目无该模块，内联轻量实现
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,6 +25,35 @@ logger = get_logger("qa_nodes")
 
 # 本项目无独立 GENERAL agent，所有生成类节点统一用 qa 模型配置
 QA_AGENT_TYPE = "qa"
+NO_EXTERNAL_SOURCE = "模型内置知识（无外部引用）"
+MAX_SOURCE_REFS = 8
+
+
+def _chunk_source(chunk: Any) -> str:
+    """兼容 RankedChunk 对象 / dict，取展示用来源。"""
+    if isinstance(chunk, dict):
+        return str(chunk.get("source") or chunk.get("metadata", {}).get("source_location") or "")
+    return str(
+        getattr(chunk, "source", "")
+        or getattr(chunk, "metadata", {}).get("source_location", "")
+        or ""
+    )
+
+
+def _retrieved_source_refs(state: QAState, *, limit: int = MAX_SOURCE_REFS) -> list[str]:
+    """低置信度直答时，把检索候选来源保留到 sources，避免结果表只有上下文没有来源。"""
+    refs: list[str] = []
+    for chunk in state.get("ranked_chunks") or []:
+        source = _chunk_source(chunk).strip()
+        if not source:
+            continue
+        label = f"低相关候选：{source}"
+        if label not in refs:
+            refs.append(label)
+        if len(refs) >= limit:
+            break
+    return refs
+
 
 # 检索/精排阈值与窗口参数已外置到 config.qa（见 backend/config/schemas.py QaSettings），可通过 .env 的 QA_* 覆盖
 
@@ -105,8 +125,17 @@ def _should_summarize(messages: List) -> bool:
 # 意图识别辅助（规则 + LLM 策略 + 分类器软提示）
 # --------------------------------------------------------------------------- #
 _WEB_SEARCH_HINTS = (
-    "联网", "联网查询", "联网搜索", "上网查", "上网搜", "网上搜",
-    "搜索一下", "可以搜索", "帮我搜", "百度一下", "谷歌一下",
+    "联网",
+    "联网查询",
+    "联网搜索",
+    "上网查",
+    "上网搜",
+    "网上搜",
+    "搜索一下",
+    "可以搜索",
+    "帮我搜",
+    "百度一下",
+    "谷歌一下",
 )
 
 
@@ -127,21 +156,54 @@ def _extract_query_and_web_flag(raw_query: str) -> tuple[str, bool]:
 
 
 _GENERAL_EXACT = {
-    "你好", "hi", "hello", "嗨", "hey",
-    "谢谢", "谢谢你", "感谢", "thanks", "thank you",
-    "你是谁", "你叫什么", "你叫什么名字", "你是什么",
-    "你能做什么", "你有什么功能", "你能帮我做什么",
-    "再见", "拜拜", "bye",
+    "你好",
+    "hi",
+    "hello",
+    "嗨",
+    "hey",
+    "谢谢",
+    "谢谢你",
+    "感谢",
+    "thanks",
+    "thank you",
+    "你是谁",
+    "你叫什么",
+    "你叫什么名字",
+    "你是什么",
+    "你能做什么",
+    "你有什么功能",
+    "你能帮我做什么",
+    "再见",
+    "拜拜",
+    "bye",
 }
 
 _GENERAL_KEYWORDS = {
-    "你是谁", "你叫什么", "你能做什么", "你有什么功能",
-    "介绍一下你自己", "自我介绍",
-    "今天天气", "天气怎么样",
-    "讲个笑话", "说个故事",
-    "今天是", "今天几号", "今天是几号", "今天是星期",
-    "现在是", "现在几点", "现在时间", "当前时间", "当前日期",
-    "几月几号", "星期几", "是几月", "几号了", "日期是", "今天日期",
+    "你是谁",
+    "你叫什么",
+    "你能做什么",
+    "你有什么功能",
+    "介绍一下你自己",
+    "自我介绍",
+    "今天天气",
+    "天气怎么样",
+    "讲个笑话",
+    "说个故事",
+    "今天是",
+    "今天几号",
+    "今天是几号",
+    "今天是星期",
+    "现在是",
+    "现在几点",
+    "现在时间",
+    "当前时间",
+    "当前日期",
+    "几月几号",
+    "星期几",
+    "是几月",
+    "几号了",
+    "日期是",
+    "今天日期",
 }
 
 
@@ -154,8 +216,19 @@ def _rule_classify_general(query: str) -> bool:
 
 
 _SPECIALIZED_KEYWORDS = {
-    "文档", "资料", "手册", "案例", "规范", "接口", "字段",
-    "报错", "日志", "配置", "部署", "项目", "实操",
+    "文档",
+    "资料",
+    "手册",
+    "案例",
+    "规范",
+    "接口",
+    "字段",
+    "报错",
+    "日志",
+    "配置",
+    "部署",
+    "项目",
+    "实操",
 }
 
 
@@ -189,7 +262,7 @@ async def _determine_rag_strategy(query: str) -> str:
         if result in ("PRECISE", "VAGUE", "BROAD"):
             return result
     except Exception as e:  # noqa: BLE001 - 模型判定失败应降级而非中断
-        logger.warning(f"classify.rag_strategy_failed | {e}")
+        logger.exception(f"classify.rag_strategy_failed | {e}")
     return "PRECISE"
 
 
@@ -211,7 +284,7 @@ async def _model_general_hint(query: str) -> Optional[bool]:
     try:
         label = await factory.classify(query)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"classify.model_failed | {e}")
+        logger.exception(f"classify.model_failed | {e}")
         return None
     return label == "general"
 
@@ -286,10 +359,12 @@ async def hyde_generate_node(state: QAState) -> dict:
     messages = state.get("messages", [])
     history = [m for m in _window(messages, 1500) if not isinstance(m, SystemMessage)]
 
-    prompt = ChatPromptTemplate.from_messages([
-        MessagesPlaceholder(variable_name="history"),
-        ("human", await resolve_prompt("hyde")),
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            MessagesPlaceholder(variable_name="history"),
+            ("human", await resolve_prompt("hyde")),
+        ]
+    )
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
     hyde_content = await chain.ainvoke({"history": history, "query": query})
@@ -307,10 +382,12 @@ async def multi_query_rewrite_node(state: QAState) -> dict:
     messages = state.get("messages", [])
     history = [m for m in _window(messages, 1000) if not isinstance(m, SystemMessage)]
 
-    prompt = ChatPromptTemplate.from_messages([
-        MessagesPlaceholder(variable_name="history"),
-        ("human", await resolve_prompt("multi_query_rewrite")),
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            MessagesPlaceholder(variable_name="history"),
+            ("human", await resolve_prompt("multi_query_rewrite")),
+        ]
+    )
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
     result = await chain.ainvoke({"history": history, "query": query})
@@ -340,9 +417,7 @@ async def retrieve_node(state: QAState) -> dict:
                 sub_query, tenant_id, top_k=config.qa.broad_per_query_top_k
             )
 
-        results = await asyncio.gather(
-            *[_one(q) for q in broad_queries], return_exceptions=True
-        )
+        results = await asyncio.gather(*[_one(q) for q in broad_queries], return_exceptions=True)
         seen: dict[str, Chunk] = {}
         for res in results:
             if isinstance(res, Exception):
@@ -365,11 +440,17 @@ async def retrieve_node(state: QAState) -> dict:
 
     ranked_chunks = [
         RankedChunk(
-            content=d.content, score=d.score, source=d.source,
-            doc_id=d.doc_id, chunk_id=d.chunk_id, metadata=d.metadata,
-            parent_id=d.parent_id, parent_content=d.parent_content,
+            content=d.content,
+            score=d.score,
+            source=d.source,
+            doc_id=d.doc_id,
+            chunk_id=d.chunk_id,
+            metadata=d.metadata,
+            parent_id=d.parent_id,
+            parent_content=d.parent_content,
             highlighted_content=d.highlighted_content,
-            chunk_type=d.chunk_type, extra=d.extra,
+            chunk_type=d.chunk_type,
+            extra=d.extra,
         )
         for d in merged
     ]
@@ -419,11 +500,13 @@ async def generate_rag_node(state: QAState) -> dict:
     context = "\n\n".join(context_parts)
     history = [m for m in _window(messages, 2500) if not isinstance(m, SystemMessage)]
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", await _build_full_system_prompt(summary)),
-        MessagesPlaceholder(variable_name="history"),
-        ("human", await resolve_prompt("rag_answer")),
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", await _build_full_system_prompt(summary)),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", await resolve_prompt("rag_answer")),
+        ]
+    )
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
     answer = await chain.ainvoke({"history": history, "context": context, "query": query})
@@ -471,7 +554,7 @@ async def web_search_node(state: QAState) -> dict:
         logger.debug(f"web_search.done | count={len(web_search_results)}")
         return {"web_search_results": web_search_results}
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"web_search.failed | {e}")
+        logger.exception(f"web_search.failed | {e}")
         return {"web_search_results": []}
 
 
@@ -485,16 +568,17 @@ async def _general_answer(state: QAState, current_prompt: str) -> str:
     web_context = ""
     if web_results:
         web_context = "\n".join(
-            f"[{i}] {r.title}（{r.url}）\n{r.snippet[:512]}"
-            for i, r in enumerate(web_results, 1)
+            f"[{i}] {r.title}（{r.url}）\n{r.snippet[:512]}" for i, r in enumerate(web_results, 1)
         )
 
     history = [m for m in _window(messages, 1500) if not isinstance(m, SystemMessage)]
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", await _build_full_system_prompt(summary)),
-        MessagesPlaceholder(variable_name="history"),
-        ("human", current_prompt),
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", await _build_full_system_prompt(summary)),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", current_prompt),
+        ]
+    )
     llm = await get_llm(QA_AGENT_TYPE)
     chain = prompt | llm | StrOutputParser()
     return await chain.ainvoke({"history": history, "query": query, "web_context": web_context})
@@ -508,29 +592,37 @@ async def generate_direct_node(state: QAState) -> dict:
     messages = state.get("messages", [])
     web_results = state.get("web_search_results") or []
     web_sources = [r.url for r in web_results if r.url]
+    retrieved_refs = _retrieved_source_refs(state)
 
     answer = await _general_answer(state, await resolve_prompt("direct_answer"))
 
     if web_sources:
         final_answer = answer
         answer_mode = "web_augmented"
+        sources = web_sources
     else:
-        final_answer = f"{answer}\n\n**说明**：以上为 AI 基于通用知识的回答，知识库中暂无相关内容。"
+        final_answer = (
+            f"{answer}\n\n**说明**：以上为 AI 基于通用知识的回答，"
+            f"知识库中{'有低相关候选内容但未直接采用' if retrieved_refs else '暂无高相关内容'}。"
+        )
         answer_mode = "llm_direct"
+        # 无外部来源时也写一条可解释的标记，避免 sources 永远是空数组
+        sources = retrieved_refs or [NO_EXTERNAL_SOURCE]
 
     logger.debug(
-        f"generate_direct.done | answer_length={len(final_answer)} | web_sources={len(web_sources)}"
+        f"generate_direct.done | answer_length={len(final_answer)} | "
+        f"web_sources={len(web_sources)} | source_refs={len(sources)}"
     )
     return {
         "answer": final_answer,
-        "sources": web_sources,
+        "sources": sources,
         "answer_mode": answer_mode,
         "fallback_used": True,
         "should_summarize": _should_summarize(messages),
         "messages": [AIMessage(content=final_answer)],
         "structured_output": {
             "answer": final_answer,
-            "sources": web_sources,
+            "sources": sources,
             "confidence": state.get("confidence", 0),
             "answer_mode": answer_mode,
         },
@@ -549,17 +641,21 @@ async def generate_general_node(state: QAState) -> dict:
     answer = await _general_answer(state, await resolve_prompt("general_answer"))
 
     answer_mode = "web_augmented" if web_sources else "general"
-    logger.debug(f"generate_general.done | answer_length={len(answer)} | web_sources={len(web_sources)}")
+    sources = web_sources or [NO_EXTERNAL_SOURCE]
+    logger.debug(
+        f"generate_general.done | answer_length={len(answer)} | "
+        f"web_sources={len(web_sources)} | source_refs={len(sources)}"
+    )
     return {
         "answer": answer,
-        "sources": web_sources,
+        "sources": sources,
         "answer_mode": answer_mode,
         "fallback_used": bool(web_sources),
         "should_summarize": _should_summarize(messages),
         "messages": [AIMessage(content=answer)],
         "structured_output": {
             "answer": answer,
-            "sources": web_sources,
+            "sources": sources,
             "confidence": 1.0,
             "answer_mode": answer_mode,
         },
@@ -588,6 +684,7 @@ async def enqueue_pending_node(state: QAState) -> dict:
             from backend.data.dao.business.knowledge_pending_queue_dao import (
                 KnowledgePendingQueueDao,
             )
+
             await KnowledgePendingQueueDao.insert_pending(
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -596,7 +693,7 @@ async def enqueue_pending_node(state: QAState) -> dict:
             )
             logger.debug(f"enqueue_pending.done | q={state.get('original_query', '')[:50]}")
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"enqueue_pending.failed | {e}")
+        logger.exception(f"enqueue_pending.failed | {e}")
     return {}
 
 
@@ -633,7 +730,7 @@ async def save_memory_node(state: QAState) -> dict:
             summary = await _compress_summary(messages, summary)
             logger.debug("save_memory.summary_compressed")
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"save_memory.compress_failed | {e}")
+            logger.exception(f"save_memory.compress_failed | {e}")
 
     if summary:
         return {"existing_summary": summary}

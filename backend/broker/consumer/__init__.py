@@ -1,4 +1,5 @@
 """消费装配：按拓扑分组启动三组消费协程（业务 / 死信 / 广播）。"""
+
 from __future__ import annotations
 
 import asyncio

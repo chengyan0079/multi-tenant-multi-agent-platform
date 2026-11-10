@@ -1,24 +1,5 @@
-"""graph - 试卷批阅工作流图
+"""试卷批阅工作流图：解析→三轨批改→汇总→薄弱点→HITL 复核→发布，thread_id=submission_id。"""
 
-流水线：
-    START
-      → parse_word             解析学员作答 Word 文件
-      → load_questions_meta    加载 DB 题目元数据并与学员答案合并
-      → run_three_tracks       三轨并行批改（客观题 / 简答题 / 代码题）
-      → aggregate_results      汇总三轨结果，算总分、得分率、需复核数
-      → analyze_weak_points    分析知识薄弱点并生成复习建议
-      → notify_teacher         把提交状态置为 pending_review
-      → teacher_review         调用 interrupt() 暂停，等待教师确认
-      → apply_teacher_decision 合并教师修改，得到最终分数
-      → publish_results        写入 agent_exam_reviews 并发布
-      → END
-
-说明：
-    teacher_review 是暂停点：checkpointer 在暂停时保存状态，教师确认后 API 用
-    Command(resume=decision) 让图从暂停处继续执行。checkpointer 使用项目统一的
-    app_state.checkpointer（AsyncPostgresSaver），与 qa 等一致；thread_id 即
-    submission_id，保证 broker 消费跑图与教师 confirm 恢复指向同一份中断状态。
-"""
 from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph

@@ -1,16 +1,5 @@
-"""中间件客户端统一契约（替代此前的模块级隐式单例）。
+"""中间件客户端统一契约：构造参数显式传入、实例内管理生命周期、统一 health_check，支持多实例与测试注入。"""
 
-为什么要对象化：
-- 构造参数显式传入，不再隐式读 `app_state.settings` → 支持多实例（多库、灰度、多租户分库）；
-- 生命周期在实例内部（`connect` / `close` / `is_connected`）→ close 后不会静默重建；
-- 可在测试中注入 fake 实例，单测互不污染；
-- 统一 `health_check`，便于健康检查与启动探活复用。
-
-约定：
-- `name` 为容器中的唯一键；
-- `raw` 返回底层 SDK 对象，未连接时抛 `RuntimeError`（而非返回半开实例）；
-- `close()` 必须幂等。
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

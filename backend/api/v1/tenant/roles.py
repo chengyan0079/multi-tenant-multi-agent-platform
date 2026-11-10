@@ -1,8 +1,5 @@
-"""租户管理员角色端点（/api/v1/tenant/roles）。
+"""租户管理员角色端点：返回本租户可分配角色（排除 admin/tenant_admin）。"""
 
-返回本租户管理员可分配的角色（student / teacher）。租户管理员不可分配 tenant_admin，
-那属于超管的「更换管理员」职责（PUT /admin/tenants/{id}/manager）。
-"""
 from __future__ import annotations
 
 from typing import Any, List
@@ -37,5 +34,11 @@ async def list_assignable_roles(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     __: object = Depends(require_scope(Scope.USER_PAGE)),  # noqa: B008
 ) -> Any:
+    """返回本租户管理员可分配的角色名列表（排除固定角色）。
+
+    请求：无
+    权限：user:page
+    返回：角色名有序列表
+    """
     roles = await _assignable_roles()
     return success(sorted(roles))

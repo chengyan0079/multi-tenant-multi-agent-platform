@@ -1,9 +1,5 @@
-"""业务消息类型枚举：type 的唯一来源。
+"""业务消息类型枚举（type 唯一来源，域.动作命名）；枚举值即队列名/handler 键/Outbox topic。"""
 
-命名约定 `域.动作`（全小写、点分隔）。枚举值同时作为队列名、handler 键与 Outbox topic，
-拼写错误在编码期就被类型系统拦住，不再需要运行时正则校验。
-新增类型必须同时补 QueueSpec 与 handler，启动期会做一致性对账。
-"""
 from __future__ import annotations
 
 from enum import Enum

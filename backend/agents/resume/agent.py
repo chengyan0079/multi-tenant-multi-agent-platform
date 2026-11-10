@@ -1,4 +1,5 @@
 """ResumeAgent：简历审查 Agent 定义（继承基类）。"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional

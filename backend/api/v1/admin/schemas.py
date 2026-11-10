@@ -1,4 +1,5 @@
 """超管域接口请求模型（tenant / rbac / models / config_center / agents）。"""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -7,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 # ---------- 租户管理 ----------
+
 
 class TenantIn(BaseModel):
     """新建租户：名称 + 主租户用户（一步建主用户并授权 tenant_admin）。"""
@@ -25,6 +27,7 @@ class TenantManagerIn(BaseModel):
 
 
 # ---------- RBAC ----------
+
 
 class RolePermsIn(BaseModel):
     """覆盖角色权限点（全量列表，服务端清空后重写）。"""
@@ -56,10 +59,13 @@ class UserRoleIn(BaseModel):
 
 # ---------- 模型配置 ----------
 
+
 class ModelIn(BaseModel):
     """新增/更新模型记录的请求体（两类共用全字段结构）。"""
 
-    model_type: str = Field(..., max_length=32, description="llm / embedding / reranker / classifier")
+    model_type: str = Field(
+        ..., max_length=32, description="llm / embedding / reranker / classifier"
+    )
     name: str = Field(..., max_length=128)
     provider: Optional[str] = Field(None, max_length=64)
     base_url: Optional[str] = Field(None, max_length=512)
@@ -75,8 +81,10 @@ class ModelIn(BaseModel):
 
 # ---------- 配置中心审批流 ----------
 
+
 class ConfigAddIn(BaseModel):
     """新增配置申请。"""
+
     namespace: str
     group_id: str
     data_id: str
@@ -88,6 +96,7 @@ class ConfigAddIn(BaseModel):
 
 class ConfigModifyIn(BaseModel):
     """修改配置申请。"""
+
     namespace: str
     group_id: str
     data_id: str
@@ -99,6 +108,7 @@ class ConfigModifyIn(BaseModel):
 
 class ConfigDeleteIn(BaseModel):
     """删除配置申请。"""
+
     namespace: str
     group_id: str
     data_id: str
@@ -110,6 +120,7 @@ class ConfigDeleteIn(BaseModel):
 
 class RollbackRequestIn(BaseModel):
     """发起回滚申请。"""
+
     namespace: str
     group_id: str
     data_id: str
@@ -121,13 +132,16 @@ class RollbackRequestIn(BaseModel):
 
 # ---------- Agent 管理 ----------
 
+
 class EnabledIn(BaseModel):
     """全局启停。"""
+
     enabled: bool
 
 
 class CapabilityIn(BaseModel):
     """单条租户开通策略。"""
+
     agent_type: str = Field(..., max_length=64)
     enabled: bool
 
@@ -135,7 +149,9 @@ class CapabilityIn(BaseModel):
 class AgentIn(BaseModel):
     """新增/更新智能体元数据的请求体（两类共用全字段结构）。"""
 
-    agent_type: str = Field(..., max_length=64, description="Agent 类型（业务键，建议与代码注册一致）")
+    agent_type: str = Field(
+        ..., max_length=64, description="Agent 类型（业务键，建议与代码注册一致）"
+    )
     name: str = Field(..., max_length=128)
     description: Optional[str] = None
     version: str = Field("1.0.0", max_length=32)

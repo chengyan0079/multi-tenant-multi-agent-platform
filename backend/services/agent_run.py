@@ -1,4 +1,5 @@
 """长任务执行入口：多 Agent 串联 / 长推理。"""
+
 from __future__ import annotations
 
 from typing import Any

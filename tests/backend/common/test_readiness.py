@@ -12,7 +12,7 @@ from backend.app_state import app_state
 from backend.data.dao.agent.model_dao import ModelDao
 from backend.mcp.registry import PluginRegistry
 from backend.server.managers.model_manager import ModelManager
-from backend.server.managers.plugin_manager import PluginManager
+from backend.server.managers.plugin_manager import PluginManager, reload_plugins
 
 
 async def test_check_ready_passes_when_all_present() -> None:
@@ -39,23 +39,28 @@ async def test_check_ready_blocks_on_db_error() -> None:
 
 
 async def test_plugin_manager_start_warns_when_empty(monkeypatch) -> None:
-    """registry 为空（未加载任何插件）时不阻断启动，但记录 error 日志。"""
-    reg = PluginRegistry()
-    with patch("backend.server.managers.plugin_manager.load_all", new=AsyncMock()), \
-         patch("backend.server.managers.plugin_manager.PluginRegistry", return_value=reg), \
-         patch("backend.server.managers.plugin_manager.logger") as mock_logger:
-        await PluginManager().start()
-        mock_logger.error.assert_called_once()
+    """registry 为空时不阻断启动，但记录 warning 日志（当前 reload_plugins 口径）。"""
     monkeypatch.setattr(app_state, "plugin_registry", None)
+    reg = PluginRegistry()
+    with patch("backend.server.managers.plugin_manager._build_registry",
+               new=AsyncMock(return_value=reg)), \
+         patch("backend.server.managers.plugin_manager.logger") as mock_logger:
+        assert await reload_plugins() == 0
+        mock_logger.warning.assert_called_once()
+    # PluginManager.start 只是 reload_plugins 的启动期包装，不额外抛异常
+    with patch("backend.server.managers.plugin_manager.reload_plugins",
+               new=AsyncMock(return_value=0)):
+        await PluginManager().start()
 
 
 async def test_plugin_manager_start_no_warn_when_loaded(monkeypatch) -> None:
-    """registry 非空时不记录「未加载」告警。"""
-    reg = PluginRegistry()
-    with patch("backend.server.managers.plugin_manager.load_all", new=AsyncMock()), \
-         patch("backend.server.managers.plugin_manager.PluginRegistry", return_value=reg), \
-         patch.object(PluginRegistry, "plugin_count", new_callable=PropertyMock, return_value=1), \
-         patch("backend.server.managers.plugin_manager.logger") as mock_logger:
-        await PluginManager().start()
-        mock_logger.error.assert_not_called()
+    """registry 非空时不记录「插件注册表为空」告警。"""
     monkeypatch.setattr(app_state, "plugin_registry", None)
+    reg = PluginRegistry()
+    with patch("backend.server.managers.plugin_manager._build_registry",
+               new=AsyncMock(return_value=reg)), \
+         patch.object(PluginRegistry, "plugin_count", new_callable=PropertyMock,
+                      return_value=1), \
+         patch("backend.server.managers.plugin_manager.logger") as mock_logger:
+        assert await reload_plugins() == 1
+        mock_logger.warning.assert_not_called()

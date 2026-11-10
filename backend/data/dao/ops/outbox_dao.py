@@ -1,4 +1,5 @@
 """Outbox 读写（agent_outbox）：投递协程与消费端共用。"""
+
 from __future__ import annotations
 
 import json
@@ -18,9 +19,7 @@ _MARK_SENT = text(
     "UPDATE agent_outbox SET status='sent', sent_at=now(), retry_count=:retry_count "
     "WHERE id=:id AND status<>'failed'"
 )
-_MARK_DONE = text(
-    "UPDATE agent_outbox SET status='done', retry_count=:retry_count WHERE id=:id"
-)
+_MARK_DONE = text("UPDATE agent_outbox SET status='done', retry_count=:retry_count WHERE id=:id")
 _MARK_FAILED = text(
     "UPDATE agent_outbox SET status='failed', last_error=:error, retry_count=:retry_count "
     "WHERE id=:id"
@@ -40,7 +39,11 @@ class OutboxDao:
 
     @staticmethod
     async def enqueue(
-        *, message_id: str, topic: str, payload: dict, tenant_id: Optional[int],
+        *,
+        message_id: str,
+        topic: str,
+        payload: dict,
+        tenant_id: Optional[int],
         message_kind: str = "task",
     ) -> str:
         """写入一条待投递消息，返回 id（与传入的 message_id 一致）。"""

@@ -13,6 +13,9 @@ import ResumeReport from './pages/agent/resume/ResumeReport';
 import ExamStart from './pages/agent/exam/ExamStart';
 import ExamResults from './pages/agent/exam/ExamResults';
 import ExamReport from './pages/agent/exam/ExamReport';
+import InterviewStart from './pages/agent/interview/InterviewStart';
+import InterviewResults from './pages/agent/interview/InterviewResults';
+import InterviewReport from './pages/agent/interview/InterviewReport';
 import Tools from './pages/Tools';
 import UserList from './pages/rbac/UserList';
 import TenantList from './pages/rbac/TenantList';
@@ -67,7 +70,7 @@ export default function App() {
         <Route path="agents/list" element={<Agents />} />
         <Route path="tools" element={<Tools />} />
         <Route path="models" element={<ModelList />} />
-        {/* 智能体业务域：咨询 / 简历 / 考试（二级菜单先 mock，样例通过后接后端） */}
+        {/* 智能体业务域：咨询 / 简历 / 考试 / 面试 */}
         <Route path="agent" element={<Navigate to="/agent/qa" replace />} />
         <Route path="agent/qa" element={<Navigate to="/agent/qa/files" replace />} />
         <Route path="agent/qa/files" element={<FileList />} />
@@ -82,6 +85,10 @@ export default function App() {
         <Route path="agent/exam/results" element={<ExamResults />} />
         <Route path="agent/exam/results/:id" element={<ExamReport />} />
         <Route path="agent/exam/analysis" element={<Navigate to="/agent/exam/results" replace />} />
+        <Route path="agent/interview" element={<Navigate to="/agent/interview/start" replace />} />
+        <Route path="agent/interview/start" element={<InterviewStart />} />
+        <Route path="agent/interview/results" element={<InterviewResults />} />
+        <Route path="agent/interview/results/:id" element={<InterviewReport />} />
         {/* 旧入口重定向，避免历史链接失效 */}
         <Route path="sessions" element={<Navigate to="/agent/qa/sessions" replace />} />
         <Route path="files" element={<Navigate to="/agent/qa/files" replace />} />

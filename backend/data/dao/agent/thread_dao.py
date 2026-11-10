@@ -1,8 +1,5 @@
-"""会话归属 DAO：agent_thread 的读写，SQL 一律带 tenant_id + user_id。
+"""会话归属 DAO：agent_thread 读写，SQL 一律带 tenant_id+user_id，不提供仅按 id 查的方法。"""
 
-会话是用户级资源：同租户内两个用户拿到同一个 thread_id 也必须互不可见。
-所以这里刻意不提供「只按 id 查」的方法，避免调用方漏掉隔离条件。
-"""
 from __future__ import annotations
 
 from typing import Any

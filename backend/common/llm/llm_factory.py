@@ -1,12 +1,5 @@
-"""
-llm_factory - 四模型统一封装（设计文档 §4）
+"""四模型统一工厂：LLM/嵌入/重排/意图分类，按配置构造并缓存，支持按 agent 解析。"""
 
-LLM（生成+复杂路由）/ bge-m3（嵌入）/ bge-reranker-v2-m3（重排）/ bert-chinese（中文意图分类）。
-模型配置来自 model_registry 表（全局 active 记录驱动，不读 .env）；LLM 还可按 agent 解析
-（agent_model 绑定）走 get_llm(agent_type) / get_structured_llm(agent_type, schema)。
-
-本模块只做工厂：由配置构造客户端并缓存，不做数据库预加载；启动期预加载由 ModelManager 负责。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -78,6 +71,8 @@ class LLMFactory:
             temperature=cfg["temperature"] if cfg["temperature"] is not None else 0.2,
             timeout=cfg["timeout_s"] if cfg["timeout_s"] is not None else 60,
             max_retries=cfg["max_retries"] if cfg["max_retries"] is not None else 2,
+            # 流式输出最后一个 chunk 带 token usage，供问答结果/agent_run 统计
+            stream_usage=True,
         )
 
     @staticmethod
@@ -186,7 +181,9 @@ class LLMFactory:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        cfg = await AgentModelRelDao.resolve(agent_type, model_type) or await ModelDao.get_active(model_type)
+        cfg = await AgentModelRelDao.resolve(agent_type, model_type) or await ModelDao.get_active(
+            model_type
+        )
         if not cfg:
             raise ModelError(
                 f"无可用 {model_type} 模型（agent={agent_type} 无绑定且 model_registry 无 active）"
@@ -195,7 +192,9 @@ class LLMFactory:
         self._cache[key] = client
         return client
 
-    async def get_structured_llm(self, agent_type: str, schema: Any, model_type: str = "llm") -> Any:
+    async def get_structured_llm(
+        self, agent_type: str, schema: Any, model_type: str = "llm"
+    ) -> Any:
         """返回结构化输出包装器。
 
         不用 with_structured_output(function_calling)：当前 MaaS 会拒绝带 tools 的请求
@@ -227,9 +226,7 @@ class LLMFactory:
                 None,
             )
         if encoder is None:
-            raise ModelError(
-                "Embedding 模型不支持 encode / encode_documents / encode_queries"
-            )
+            raise ModelError("Embedding 模型不支持 encode / encode_documents / encode_queries")
         return await asyncio.to_thread(encoder, texts)
 
     async def rerank(self, query: str, documents: List[str], top_n: int = 5) -> List[float]:
@@ -254,7 +251,7 @@ class LLMFactory:
             try:
                 bundle = self.build_classifier(cfg)
             except Exception as exc:
-                logger.warning(f"意图分类器加载跳过（将以 general 兜底）: {exc}")
+                logger.exception(f"意图分类器加载跳过（将以 general 兜底）: {exc}")
                 return "general"
             self._cache["classifier"] = bundle
         model, tokenizer, labels, max_len = bundle
@@ -289,9 +286,7 @@ class StructuredLLM:
         self._max_attempts = max(1, max_attempts)
 
     def _schema_prompt(self) -> str:
-        schema_json = json.dumps(
-            self._schema.model_json_schema(), ensure_ascii=False
-        )
+        schema_json = json.dumps(self._schema.model_json_schema(), ensure_ascii=False)
         return (
             "请严格输出一个 JSON 对象，不要输出 Markdown 代码块、解释或任何前后缀。"
             "JSON 必须符合以下 JSON Schema：\n"

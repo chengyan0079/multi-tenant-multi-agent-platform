@@ -1,8 +1,5 @@
-"""消息队列拓扑：交换机、队列、重试与死信链路的唯一定义处。
+"""消息队列拓扑：交换机/队列/重试/死信的唯一声明处，启动期与 handler 对账。"""
 
-新增一类异步任务只需两步：在 TaskType 加枚举值、在 TASK_QUEUES 加一行 QueueSpec，
-并补对应 handler。声明、重试链路、死信队列、消费装配都由此推导，启动期做一致性对账。
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -104,19 +101,14 @@ async def declare_all(client: "BrokerClient") -> None:
     await ch.declare_exchange(EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True)
     await ch.declare_exchange(RETRY_DLX, aio_pika.ExchangeType.TOPIC, durable=True)
     await ch.declare_exchange(FINAL_DLX, aio_pika.ExchangeType.TOPIC, durable=True)
-    await ch.declare_exchange(
-        BROADCAST_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True
-    )
+    await ch.declare_exchange(BROADCAST_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True)
 
     for spec in TASK_QUEUES:
         await _declare_task_queue(ch, spec)
     for task_type in BROADCAST_TYPES:
-        await _declare_broadcast_queue(
-            ch, broadcast_queue_name(task_type, client.instance_id)
-        )
+        await _declare_broadcast_queue(ch, broadcast_queue_name(task_type, client.instance_id))
     logger.info(
-        f"RabbitMQ 拓扑已声明：{len(TASK_QUEUES)} 个业务队列，"
-        f"{len(BROADCAST_TYPES)} 个广播类型"
+        f"RabbitMQ 拓扑已声明：{len(TASK_QUEUES)} 个业务队列，{len(BROADCAST_TYPES)} 个广播类型"
     )
 
 

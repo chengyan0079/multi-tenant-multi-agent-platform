@@ -2,6 +2,7 @@
 
 连接由 `RedisClient` 封装，本 manager 只做生命周期与连通性校验。
 """
+
 from __future__ import annotations
 
 from backend.app_state import app_state

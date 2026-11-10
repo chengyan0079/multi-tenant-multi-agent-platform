@@ -2,6 +2,7 @@
 
 handler 只做鉴权与消息结构，执行逻辑见 services/agent_run.py。
 """
+
 from __future__ import annotations
 
 from backend.broker.envelope import TaskMessage

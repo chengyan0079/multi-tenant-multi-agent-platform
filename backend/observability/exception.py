@@ -1,11 +1,5 @@
-"""
-exception - 异常体系（全平台唯一异常归属）
+"""异常体系：BizException/AuthError + AgentError 体系，统一由全局处理器包装为 {code,msg,data}。"""
 
-业务异常（BizException / AuthError）与领域异常（AgentError 体系）都定义在此，
-统一由 backend.api.exceptions 的全局处理器包装为 {code,msg,data}。
-
-三层兜底语义：可降级异常允许编排在子能力失败时继续，不可降级异常中断流程。
-"""
 from __future__ import annotations
 
 from typing import Optional
@@ -17,14 +11,14 @@ class ErrCode:
     OK = 0
     PARAM_ERROR = 40000
     MISSING_TENANT = 40001
-    UNAUTHORIZED = 40100      # 未认证/签名缺失过期
-    FORBIDDEN = 40003         # 无权限
-    GUARDRAIL = 40300         # 护栏拦截（违禁词/Prompt 注入）
+    UNAUTHORIZED = 40100  # 未认证/签名缺失过期
+    FORBIDDEN = 40003  # 无权限
+    GUARDRAIL = 40300  # 护栏拦截（违禁词/Prompt 注入）
     NOT_FOUND = 40400
     RATE_LIMIT = 42900
     INTERNAL = 50000
-    DEP_UNAVAILABLE = 50200   # 依赖（RAG/模型/检索）不可用
-    HITL_PENDING = 50300      # 人工审核/排队中，稍后重试
+    DEP_UNAVAILABLE = 50200  # 依赖（RAG/模型/检索）不可用
+    HITL_PENDING = 50300  # 人工审核/排队中，稍后重试
 
 
 class BizException(Exception):
@@ -93,9 +87,11 @@ class CapabilityError(AgentError):
 
 class TenantError(AgentError):
     """租户隔离/权限相关错误（跨租户访问、能力未开通等）。"""
+
     code = ErrCode.FORBIDDEN
 
 
 class GuardrailError(AgentError):
     """输入/输出护栏拦截（违禁词、Prompt 注入等）。"""
+
     code = ErrCode.GUARDRAIL

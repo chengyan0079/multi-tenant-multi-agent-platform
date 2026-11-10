@@ -1,8 +1,5 @@
-"""三类消费策略：业务任务、广播事件、最终死信。
+"""三类消费策略：业务任务/广播事件/最终死信，各负 ack/nack 边界；信封校验由 TaskMessage.from_json 统一。"""
 
-每种策略自己负责 ack / nack 的边界，装配层只决定"哪个队列用哪种策略"。
-信封校验（结构、版本、类型）由 TaskMessage.from_json 统一完成，失败即毒消息，直接丢弃。
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -23,7 +20,7 @@ async def on_task(message: "IncomingMessage") -> None:
     try:
         msg = TaskMessage.from_json(message.body)
     except MessageFormatError as exc:
-        logger.warning(f"[task] 信封非法，丢弃：{exc}")
+        logger.exception(f"[task] 信封非法，丢弃：{exc}")
         await message.ack()
         return
 
@@ -45,16 +42,14 @@ async def on_task(message: "IncomingMessage") -> None:
         await message.ack()
     except BizException as exc:
         # 业务性失败（鉴权不足 / 参数非法）重试也不会变好，直接落 failed，避免白耗重试次数
-        logger.warning(f"[task] 业务失败不重试 type={msg.type} key={msg.key}：{exc}")
+        logger.exception(f"[task] 业务失败不重试 type={msg.type} key={msg.key}：{exc}")
         await OutboxDao.mark_failed(msg.key, str(exc), msg.header.retry_count)
         await message.ack()
     except Exception as exc:  # noqa: BLE001
         await _handle_failure(message, msg, exc)
 
 
-async def _handle_failure(
-    message: "IncomingMessage", msg: TaskMessage, exc: Exception
-) -> None:
+async def _handle_failure(message: "IncomingMessage", msg: TaskMessage, exc: Exception) -> None:
     """失败处理：未超限 nack 进重试队列，超限落死信表后 ack。"""
     logger.exception(f"处理消息失败 type={msg.type} key={msg.key}：{exc}")
     retry_count = await OutboxDao.inc_retry(msg.key, str(exc))
@@ -79,7 +74,7 @@ async def on_broadcast(message: "IncomingMessage") -> None:
     try:
         msg = TaskMessage.from_json(message.body)
     except MessageFormatError as exc:
-        logger.warning(f"[broadcast] 信封非法，丢弃：{exc}")
+        logger.exception(f"[broadcast] 信封非法，丢弃：{exc}")
         await message.ack()
         return
 
@@ -92,7 +87,7 @@ async def on_broadcast(message: "IncomingMessage") -> None:
     try:
         await handler(msg)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[broadcast] 处理失败 type={msg.type}：{exc}")
+        logger.exception(f"[broadcast] 处理失败 type={msg.type}：{exc}")
     await message.ack()
 
 

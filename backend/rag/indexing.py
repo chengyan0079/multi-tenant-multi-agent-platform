@@ -1,11 +1,5 @@
-"""文档解析入库 pipeline：MinIO 字节 → 加载 → 分块 → 向量化写 Milvus → 回写状态。
+"""文档解析入库 pipeline：MinIO 字节 → 加载 → 分块 → 向量化写 Milvus → 回写状态，按 file_id 幂等 upsert。"""
 
-供 services/indexing.py::parse_document（qa.parse 消息）调用，闭环写入本项目
-DocumentMilvusStore（集合 agent_rag_docs），与 retrieval.py 的检索读取同一库。
-
-幂等：同一 file_id 重新解析时，chunk_id 固定为 {parent_id}:child:{子片序号}，upsert 覆盖；
-分块数变少时残留的旧块由 delete_file_chunks 先清理。
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -21,7 +15,11 @@ from backend.rag.splitters import split_documents
 
 
 def _chunks_to_rows(
-    chunks: list[TextChunk], *, file_id: Any, file_name: str, tenant_id: int | None,
+    chunks: list[TextChunk],
+    *,
+    file_id: Any,
+    file_name: str,
+    tenant_id: int | None,
 ) -> list[dict[str, Any]]:
     """把父子子片转成 DocumentMilvusStore.add_chunks 期望的行结构（全部显式字段）。"""
     rows: list[dict[str, Any]] = []
@@ -30,20 +28,22 @@ def _chunks_to_rows(
         extra = dict(meta.get("extra") or {})
         extra.setdefault("doc_type", meta.get("doc_type", ""))
         extra.setdefault("file_hash", meta.get("file_hash", ""))
-        rows.append({
-            "text": chunk.text,
-            "tenant_id": str(tenant_id or 0),
-            "file_id": str(file_id),
-            "file_name": file_name,
-            "parent_id": meta.get("parent_id", ""),
-            "parent_content": meta.get("parent_content", chunk.text),
-            "chunk_type": meta.get("chunk_type", "child"),
-            "chunk_index": int(meta.get("chunk_index", 0)),
-            "child_index": int(meta.get("child_index", 0)),
-            "page": int(meta.get("page", 0) or 0),
-            "source_location": meta.get("source_location") or file_name,
-            "extra": extra,
-        })
+        rows.append(
+            {
+                "text": chunk.text,
+                "tenant_id": str(tenant_id or 0),
+                "file_id": str(file_id),
+                "file_name": file_name,
+                "parent_id": meta.get("parent_id", ""),
+                "parent_content": meta.get("parent_content", chunk.text),
+                "chunk_type": meta.get("chunk_type", "child"),
+                "chunk_index": int(meta.get("chunk_index", 0)),
+                "child_index": int(meta.get("child_index", 0)),
+                "page": int(meta.get("page", 0) or 0),
+                "source_location": meta.get("source_location") or file_name,
+                "extra": extra,
+            }
+        )
     return rows
 
 
@@ -103,4 +103,4 @@ async def mark_parse_failed(file_id: Any, tenant_id: int | None) -> None:
     try:
         await FileDao.set_parse_status([int(file_id)], "failed", tenant_id=tenant_id)
     except Exception as exc:  # noqa: BLE001 - 状态回写失败不掩盖原始解析异常
-        logger.warning(f"rag.index: 回写 failed 状态失败 file_id={file_id}：{exc}")
+        logger.exception(f"rag.index: 回写 failed 状态失败 file_id={file_id}：{exc}")

@@ -2,6 +2,7 @@
 
 方法接收调用方传入的 session，事务边界由 service 控制，DAO 内不 commit。
 """
+
 from __future__ import annotations
 
 from typing import Any, Iterable
@@ -167,14 +168,16 @@ class ConfigDao:
             " ORDER BY create_at DESC LIMIT :limit OFFSET :offset"
         )
         return await fetch_page(
-            session, list_sql, text(_COUNT_REQUESTS + where), params,
-            page=page, page_size=page_size,
+            session,
+            list_sql,
+            text(_COUNT_REQUESTS + where),
+            params,
+            page=page,
+            page_size=page_size,
         )
 
     @staticmethod
-    async def list_reviews(
-        session: AsyncSession, *, approval_id: int
-    ) -> list[dict[str, Any]]:
+    async def list_reviews(session: AsyncSession, *, approval_id: int) -> list[dict[str, Any]]:
         """某审批单的全部复核记录（按时间正序，用于审核历史查看）。"""
         return await fetch_all(
             session,
@@ -221,6 +224,9 @@ class ConfigDao:
             """
         )
         return await fetch_page(
-            session, list_sql, text(_COUNT_REVIEWS),
-            page=page, page_size=page_size,
+            session,
+            list_sql,
+            text(_COUNT_REVIEWS),
+            page=page,
+            page_size=page_size,
         )

@@ -1,9 +1,5 @@
-"""问答图：分类 → (HyDE / Multi-Query) → 检索 → 生成 → (低置信) Web 兜底 → 记忆。
+"""问答图：分类 → (HyDE/Multi-Query) → 检索 → 生成 → (低置信) Web 兜底 → 记忆，checkpointer 用本项目 AsyncPostgresSaver。"""
 
-图结构与参考项目 agents/qa/graph.py 完全一致；唯一差异是 checkpointer 取自本项目的
-app_state.checkpointer（AsyncPostgresSaver），并在节点内部完成参考项目中由 core 模块承担的
-检索/记忆职责。
-"""
 from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph

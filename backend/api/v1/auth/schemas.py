@@ -1,4 +1,5 @@
 """auth 接口请求/响应模型（见设计文档 §3）。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,7 +12,9 @@ class LoginIn(BaseModel):
 
     username: str = Field(..., max_length=64, description="登录名（唯一列）")
     password: str = Field(..., max_length=128, description="明文密码，不进日志")
-    tenant_id: int | None = Field(None, description="可选；不传则走 user.tenant_id 或第一个可用租户")
+    tenant_id: int | None = Field(
+        None, description="可选；不传则走 user.tenant_id 或第一个可用租户"
+    )
 
 
 class MenuNode(BaseModel):

@@ -1,13 +1,5 @@
-"""问答结果接口（/api/v1/tenant/qa/results）。
+"""问答结果接口：分页列表 / 详情 / RAGAS 测评与质量评估，按租户隔离。"""
 
-- GET  /           结果分页列表（qa_result:page）
-- GET  /{id}       结果详情（qa_result:view）
-- POST /{id}/review 结果测评：写人工标准答案 + 发 RAGAS 异步任务（qa_result:review）
-- GET  /{id}/quality 结果质量：RAGAS 评估记录（qa_result:review）
-
-租户隔离：整组挂在 require_tenant() 下，超管无租户上下文直接 403；
-results 按 tenant_id 共享（便于复核），会话相关接口再按 user_id 隔离。
-"""
 from __future__ import annotations
 
 import json
@@ -93,6 +85,12 @@ async def list_results(
     _: object = Depends(require_scope(Scope.QA_RESULT_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
+    """分页查询问答结果。
+
+    请求：query { page, page_size, session_id?, status? }
+    权限：qa_result:page
+    返回：items / total / page / page_size
+    """
     tenant_id = _tenant_id(current)
     rows, total = await QaResultDao.list_paged(
         tenant_id=tenant_id,
@@ -127,20 +125,34 @@ async def get_result(
     _: object = Depends(require_scope(Scope.QA_RESULT_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
+    """获取单条问答结果详情。
+
+    请求：path { result_id }
+    权限：qa_result:view
+    返回：完整结果视图（含上下文、来源、token 用量等）
+    """
     row = await QaResultDao.get(result_id=result_id, tenant_id=_tenant_id(current))
     if row is None:
         raise HTTPException(status_code=404, detail="问答结果不存在")
     return success(_detail(row))
 
 
-@router.post("/{result_id}/review", status_code=status.HTTP_202_ACCEPTED, summary="结果测评（触发 RAGAS）")
+@router.post(
+    "/{result_id}/review", status_code=status.HTTP_202_ACCEPTED, summary="结果测评（触发 RAGAS）"
+)
 async def submit_review(
     result_id: str,
     body: ReviewIn,
     _: object = Depends(require_scope(Scope.QA_RESULT_REVIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """写入人工标准答案，创建 pending 评估记录并投递 RAGAS 异步任务。"""
+    """写入人工标准答案并触发 RAGAS 异步测评。
+
+    说明：创建 pending 评估记录，投递 QA_RAGAS_REVIEW 消息；入队失败标记 failed 避免永久 pending。
+    请求：path { result_id }, body { reference_answer: str 必填 }
+    权限：qa_result:review
+    返回：{ eval_id, status }
+    """
     tenant_id = _tenant_id(current)
     reference_answer = body.reference_answer.strip()
     if not reference_answer:
@@ -216,6 +228,12 @@ async def get_quality(
     _: object = Depends(require_scope(Scope.QA_RESULT_REVIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
+    """查询某结果的 RAGAS 质量评估记录。
+
+    请求：path { result_id }
+    权限：qa_result:review
+    返回：items[{ faithfulness, answer_relevancy, context_precision, ... }]
+    """
     tenant_id = _tenant_id(current)
     row = await QaResultDao.get(result_id=result_id, tenant_id=tenant_id)
     if row is None:
@@ -232,10 +250,18 @@ async def get_quality(
             "evaluator_model": r.get("evaluator_model"),
             "dataset_version": r.get("dataset_version"),
             "faithfulness": float(r["faithfulness"]) if r.get("faithfulness") is not None else None,
-            "answer_relevancy": float(r["answer_relevancy"]) if r.get("answer_relevancy") is not None else None,
-            "context_precision": float(r["context_precision"]) if r.get("context_precision") is not None else None,
-            "context_recall": float(r["context_recall"]) if r.get("context_recall") is not None else None,
-            "answer_correctness": float(r["answer_correctness"]) if r.get("answer_correctness") is not None else None,
+            "answer_relevancy": float(r["answer_relevancy"])
+            if r.get("answer_relevancy") is not None
+            else None,
+            "context_precision": float(r["context_precision"])
+            if r.get("context_precision") is not None
+            else None,
+            "context_recall": float(r["context_recall"])
+            if r.get("context_recall") is not None
+            else None,
+            "answer_correctness": float(r["answer_correctness"])
+            if r.get("answer_correctness") is not None
+            else None,
             "metrics": _json_value(r.get("metrics")),
             "status": r.get("status"),
             "error_msg": r.get("error_msg"),

@@ -1,9 +1,5 @@
-"""
-protocol - 插件协议（设计文档 §8 / §15.2）
+"""插件协议：统一 AgentPlugin 协议，错误边界在 PluginRegistry 统一捕获。"""
 
-每个能力/工具实现统一 AgentPlugin 协议；BasePlugin 提供默认实现，具体插件继承并覆盖。
-错误边界在 PluginRegistry 调用处统一捕获，单能力故障不影响整体。
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

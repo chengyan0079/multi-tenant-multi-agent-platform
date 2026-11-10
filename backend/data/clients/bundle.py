@@ -1,16 +1,5 @@
-"""客户端容器：显式持有各中间件客户端对象。
+"""客户端容器：显式持有各中间件客户端，统一装配与释放。"""
 
-替代原先"模块级 `_client` 全局 + `global` 赋值"的隐式单例：
-实例统一注册进 `ClientBundle`，由 app_state 持有，启动时装配、停止时统一释放。
-
-用法：
-    bundle = ClientBundle()
-    pg = bundle.ensure("postgres", lambda: PostgresClient.from_settings(settings.postgres))
-    await pg.connect()
-
-    bundle.get_as("redis", RedisClient)   # 类型安全取用，未注册报错并列出已注册项
-    await bundle.aclose_all()             # 逆序释放，单项失败不影响其余
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, Iterator, TypeVar
@@ -54,9 +43,7 @@ class ClientBundle:
         try:
             return self._clients[name]
         except KeyError:
-            raise KeyError(
-                f"未注册的客户端: {name!r}；已注册={sorted(self._clients)}"
-            ) from None
+            raise KeyError(f"未注册的客户端: {name!r}；已注册={sorted(self._clients)}") from None
 
     def get_as(self, name: str, cls: type[T]) -> T:
         """按期望类型取用，类型不符时明确报错。"""
@@ -90,4 +77,4 @@ class ClientBundle:
             try:
                 await client.close()
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"客户端 {name} 释放异常: {e}")
+                logger.exception(f"客户端 {name} 释放异常: {e}")

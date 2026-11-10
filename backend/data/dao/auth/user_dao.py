@@ -1,4 +1,5 @@
 """用户 DAO：登录认证与账号读写（user 表，密码明文比对）。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -88,14 +89,10 @@ class UserDao:
             "created_to": created_to,
         }
         async with session_scope() as session:
-            return await fetch_page(
-                session, _LIST, _COUNT, params, page=page, page_size=page_size
-            )
+            return await fetch_page(session, _LIST, _COUNT, params, page=page, page_size=page_size)
 
     @staticmethod
-    async def create(
-        *, username: str, name: str, password: str, tenant_id: int
-    ) -> int:
+    async def create(*, username: str, name: str, password: str, tenant_id: int) -> int:
         """新建账号（密码一次性设定），返回新主键 id。user 表无审计列。"""
         async with session_scope() as session:
             new_id = await fetch_value(

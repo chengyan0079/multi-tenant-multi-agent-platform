@@ -18,6 +18,7 @@
 | QA 知识问答 | `/tenant/qa/chat/stream`、`/chat/stop`、`/qa/sessions`、`/qa/results` | SSE 流式问答、停止生成、会话/历史、结果/RAGAS 质量评估；Prompt 走 Nacos |
 | 简历评审 | `/tenant/resume/upload`、`/reviews` | PDF 上传 → Outbox `resume.review` → LangGraph 六维评审 → 报告详情；Prompt 走 Nacos |
 | 考试批改 | `/tenant/exam/submit`、`/submissions/{id}/review`、`/confirm` | Word 提交 → 三轨批改 → 汇总/薄弱点 → `interrupt()` 教师复核 → 确认发布；Prompt 走 Nacos |
+| 模拟面试 | `/tenant/interview/sessions`、`/chat/stream`、`/report` | 建会话并生成开场白 → 多阶段 SSE 面试 → 自动报告；Prompt 走 Nacos |
 | 文件知识库 | `/tenant/agent/files/**` | MinIO 上传/下载、批量上传、解析入 Milvus；已解析/解析中不会重复提交 |
 | 消息管理 | `/api/v1/admin/messages/**`、`/tenant/messages/**` | Outbox 队列、死信队列、重投/完成/失败；失败态保留错误原因 |
 | 审计 | `/admin/audit/logs`、`login-logs`、`api-logs` | 业务审计、登录日志、API 调用日志；租户/用户 ID 已 JOIN 成名称，支持租户与调用域筛选 |
@@ -25,13 +26,13 @@
 | 模型注册表 | `/api/v1/admin/models/**` | llm/embedding/reranker/classifier 的 active 记录驱动运行时，api_key 出参脱敏 |
 | Nacos | `NacosConfigManager`、`NacosDiscoverManager`、`NacosAIManager` | 配置中心、服务发现、MCP Server 发布；Prompt 读取 `group=PROMPT` |
 | 日志 | `backend/common/logger.py` | loguru 双写；启动/后台日志不带 trace，HTTP 请求内才注入 trace |
-| 管理后台前端 | `dashboard/` | 登录、看板、Agent/工具/模型、RBAC、配置中心、审计、消息、QA/简历页面；考试页仍为 mock |
+| 管理后台前端 | `dashboard/` | 登录、看板、Agent/工具/模型、RBAC、配置中心、审计、消息、QA/简历/面试页面；考试页仍为 mock |
 
 ## 2. 未实现 / 已知限制
 
 | 项 | 现状 |
 | --- | --- |
-| 面试 Agent | `backend/agents/interview/graph.py` 节点/边仍被注释，`/tenant/interview/start` 只回显入参；状态机与 SSE 多轮不可用 |
+| 面试会话删除 | 当前为软删归档：`agent_interview_sessions.status=deleted` + `agent_thread.status=archived`；checkpointer 状态保留可恢复，未做物理清理 |
 | 考试前端 | 后端提交/复核/确认接口与考试图已就绪，但 `dashboard/src/pages/agent/exam/*` 仍是 mock 数据，需要继续对接 |
 | `agent_run` 运行台账 | 表已建、字段齐全（prompt/completion tokens、cost、延迟），但当前没有写入链路；Token 总消耗暂时查不到 |
 | 看板业务口径 | `agent_run` 为空时，成功率/调用占比用 API 日志兜底；智能体数按「全局启用且未被租户显式关闭」计算 |
@@ -63,7 +64,7 @@ Orchestrator ── AgentRegistry（已装配，从 agent / capability_policy �
       ├── QA：分类/HyDE/Multi-Query/检索/生成/记忆（checkpointer）
       ├── Resume：解析→结构化→六维→问题→总结→回写（线性，不绑 checkpointer）
       ├── Exam：解析→三轨→汇总→薄弱点→教师复核（interrupt，checkpointer）
-      └── Interview：节点在，图未装配
+      └── Interview：多阶段状态机 → SSE 生成 → 报告回写（checkpointer）
       ▼
 PostgreSQL / Redis / Milvus / MinIO / RabbitMQ / Nacos
 ```
@@ -173,7 +174,7 @@ cd dashboard && npm install && npm run dev
 | 定时任务 | `SCHEDULER_` | `RESUME_TIMEOUT_MIN` / `SCAN_INTERVAL` / `ESCALATION_TIMEOUT_MIN` |
 | 离线 | `OFFLINE_*` | data / base_model / model_out / epochs / batch / lr / max_len |
 
-Prompt 支持 Nacos：`group=PROMPT`，`data_id` 为 `qa_*` / `resume_*` / `exam_*` 小写；Nacos 缺失时回退代码内置默认值。
+Prompt 支持 Nacos：`group=PROMPT`，`data_id` 为 `qa_*` / `resume_*` / `exam_*` / `interview_*` 小写；Nacos 缺失时回退代码内置默认值。面试字典型提示词兼容 JSON 与 Python 字典字面量。
 
 ## 8. API 概览
 
@@ -220,6 +221,13 @@ Prompt 支持 Nacos：`group=PROMPT`，`data_id` 为 `qa_*` / `resume_*` / `exam
 | POST | `/exam/submit` | 提交试卷，异步批改 |
 | GET | `/exam/my-submissions`、`/submissions/{id}/review` | 我的提交、教师复核 |
 | POST | `/exam/submissions/{id}/confirm` | 教师确认并发布 |
+| POST | `/interview/sessions` | 创建面试会话并生成开场白 |
+| POST | `/interview/sessions/{id}/chat`、`/chat/stream` | 普通/流式多轮面试 |
+| POST | `/interview/chat/stop` | 写 Redis 停止标记，停止当前流式生成 |
+| GET | `/interview/sessions` | 面试会话列表（排除已删除） |
+| GET | `/interview/sessions/{id}` | 会话详情 + checkpointer 历史消息回放 |
+| DELETE | `/interview/sessions/{id}` | 删除会话（软删归档） |
+| GET | `/interview/sessions/{id}/report` | 面试报告 |
 | GET/POST | `/agent/files`、`/upload`、`/batch-upload`、`/parse` | 文件列表/上传/批量上传/解析 |
 | GET | `/agent/files/{id}/download` | 文件下载 |
 | GET/PUT/DELETE | `/users`、`/roles` | 本租户用户/角色 |

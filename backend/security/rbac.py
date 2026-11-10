@@ -1,17 +1,5 @@
-"""
-rbac - 角色/权限解析服务（设计文档 §9.1 ③ RBAC；身份由 JWT 解析，后端只做授权）
+"""RBAC：角色/权限解析服务，scope 为单一权威来源，身份由 JWT 解析后查库授权。"""
 
-职责：
-- resolve(user_id, tenant_id)：查 agent_user_tenant → agent_role → agent_role_permission，给出
-  (role_name, scopes[])。后端据此做 require_role / require_scope，不信任 token 里的角色。
-- ensure_default_roles()：幂等写入固定内置角色(admin/tenant_admin)与权限点（全局，tenant 无关）。
-- assign(user_id, tenant_id, role_id)：一人一租户一角色（PK 冲突即更新）。
-
-权限点词汇（scope）：以 Scope 枚举（见下方）与 DEFAULT_ROLES 为**单一权威来源**；
-格式为 ``{资源}:{动作}``，资源取自 Business（AI 业务域）/ Agent（基建域）/ System（平台域），
-动作取自 Action（list/page/view/add/update/delete/upload/download/review/ask/status）。
-新增权限点须在 Scope 中登记，任何散落字符串字面量都会在校验时立即报错。
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,8 +13,10 @@ from backend.data.sql.audit import SYSTEM_USER_ID
 
 logger = get_logger("rbac")
 
+
 class Business(str, Enum):
     """AI 业务域（权限点的资源部分）：qa / interview / resume / exam / knowledge。新增业务域在此登记。"""
+
     QA = "qa"
     QA_FILE = "qa_file"
     QA_RESULT = "qa_result"
@@ -41,6 +31,7 @@ class Business(str, Enum):
 
 class Agent(str, Enum):
     """基建域（权限点的资源部分）：config / agent / model，仅超管维护。"""
+
     CONFIG = "config"
     AGENT = "agent"
     MODEL = "model"
@@ -49,6 +40,7 @@ class Agent(str, Enum):
 
 class System(str, Enum):
     """平台域（权限点的资源部分）：audit / message / auth / user / rbac / menu / tenant / dashboard / file。"""
+
     AUDIT = "audit"
     MESSAGE = "message"
     USER = "user"
@@ -69,6 +61,7 @@ class Action(str, Enum):
     - upload：上传；download：下载；review：复核（审批流）；
     - ask：询问（AI 业务域发起对话）；status：状态变更（启停 / 显隐）。
     """
+
     ASK = "ask"
     LIST = "list"
     PAGE = "page"
@@ -91,6 +84,7 @@ class Scope:
     资源取自 Business（AI 业务域）/ Agent（基建域）/ System（平台域），动作取自 Action。
     新增权限点须在 Scope 中登记，任何散落字符串字面量都会在校验时立即报错。
     """
+
     # ===== 业务域分组菜单（/agent 父节点）=====
     BUSINESS_MENU = f"{Business.BUSINESS.value}:{Action.MENU.value}"
 
@@ -210,6 +204,7 @@ class Scope:
     INTERVIEW_PAGE = f"{Business.INTERVIEW.value}:{Action.PAGE.value}"
     INTERVIEW_VIEW = f"{Business.INTERVIEW.value}:{Action.VIEW.value}"
     INTERVIEW_ASK = f"{Business.INTERVIEW.value}:{Action.ASK.value}"
+    INTERVIEW_DELETE = f"{Business.INTERVIEW.value}:{Action.DELETE.value}"
 
     RESUME_MENU = f"{Business.RESUME.value}:{Action.MENU.value}"
     RESUME_UPLOAD = f"{Business.RESUME.value}:{Action.UPLOAD.value}"
@@ -225,8 +220,6 @@ class Scope:
 
     EXAM_RESULT_PAGE = f"{Business.EXAM_RESULT.value}:{Action.PAGE.value}"
     EXAM_RESULT_VIEW = f"{Business.EXAM_RESULT.value}:{Action.VIEW.value}"
-
-
 
 
 # 所有合法权限点，供 require_scope 校验声明合法性（Scope 不再是 Enum）
@@ -300,6 +293,7 @@ class Identity:
 
 class RbacService:
     """角色/权限解析（无状态，纯查库 + 固定内置目录）。"""
+
     @staticmethod
     async def resolve_identity(user_id: int, tenant_id: int) -> Optional[Identity]:
         """解析请求期身份快照。以下情况一律返回 None，由调用方按未授权处理：

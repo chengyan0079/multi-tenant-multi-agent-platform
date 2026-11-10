@@ -2,6 +2,7 @@
 
 菜单只控制入口显隐，不是安全边界；接口侧仍须挂 require_scope。
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -16,9 +17,7 @@ _LIST_VISIBLE = text(
     "FROM agent_menu WHERE visible = true ORDER BY sort_order, id"
 )
 
-_MENU_COLUMNS = (
-    "SELECT id, name, path, icon, parent_id, sort_order, visible, scope FROM agent_menu"
-)
+_MENU_COLUMNS = "SELECT id, name, path, icon, parent_id, sort_order, visible, scope FROM agent_menu"
 _INSERT_MENU = text(
     "INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) "
     "VALUES (:name, :path, :icon, :parent_id, :sort_order, :visible, :scope) "
@@ -42,9 +41,7 @@ class MenuDao:
             return await fetch_all(session, _LIST_VISIBLE)
 
     @staticmethod
-    def filter_by_scopes(
-        rows: list[dict[str, Any]], scopes: list[str]
-    ) -> list[dict[str, Any]]:
+    def filter_by_scopes(rows: list[dict[str, Any]], scopes: list[str]) -> list[dict[str, Any]]:
         """按 scope 过滤可见菜单：scope 为空（登录即可见）/ scope ∈ scopes（精确匹配）。"""
         allowed = set(scopes or [])
         out: list[dict[str, Any]] = []
@@ -120,8 +117,14 @@ class MenuDao:
 
     @staticmethod
     async def create(
-        *, name: str, path: str, icon: str, parent_id: int,
-        sort_order: int, visible: bool, scope: str | None,
+        *,
+        name: str,
+        path: str,
+        icon: str,
+        parent_id: int,
+        sort_order: int,
+        visible: bool,
+        scope: str | None,
     ) -> int:
         """新建菜单，返回新 id（menu.id 为 BIGSERIAL，自动分配）。"""
         async with session_scope() as session:
@@ -130,9 +133,13 @@ class MenuDao:
                     session,
                     _INSERT_MENU,
                     {
-                        "name": name, "path": path, "icon": icon,
-                        "parent_id": parent_id, "sort_order": sort_order,
-                        "visible": visible, "scope": scope,
+                        "name": name,
+                        "path": path,
+                        "icon": icon,
+                        "parent_id": parent_id,
+                        "sort_order": sort_order,
+                        "visible": visible,
+                        "scope": scope,
                     },
                 )
             )
@@ -140,8 +147,14 @@ class MenuDao:
     @staticmethod
     async def update(
         menu_id: int,
-        *, name: str, path: str, icon: str, parent_id: int,
-        sort_order: int, visible: bool, scope: str | None,
+        *,
+        name: str,
+        path: str,
+        icon: str,
+        parent_id: int,
+        sort_order: int,
+        visible: bool,
+        scope: str | None,
     ) -> int:
         """更新菜单字段。"""
         async with session_scope() as session:
@@ -149,9 +162,14 @@ class MenuDao:
                 session,
                 _UPDATE_MENU,
                 {
-                    "id": menu_id, "name": name, "path": path, "icon": icon,
-                    "parent_id": parent_id, "sort_order": sort_order,
-                    "visible": visible, "scope": scope,
+                    "id": menu_id,
+                    "name": name,
+                    "path": path,
+                    "icon": icon,
+                    "parent_id": parent_id,
+                    "sort_order": sort_order,
+                    "visible": visible,
+                    "scope": scope,
                 },
             )
 
@@ -159,9 +177,7 @@ class MenuDao:
     async def delete(menu_id: int) -> int:
         """删除菜单；含子菜单时拒绝，避免产生孤儿节点。"""
         async with session_scope() as session:
-            child_count = int(
-                await fetch_value(session, _CHILD_COUNT, {"parent_id": menu_id})
-            )
+            child_count = int(await fetch_value(session, _CHILD_COUNT, {"parent_id": menu_id}))
             if child_count:
                 raise BizException(ErrCode.PARAM_ERROR, "该菜单含子菜单，请先处理子菜单")
             return await execute_write(session, _DELETE_MENU, {"id": menu_id})

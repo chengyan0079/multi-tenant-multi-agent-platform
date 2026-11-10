@@ -1,11 +1,5 @@
-"""模型工厂（LLM / bge-m3 / bge-reranker / bert-chinese）启动管理。
+"""模型工厂启动管理：就绪自检 + 本地模型预加载 + 全局默认 LLM；变更后 reload 失效缓存。"""
 
-启动期负责：模型就绪自检 + 本地模型预加载 + 设置全局默认 LLM。
-本地模型（provider=local）启动期即离线加载到内存（重模型）或构造客户端（本地 LLM），
-避免首次调用懒加载阻塞；远程模型仍按需懒加载。per-agent LLM 由各 agent 调用时经
-LLMFactory.get_llm(agent_type) 按需解析并缓存，配置（model_registry / agent_model）变更后
-调用 reload() 失效缓存、重新预加载。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -97,9 +91,7 @@ class ModelManager(BaseManager):
             try:
                 client = await ModelManager._build_local(factory, cfg)
             except Exception as exc:
-                logger.error(
-                    f"本地模型预加载失败 {mt}/{cfg['name']}：{exc}（fail-fast，终止启动）"
-                )
+                logger.exception(f"本地模型预加载失败 {mt}/{cfg['name']}：{exc}（fail-fast，终止启动）")
                 raise
             factory.cache_client(f"local:{mt}:{cfg['name']}", client)
             logger.info(f"本地模型预加载完成：{mt}/{cfg['name']}（provider=local）")

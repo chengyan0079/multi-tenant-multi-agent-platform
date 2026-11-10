@@ -1,8 +1,5 @@
-"""超管审计日志端点（/api/v1/admin/audit）。
+"""超管审计日志端点：业务审计 / 登录日志 / API 调用日志（只读，可按租户过滤）。"""
 
-超管可查全量，也可传 tenant_id 过滤某个租户；审计日志只读、无写接口（§6.5）。
-三种审计：业务审计 / 登录日志 / API 调用日志，分别走不同表与端点。
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -29,6 +26,12 @@ async def audit_logs(
     _: object = Depends(require_scope(Scope.AUDIT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """业务审计日志分页查询（超管可传 tenant_id 过滤）。
+
+    请求：query { tenant_id?, page, page_size }
+    权限：audit:page
+    返回：items / total / page / page_size
+    """
     rows, total = await AuditDao.query(tenant_id=tenant_id, page=page, page_size=page_size)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
@@ -39,6 +42,12 @@ async def audit_log_detail(
     _: object = Depends(require_scope(Scope.AUDIT_VIEW)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """业务审计日志详情。
+
+    请求：path { log_id }
+    权限：audit:view
+    返回：单条审计记录
+    """
     row = await AuditDao.get(log_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"审计记录不存在: {log_id}")
@@ -53,6 +62,12 @@ async def login_logs(
     _: object = Depends(require_scope(Scope.AUDIT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """登录日志分页查询（超管可传 tenant_id 过滤）。
+
+    请求：query { tenant_id?, page, page_size }
+    权限：audit:page
+    返回：items / total / page / page_size
+    """
     rows, total = await LoginLogDao.query(tenant_id=tenant_id, page=page, page_size=page_size)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
@@ -66,6 +81,12 @@ async def api_logs(
     _: object = Depends(require_scope(Scope.AUDIT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """API 调用日志分页查询（可按路径前缀过滤）。
+
+    请求：query { tenant_id?, path_prefix?, page, page_size }
+    权限：audit:page
+    返回：items / total / page / page_size
+    """
     rows, total = await ApiLogDao.query(
         tenant_id=tenant_id,
         page=page,

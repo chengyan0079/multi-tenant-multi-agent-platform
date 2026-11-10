@@ -1,8 +1,5 @@
-"""Nacos 服务发现客户端封装（SDK NacosNamingService）。
+"""Nacos 服务发现客户端：遵循 BaseClient 契约，SDK 缺失时软降级。"""
 
-遵循 BaseClient 生命周期契约；SDK 缺失时软降级（connect 后仍 None，由调用方决定是否阻断）。
-auth 透传：Nacos 3.x 默认开启鉴权，需在 settings 提供 user/password（或 access_key/secret_key）。
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -60,7 +57,7 @@ class NacosNamingClient(BaseClient):
         try:
             from v2.nacos import ClientConfig, NacosNamingService
         except ImportError:
-            logger.warning(import_error_hint("Nacos 服务发现"))
+            logger.exception(import_error_hint("Nacos 服务发现"))
             return
         cc = ClientConfig(
             server_addresses=self._server_addr,

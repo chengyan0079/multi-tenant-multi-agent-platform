@@ -16,6 +16,11 @@ import {
   Result,
 } from 'antd';
 import { ProTable, type ProColumns, type ActionType } from '../../components/ProTable';
+import CodeEditor, {
+  CodeViewer,
+  renderCodeLine,
+  validateCode,
+} from '../../components/CodeEditor';
 import dayjs from 'dayjs';
 
 import {
@@ -49,6 +54,19 @@ function normalizeFormat(type?: string | null): string {
   const t = (type ?? '').toLowerCase();
   return FORMAT_OPTIONS.includes(t) ? t : 'text';
 }
+
+/** Antd Form 校验器：把第一行格式错误（含行号）作为提交失败原因。 */
+const contentValidator = (format: string) => ({
+  validator: (_: unknown, value: unknown) => {
+    const text = typeof value === 'string' ? value : '';
+    if (!text.trim()) return Promise.resolve();
+    const errors = validateCode(format, text);
+    if (!errors.length) return Promise.resolve();
+    const first = errors[0];
+    const suffix = errors.length > 1 ? `（共 ${errors.length} 处）` : '';
+    return Promise.reject(new Error(`第 ${first.line} 行：${first.message}${suffix}`));
+  },
+});
 
 /** 历史时间兼容 epoch 毫秒/秒与 ISO 字符串，无效值回落为原值。 */
 function fmtHistoryTime(value: unknown): string {
@@ -111,6 +129,9 @@ export default function ConfigList() {
   const [addForm] = Form.useForm<AddValues>();
   const [modifyForm] = Form.useForm<ModifyValues>();
   const [deleteForm] = Form.useForm<DeleteValues>();
+  // 内容格式变化时同步切换编辑器高亮语言
+  const addFormat = normalizeFormat(Form.useWatch('content_format', addForm));
+  const modifyFormat = normalizeFormat(Form.useWatch('content_format', modifyForm));
   const [modifyTarget, setModifyTarget] = useState<{ group: string; dataId: string; format: string }>({
     group: '', dataId: '', format: 'text',
   });
@@ -528,7 +549,11 @@ export default function ConfigList() {
             <Descriptions.Item label="创建时间">{fmtHistoryTime(cfgDetailMeta?.createTime)}</Descriptions.Item>
             <Descriptions.Item label="更新时间">{fmtHistoryTime(cfgDetailMeta?.lastModified)}</Descriptions.Item>
             <Descriptions.Item label="内容">
-              <pre className="config-diff" style={{ margin: 0 }}>{cfgDetailContent ?? '（无内容）'}</pre>
+              <CodeViewer
+                value={cfgDetailContent ?? ''}
+                language={cfgDetailMeta?.type}
+                rows={16}
+              />
             </Descriptions.Item>
           </Descriptions>
         </Spin>
@@ -586,7 +611,7 @@ export default function ConfigList() {
         onOk={() => addForm.submit()}
         confirmLoading={saving}
         okText="提交新增申请"
-        width={640}
+        width={880}
         destroyOnClose
       >
         <Form form={addForm} layout="vertical" onFinish={submitAdd} initialValues={{ content_format: 'text' }}>
@@ -600,8 +625,17 @@ export default function ConfigList() {
           <Form.Item name="content_format" label="内容格式" rules={[{ required: true }]}>
             <Select options={FORMAT_OPTIONS.map((f) => ({ value: f, label: f }))} />
           </Form.Item>
-          <Form.Item name="content_new" label="配置内容" rules={[{ required: true, message: '请填写配置内容' }]}>
-            <Input.TextArea rows={8} placeholder="粘贴完整配置内容" />
+          <Form.Item
+            name="content_new"
+            label="配置内容"
+            validateTrigger={['onBlur']}
+            rules={[
+              { required: true, message: '请填写配置内容' },
+              contentValidator(addFormat),
+            ]}
+            extra="按所选格式高亮并实时校验；错误行号会标红，Tab 插入两个空格"
+          >
+            <CodeEditor language={addFormat} rows={10} />
           </Form.Item>
           <Form.Item name="title" label="标题"><Input placeholder="一句话说明这次变更" /></Form.Item>
           <Form.Item name="reason" label="变更原因"><Input.TextArea rows={2} /></Form.Item>
@@ -616,7 +650,7 @@ export default function ConfigList() {
         onOk={() => modifyForm.submit()}
         confirmLoading={saving}
         okText="提交修改申请"
-        width={640}
+        width={880}
         destroyOnClose
       >
         <Form form={modifyForm} layout="vertical" onFinish={submitModify} preserve={false}
@@ -629,8 +663,17 @@ export default function ConfigList() {
           <Form.Item name="content_format" label="内容格式" rules={[{ required: true }]}>
             <Select options={FORMAT_OPTIONS.map((f) => ({ value: f, label: f }))} />
           </Form.Item>
-          <Form.Item name="content_new" label="配置内容" rules={[{ required: true, message: '请填写配置内容' }]}>
-            <Input.TextArea rows={10} placeholder="粘贴完整配置内容" />
+          <Form.Item
+            name="content_new"
+            label="配置内容"
+            validateTrigger={['onBlur']}
+            rules={[
+              { required: true, message: '请填写配置内容' },
+              contentValidator(modifyFormat),
+            ]}
+            extra="按所选格式高亮并实时校验；错误行号会标红，Tab 插入两个空格"
+          >
+            <CodeEditor language={modifyFormat} rows={12} />
           </Form.Item>
           <Form.Item name="title" label="标题"><Input placeholder="一句话说明这次变更" /></Form.Item>
           <Form.Item name="reason" label="变更原因"><Input.TextArea rows={2} /></Form.Item>
@@ -695,6 +738,8 @@ export default function ConfigList() {
               showDiffOnly={false}
               leftTitle="当前生效配置"
               rightTitle={`历史版本 nid=${rbTarget.nid ?? rbMeta?.nid ?? '-'}`}
+              renderContent={(source) => renderCodeLine(source, histType)}
+              useDarkTheme
             />
           ) : (
             <Alert type="info" showIcon message={rbLoading ? '加载中…' : '历史版本内容不可用，无法回滚'} />
@@ -724,7 +769,11 @@ export default function ConfigList() {
                 </Descriptions.Item>
                 <Descriptions.Item label="时间">{fmtHistoryTime(histDetailData.createdTime ?? (histDetailData as any).lastModifiedTime)}</Descriptions.Item>
               </Descriptions>
-              <pre className="config-diff">{typeof histDetailData.content === 'string' ? histDetailData.content : '（无内容）'}</pre>
+              <CodeViewer
+                value={typeof histDetailData.content === 'string' ? histDetailData.content : ''}
+                language={(histDetailData as any).type}
+                rows={18}
+              />
             </>
           ) : <Alert type="info" showIcon message="无内容" />}
         </Spin>

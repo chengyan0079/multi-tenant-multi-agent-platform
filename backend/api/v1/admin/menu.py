@@ -1,4 +1,5 @@
 """超管菜单管理端点（/api/v1/admin/menus）。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -30,6 +31,7 @@ class MenuIn(BaseModel):
 
 class MenuStatusIn(BaseModel):
     """状态变更（显隐）。"""
+
     visible: bool
 
 
@@ -44,6 +46,12 @@ async def list_menus(
     _: object = Depends(require_scope(Scope.MENU_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """菜单列表分页查询（含隐藏项，支持名称/路径/权限点/显隐过滤）。
+
+    请求：query { page, page_size, name?, path?, scope?, visible? }
+    权限：menu:page
+    返回：items / total / page / page_size
+    """
     rows, total = await MenuDao.list_paged(
         page=page,
         page_size=page_size,
@@ -61,6 +69,12 @@ async def create_menu(
     _: object = Depends(require_scope(Scope.MENU_ADD)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """新建菜单项。
+
+    请求：body { name, path, icon?, parent_id?, sort_order?, visible?, scope? }
+    权限：menu:add
+    返回：{ id }
+    """
     new_id = await MenuDao.create(**body.model_dump())
     return success({"id": new_id})
 
@@ -72,6 +86,12 @@ async def update_menu(
     _: object = Depends(require_scope(Scope.MENU_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """更新菜单项（禁止把自己设为父菜单）。
+
+    请求：path { menu_id }, body { name, path, icon?, parent_id?, sort_order?, visible?, scope? }
+    权限：menu:update
+    返回：{ id }
+    """
     if body.parent_id == menu_id:
         raise BizException(ErrCode.PARAM_ERROR, "不能把自己设为父菜单")
     await MenuDao.update(menu_id, **body.model_dump())
@@ -84,6 +104,12 @@ async def delete_menu(
     _: object = Depends(require_scope(Scope.MENU_DELETE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """删除菜单项。
+
+    请求：path { menu_id }
+    权限：menu:delete
+    返回：{ id }
+    """
     await MenuDao.delete(menu_id)
     return success({"id": menu_id})
 
@@ -95,5 +121,11 @@ async def set_status(
     _: object = Depends(require_scope(Scope.MENU_STATUS)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ):
+    """切换菜单显隐状态。
+
+    请求：path { menu_id }, body { visible: bool }
+    权限：menu:status
+    返回：{ id, visible }
+    """
     await MenuDao.set_visible(menu_id, body.visible)
     return success({"id": menu_id, "visible": body.visible})

@@ -1,13 +1,5 @@
-"""健康检查端点（/api/v1/health，免鉴权）。
+"""健康检查端点（免鉴权）：默认回报已注册客户端连接态，?deep=true 做真实探活。"""
 
-为什么放在 /api/v1 根下而不是 /api/v1/admin 下：
-admin 路由组在装配处整组挂 require_super_admin()，探针（K8s liveness / 网关心跳 /
-负载均衡健康检查）没有 token，放到 admin 下会被鉴权直接挡成 401/403，探针永远失败。
-本端点不声明任何鉴权依赖，也不在 admin bundle 内。
-
-默认只回报已注册客户端的连接态（零网络 IO，可被探针高频调用）；
-?deep=true 才逐个调用 client.health_check() 做真实探活（SELECT 1 / PING），供排障使用。
-"""
 from __future__ import annotations
 
 from datetime import datetime

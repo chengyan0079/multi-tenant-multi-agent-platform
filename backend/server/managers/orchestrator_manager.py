@@ -1,4 +1,5 @@
 """编排器：注册四 Agent 图 + Orchestrator 单例。"""
+
 from __future__ import annotations
 
 from backend.agents.exam.agent import ExamAgent

@@ -1,9 +1,5 @@
-"""统一 API 响应信封（全项目共用）
+"""统一 API 响应信封：{"code","msg","data"}，非 0 由全局异常处理器包装。"""
 
-所有接口统一返回 {"code": 0, "msg": "", "data": obj}。code == 0 成功，非 0 由全局
-异常处理器统一包装：业务错误码见 backend.observability.exception.ErrCode，
-业务异常见该模块的 BizException / AuthError；领域异常见 AgentError 体系。
-"""
 from __future__ import annotations
 
 import re
@@ -15,9 +11,7 @@ from pydantic import BaseModel
 T = TypeVar("T")
 
 # ISO-8601 且带 T 分隔符的 datetime 字符串（可选微秒、可选时区）
-_ISO_DT_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
-)
+_ISO_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$")
 
 
 def _normalize_datetimes(obj: Any) -> Any:

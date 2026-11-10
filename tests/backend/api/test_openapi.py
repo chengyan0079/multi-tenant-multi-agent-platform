@@ -22,3 +22,5 @@ def test_openapi_schema_generates() -> None:
     paths = schema["paths"]
     assert "/api/v1/tenant/qa/sessions" in paths
     assert "/api/v1/tenant/orchestrator/resume" in paths
+    assert "/api/v1/tenant/interview/chat/stop" in paths
+    assert "/api/v1/tenant/interview/sessions/{session_id}" in paths

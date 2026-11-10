@@ -1,4 +1,5 @@
 """超管租户管理端点（/api/v1/admin/tenants）。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -53,6 +54,12 @@ async def list_tenants(
     _: object = Depends(require_scope(Scope.TENANT_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """租户列表分页查询（含管理员与用户数，名称/创建日期过滤）。
+
+    请求：query { name?, created_from?, created_to?, page, page_size }
+    权限：tenant:page
+    返回：items / total / page / page_size
+    """
     rows, total = await TenantDao.list_with_stats(
         name=name,
         created_from=created_from,
@@ -69,6 +76,12 @@ async def get_tenant(
     _: object = Depends(require_scope(Scope.TENANT_VIEW)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """租户详情（含统计）。
+
+    请求：path { tenant_id }
+    权限：tenant:view
+    返回：租户信息 + 用户/管理员统计
+    """
     row = await TenantDao.get_with_stats(tenant_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"租户不存在: {tenant_id}")
@@ -81,6 +94,13 @@ async def create_tenant(
     _: object = Depends(require_scope(Scope.TENANT_ADD)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """新建租户并原子创建主租户用户（绑定 tenant_admin）。
+
+    说明：同一事务建租户→建主用户→绑定角色；tenant_admin 角色须已存在。
+    请求：body { name, manager: {username, name?, password?} }
+    权限：tenant:add
+    返回：{ tenant_id, user_id }
+    """
     if await TenantDao.get_by_name(body.name) is not None:
         raise BizException(ErrCode.PARAM_ERROR, f"租户名称已存在: {body.name}")
 
@@ -100,16 +120,18 @@ async def create_tenant(
     # 原子事务：建租户 → 建主用户 → 绑定 tenant_admin
     async with session_scope() as session:
         tenant_id = int(await fetch_value(session, _INSERT_TENANT, {"name": body.name}))
-        user_id = int(await fetch_value(
-            session,
-            _INSERT_USER,
-            {
-                "username": mgr.username,
-                "name": mgr.name or mgr.username,
-                "password": mgr.password,
-                "tenant_id": tenant_id,
-            },
-        ))
+        user_id = int(
+            await fetch_value(
+                session,
+                _INSERT_USER,
+                {
+                    "username": mgr.username,
+                    "name": mgr.name or mgr.username,
+                    "password": mgr.password,
+                    "tenant_id": tenant_id,
+                },
+            )
+        )
         await execute_write(
             session,
             _INSERT_MEMBERSHIP,
@@ -132,6 +154,12 @@ async def set_status(
     _: object = Depends(require_scope(Scope.TENANT_STATUS)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """租户启停（停用级联禁用用户并强踢会话）。
+
+    请求：path { tenant_id }, body { enabled: bool }
+    权限：tenant:status
+    返回：{ id, enabled }
+    """
     if tenant_id == SUPER_ADMIN_TENANT_ID:
         raise BizException(ErrCode.PARAM_ERROR, "平台超管租户(id=0)禁止启停")
     tenant = await TenantDao.get(tenant_id)
@@ -148,8 +176,10 @@ async def set_status(
         detail = f"已停用，级联禁用用户 {disabled} 个并强踢会话 {kicked} 个"
 
     await AuditDao.write(
-        action="tenant.status", target=str(tenant_id),
-        detail=detail, **_operator(current),
+        action="tenant.status",
+        target=str(tenant_id),
+        detail=detail,
+        **_operator(current),
     )
     return success({"id": tenant_id, "enabled": body.enabled})
 
@@ -160,6 +190,12 @@ async def delete_tenant(
     _: object = Depends(require_scope(Scope.TENANT_DELETE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """删除租户（级联清理成员/用户，先强踢会话再删用户）。
+
+    请求：path { tenant_id }
+    权限：tenant:delete
+    返回：{ id, deleted_memberships, deleted_users, kicked }
+    """
     if tenant_id == SUPER_ADMIN_TENANT_ID:
         raise BizException(ErrCode.PARAM_ERROR, "平台超管租户(id=0)禁止删除")
     tenant = await TenantDao.get(tenant_id)

@@ -1,11 +1,5 @@
-"""Nacos 客户端封装包：服务发现 / 配置中心 / AI（MCP·Prompt）三块独立封装。
+"""Nacos 客户端封装包：naming/config/ai 三块独立封装，对外聚合为 NacosClient。"""
 
-对外保留兼容名 NacosClient（聚合 naming + config，供既有 manager 零改动使用）：
-- .naming                -> SDK NacosNamingService 实例（NacosDiscoverManager 直接调用 register/deregister）
-- .loader                -> 配置中心热加载单例（SDK gRPC 订阅，NacosConfigManager 使用）
-- .config                -> NacosConfigClient（SDK 配置中心封装）
-- .config_center_client  -> REST 客户端（仅用于 SDK 未暴露的列表/历史，见 common/config_center/nacos_config）
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any

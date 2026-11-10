@@ -1,8 +1,5 @@
-"""问答结果 DAO：agent_qa_results / agent_qa_ragas_evals 的读写。
+"""问答结果 DAO：agent_qa_results / agent_qa_ragas_evals 读写，tenant_id 为隔离边界。"""
 
-隔离口径：两表都以 tenant_id 为边界；results 由租户内共享（复核用），
-会话/明细的身份归属由上层按 current 决定。
-"""
 from __future__ import annotations
 
 import json
@@ -130,9 +127,7 @@ class QaResultDao:
     async def get(*, result_id: str, tenant_id: int) -> dict[str, Any] | None:
         """按 id + 租户取一条结果。"""
         async with session_scope() as session:
-            return await fetch_one(
-                session, _SELECT, {"id": result_id, "tenant_id": tenant_id}
-            )
+            return await fetch_one(session, _SELECT, {"id": result_id, "tenant_id": tenant_id})
 
     @staticmethod
     async def list_paged(
@@ -146,9 +141,7 @@ class QaResultDao:
         """租户内分页列表（可按会话/状态过滤）。"""
         params = {"tenant_id": tenant_id, "session_id": session_id, "status": status}
         async with session_scope() as session:
-            return await fetch_page(
-                session, _LIST, _COUNT, params, page=page, page_size=page_size
-            )
+            return await fetch_page(session, _LIST, _COUNT, params, page=page, page_size=page_size)
 
     @staticmethod
     async def update_reference(
@@ -184,9 +177,7 @@ class QaResultDao:
             )
 
     @staticmethod
-    async def insert_eval(
-        *, eval_id: str, record: dict[str, Any], audit: dict[str, Any]
-    ) -> None:
+    async def insert_eval(*, eval_id: str, record: dict[str, Any], audit: dict[str, Any]) -> None:
         """创建一条 pending 评估记录（由接口触发，handler 消费后回填）。"""
         params = {"id": eval_id, **record, **audit}
         params["metrics"] = _json_dump(record.get("metrics"))

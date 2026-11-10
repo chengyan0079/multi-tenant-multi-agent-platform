@@ -1,23 +1,5 @@
-"""
-nodes - 试卷批阅工作流的全部节点实现
+"""试卷批阅工作流节点：解析→三轨并行批改→汇总→薄弱点→HITL 复核→发布。"""
 
-说明：核心节点如下所示
-    ① parse_word_node             解析 Word，得到 {题号: 学员答案}
-    ② load_questions_meta_node    以 DB 题目为主，合并学员答案与得分点
-        第一轨 _run_objective_track     客观题：字符串标准化后直接比对
-        第二轨 _run_subjective_track    简答题：先 Think 再结构化评分（并行处理）
-        第三轨 _run_code_track          代码题：大模型综合评估功能与质量
-    ③ run_three_tracks_node       三轨并行调度（asyncio.gather）
-    ④ aggregate_results_node      汇总三轨，算总分/得分率/需复核数
-    ⑤ analyze_weak_points_node    规则聚合 + 大模型归纳薄弱点
-    ⑥ notify_teacher_node         提交状态改为 pending_review
-    ⑦ teacher_review_node         interrupt() 暂停点（Human-in-the-Loop）
-    ⑧ apply_teacher_decision_node 合并教师修改
-    ⑨ publish_results_node        写 agent_exam_reviews 并发布
-
-Author: 骆昊
-Version: 0.0.1
-"""
 import asyncio
 import json
 import uuid
@@ -43,6 +25,7 @@ from pydantic import TypeAdapter
 
 from backend.common.llm.llm_factory import get_llm, get_structured_llm
 from backend.common.logger import get_logger
+
 logger = get_logger("exam_node")
 from backend.data.clients.minio import get_object_bytes
 from backend.data.sql import session_scope
@@ -55,8 +38,18 @@ def _chinese_to_int(s: str) -> int:
     优先按阿拉伯数字解析（'12' → 12）；否则查中文数字表（'三' → 3）。
     当前中文表只覆盖 1~10 的单个字符，查不到时兜底返回 1。
     """
-    cn_map = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-              '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+    cn_map = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
     try:
         return int(s)
     except ValueError:
@@ -100,12 +93,12 @@ def _sync_parse_word(word_bytes: bytes) -> list:
         # ① 角色：空行
         if not para_text:  # 这一段是空行
             if in_code_block:  # 若正处在代码块内
-                code_buffer.append('')  # 空行也算代码的一部分，保留（维持代码格式）
+                code_buffer.append("")  # 空行也算代码的一部分，保留（维持代码格式）
             continue  # 块外的空行直接跳过，处理下一段
 
         # 先用正则判断这一段是不是「题目开头行」（仅支持 第x题 / Q.x / 题目x 三种格式）
         is_question_header = re.match(
-            r'^(第?\s*[一二三四五六七八九十\d]+\s*[题、。.]|Q\.?\s*\d+|题目\s*\d+)',
+            r"^(第?\s*[一二三四五六七八九十\d]+\s*[题、。.]|Q\.?\s*\d+|题目\s*\d+)",
             para_text,
             re.IGNORECASE,
         )
@@ -113,28 +106,27 @@ def _sync_parse_word(word_bytes: bytes) -> list:
         if is_question_header:
             # 代码题在闭合围栏时存答案，此处只结算非代码题
             if current_question is not None:
-                if not current_question.get('is_code'):
+                if not current_question.get("is_code"):
                     answer_text = (
-                        '\n'.join(code_buffer) if in_code_block else
-                        '\n'.join(current_answer_lines)
+                        "\n".join(code_buffer) if in_code_block else "\n".join(current_answer_lines)
                     )
                     current_question.student_answer = answer_text.strip()
                 parsed_questions.append(current_question)
 
             # 从题头里提取题号：优先阿拉伯数字，其次中文数字（如「三」）
-            match = re.search(r'[一二三四五六七八九十\d]+', para_text)
+            match = re.search(r"[一二三四五六七八九十\d]+", para_text)
             q_no = _chinese_to_int(match.group()) if match else len(parsed_questions) + 1
             # 开一道新题，并把所有状态清零（开始为新题收集内容）
-            current_question = ParsedQuestion(question_no=q_no, student_answer='')
+            current_question = ParsedQuestion(question_no=q_no, student_answer="")
             current_answer_lines = []  # 清空普通答案累积
             code_buffer = []  # 清空代码累积
             in_code_block = False  # 退出可能残留的代码块状态
 
         # ③ 角色：代码围栏行（以三反引号开头）→ 进入 / 退出代码块
-        elif para_text.startswith('```'):
+        elif para_text.startswith("```"):
             in_code_block = not in_code_block
             if not in_code_block and current_question:  # 围栏闭合立刻结算代码答案
-                current_question.student_answer = '\n'.join(code_buffer).strip()
+                current_question.student_answer = "\n".join(code_buffer).strip()
                 current_question.is_code = True
 
         # ④ 角色：代码块内部的普通行
@@ -143,30 +135,31 @@ def _sync_parse_word(word_bytes: bytes) -> list:
         # ⑤ 角色：其他行 → 都算「当前题」的答案内容
         elif current_question is not None:
             # 跳过纯模板提示行（可以自定义下面的列表）
-            skip_prefixes = ['作答区', '请在此处']
+            skip_prefixes = ["作答区", "请在此处"]
             if any(para_text.startswith(p) for p in skip_prefixes):
                 pass
             else:
                 # 处理「答：X」前缀：只取冒号后面的内容
-                answer_prefixes = ['答：', '答:', 'Answer:']
+                answer_prefixes = ["答：", "答:", "Answer:"]
                 extracted = None
                 for prefix in answer_prefixes:
                     if para_text.startswith(prefix):  # 这一行以「答：」开头
-                        rest = para_text[len(prefix):].strip()  # 取前缀后面的内容
+                        rest = para_text[len(prefix) :].strip()  # 取前缀后面的内容
                         if rest:  # 冒号后确实有内容（如「答：X」）
                             extracted = rest
                         break  # 不管冒号后有没有内容，都不再把整行加入
                 if extracted is not None:  # 「答：X」这种行内带答案 → 收下提取结果
                     current_answer_lines.append(extracted)
                 elif not any(para_text.startswith(p) for p in answer_prefixes):
-                    current_answer_lines.append(para_text)  # 普通答案行（不以「答：」开头）→ 整行收下
+                    current_answer_lines.append(
+                        para_text
+                    )  # 普通答案行（不以「答：」开头）→ 整行收下
 
     # 循环结束后，单独把「最后一题」结算（它后面没有题头来触发结算）
     if current_question is not None:
         if not current_question.is_code:
             answer_text = (
-                '\n'.join(code_buffer) if in_code_block else
-                '\n'.join(current_answer_lines)
+                "\n".join(code_buffer) if in_code_block else "\n".join(current_answer_lines)
             )
             current_question.student_answer = answer_text.strip()
         parsed_questions.append(current_question)
@@ -181,19 +174,21 @@ async def parse_word_node(state: ExamState) -> dict:
     文件持久化在 MinIO（word_minio_path 存对象 key），此处读取字节到内存直接解析，
     与 resume/download_pdf_node 同范式：全内存解析、不落盘。
     """
-    object_key = state.get('word_minio_path') or state.get('word_file_path') or ''
+    object_key = state.get("word_minio_path") or state.get("word_file_path") or ""
     if not object_key:
-        logger.error('parse_word.no_object_key')
-        return {'parsed_questions': []}
+        logger.error("parse_word.no_object_key")
+        return {"parsed_questions": []}
 
     try:
         word_bytes = await get_object_bytes(object_key)
         parsed_questions = await asyncio.to_thread(_sync_parse_word, word_bytes)
-        logger.debug(f'parse_word.done | key={object_key} | agent_questions_found={len(parsed_questions)}')
-        return {'parsed_questions': parsed_questions}
+        logger.debug(
+            f"parse_word.done | key={object_key} | agent_questions_found={len(parsed_questions)}"
+        )
+        return {"parsed_questions": parsed_questions}
     except Exception as e:
-        logger.error(f'parse_word.failed | {e}')
-        return {'parsed_questions': []}
+        logger.exception(f"parse_word.failed | {e}")
+        return {"parsed_questions": []}
 
 
 # 节点②：加载试卷题目元数据
@@ -206,13 +201,13 @@ async def load_questions_meta_node(state: ExamState) -> dict:
     这样即使 Word 解析漏题/多题，卷面题目和分值仍以数据库为准。
     两道数据之间的关联键是 question_no（题号），不是列表下标。
     """
-    exam_id = state['exam_id']
-    parsed = state['parsed_questions']  # parse_word_node 的输出
+    exam_id = state["exam_id"]
+    parsed = state["parsed_questions"]  # parse_word_node 的输出
 
     async with session_scope() as session:
         result = await session.execute(
             text(
-                '''
+                """
                 SELECT id
                      , question_no
                      , question_type
@@ -223,30 +218,32 @@ async def load_questions_meta_node(state: ExamState) -> dict:
                   FROM agent_questions
                  WHERE exam_id = :exam_id
                  ORDER BY question_no
-                '''
+                """
             ),
-            {'exam_id': exam_id},
+            {"exam_id": exam_id},
         )
         agent_questions = result.mappings().all()
         # 简答题加载得分点
-        question_ids = [str(q['id']) for q in agent_questions if q['question_type'] == 'short_answer']
+        question_ids = [
+            str(q["id"]) for q in agent_questions if q["question_type"] == "short_answer"
+        ]
         scoring_points_rows = []
         if question_ids:
-            param_names = [f':qid_{i}' for i in range(len(question_ids))]
-            qid_params = {f'qid_{i}': qid for i, qid in enumerate(question_ids)}
+            param_names = [f":qid_{i}" for i in range(len(question_ids))]
+            qid_params = {f"qid_{i}": qid for i, qid in enumerate(question_ids)}
 
             sp_result = await session.execute(
                 text(
-                    f'''
+                    f"""
                     SELECT id
                          , question_id
                          , point_desc
                          , point_score
                     FROM scoring_points
-                    WHERE question_id IN ({', '.join(param_names)})
+                    WHERE question_id IN ({", ".join(param_names)})
                       AND is_active = TRUE
                     ORDER BY question_id, id
-                    '''
+                    """
                 ),
                 qid_params,
             )
@@ -255,33 +252,37 @@ async def load_questions_meta_node(state: ExamState) -> dict:
     # 按 question_id 聚合得分点
     sp_by_question: dict[str, list] = {}
     for sp in scoring_points_rows:
-        qid = str(sp['question_id'])
-        sp_by_question.setdefault(qid, []).append(ScoringPointItem(
-            id=str(sp['id']),
-            desc=sp['point_desc'],
-            score=sp['point_score'],
-        ))
+        qid = str(sp["question_id"])
+        sp_by_question.setdefault(qid, []).append(
+            ScoringPointItem(
+                id=str(sp["id"]),
+                desc=sp["point_desc"],
+                score=sp["point_score"],
+            )
+        )
 
     # 以 DB 题目为主，合并解析结果
     parsed_by_no = {p.question_no: p for p in parsed}
     merged_questions = []
 
     for q in agent_questions:
-        q_no = q['question_no']
-        merged_questions.append(ParsedQuestion(
-            question_id=str(q['id']),
-            question_no=q_no,
-            question_type=q['question_type'],
-            content=q['content'],
-            student_answer=(parsed_by_no.get(q_no) or ParsedQuestion()).student_answer,
-            correct_answer=q['correct_answer'] or '',
-            scoring_points=sp_by_question.get(str(q['id']), []),
-            full_score=q['score'],
-            knowledge_tag=q['knowledge_tag'] or '',
-        ))
+        q_no = q["question_no"]
+        merged_questions.append(
+            ParsedQuestion(
+                question_id=str(q["id"]),
+                question_no=q_no,
+                question_type=q["question_type"],
+                content=q["content"],
+                student_answer=(parsed_by_no.get(q_no) or ParsedQuestion()).student_answer,
+                correct_answer=q["correct_answer"] or "",
+                scoring_points=sp_by_question.get(str(q["id"]), []),
+                full_score=q["score"],
+                knowledge_tag=q["knowledge_tag"] or "",
+            )
+        )
 
-    logger.info(f'load_questions_meta.done | {exam_id=} | total_questions={len(merged_questions)}')
-    return {'parsed_questions': merged_questions}
+    logger.info(f"load_questions_meta.done | {exam_id=} | total_questions={len(merged_questions)}")
+    return {"parsed_questions": merged_questions}
 
 
 # 第一轨：规则引擎（客观题）
@@ -296,8 +297,8 @@ def _normalize_answer(answer: str) -> str:
         3. 字符排序（多选题 'BA' 和 'AB' 视为等价）
            sorted('ABC') → ['A','B','C'] → 'ABC'
     """
-    cleaned = answer.upper().replace(' ', '').replace('，', '').replace(',', '')
-    return ''.join(sorted(cleaned))
+    cleaned = answer.upper().replace(" ", "").replace("，", "").replace(",", "")
+    return "".join(sorted(cleaned))
 
 
 async def _run_objective_track(questions: list[ParsedQuestion]) -> list[ByQuestionItem]:
@@ -312,22 +313,24 @@ async def _run_objective_track(questions: list[ParsedQuestion]) -> list[ByQuesti
         student_ans = _normalize_answer(q.student_answer)
         correct_ans = _normalize_answer(q.correct_answer)
         # 第二步：完全相等即得分；客观题只有 0 分 / 满分两种结果。
-        is_correct = (student_ans == correct_ans)
+        is_correct = student_ans == correct_ans
 
-        results.append(ByQuestionItem(
-            question_id=q.question_id,
-            question_no=q.question_no,
-            question_type=q.question_type,
-            knowledge_tag=q.knowledge_tag,
-            content=q.content,
-            student_answer=q.student_answer,
-            correct_answer=q.correct_answer,
-            is_correct=is_correct,
-            score=q.full_score if is_correct else 0,
-            full_score=q.full_score,
-            needs_review=False,  # 客观题不需要教师复核
-            ai_feedback='正确' if is_correct else f'正确答案：{q.correct_answer}',
-        ))
+        results.append(
+            ByQuestionItem(
+                question_id=q.question_id,
+                question_no=q.question_no,
+                question_type=q.question_type,
+                knowledge_tag=q.knowledge_tag,
+                content=q.content,
+                student_answer=q.student_answer,
+                correct_answer=q.correct_answer,
+                is_correct=is_correct,
+                score=q.full_score if is_correct else 0,
+                full_score=q.full_score,
+                needs_review=False,  # 客观题不需要教师复核
+                ai_feedback="正确" if is_correct else f"正确答案：{q.correct_answer}",
+            )
+        )
 
     return results
 
@@ -345,29 +348,29 @@ async def _review_one_subjective(q: ParsedQuestion) -> ByQuestionItem:
     第一步失败不影响第二步（只是少了一段推理上下文）。
     """
     # 构造得分点描述文本
-    scoring_points_text = '\n'.join([
-        f'  {i + 1}. [{sp.score}分] {sp.desc}'
-        for i, sp in enumerate(q.scoring_points)
-    ]) or '  （无预设得分点，请综合评分）'
-    student_answer_text = q.student_answer or '（学员未作答）'
+    scoring_points_text = (
+        "\n".join([f"  {i + 1}. [{sp.score}分] {sp.desc}" for i, sp in enumerate(q.scoring_points)])
+        or "  （无预设得分点，请综合评分）"
+    )
+    student_answer_text = q.student_answer or "（学员未作答）"
 
     # 第一步：推理分析
-    reasoning_trace = ''
+    reasoning_trace = ""
     try:
         think_prompt = (await resolve_prompt("subjective_think")).format(
-            question_content=q['content'],
+            question_content=q["content"],
             scoring_points=scoring_points_text,
             student_answer=student_answer_text,
         )
         think_llm = await get_llm("exam")
         think_resp = await think_llm.ainvoke([HumanMessage(content=think_prompt)])
         reasoning_trace = str(think_resp.content).strip()
-        logger.debug('subjective_think.done', question_no=q.get('question_no'))
+        logger.debug("subjective_think.done", question_no=q.get("question_no"))
     except Exception as e:
-        logger.error(f'subjective_think.failed | {e}')
+        logger.exception(f"subjective_think.failed | {e}")
 
     # 第二步：结构化评分
-    think_context = f'\n\n【批改前分析】\n{reasoning_trace}' if reasoning_trace else ''
+    think_context = f"\n\n【批改前分析】\n{reasoning_trace}" if reasoning_trace else ""
     review_prompt = (await resolve_prompt("subjective_review")).format(
         question_content=q.content,
         scoring_points=scoring_points_text,
@@ -375,15 +378,17 @@ async def _review_one_subjective(q: ParsedQuestion) -> ByQuestionItem:
         student_answer=student_answer_text,
     ) + think_context
 
-    structured_llm = await get_structured_llm('exam', SubjectiveReviewResult)
-    result: SubjectiveReviewResult = await structured_llm.ainvoke([
-        SystemMessage(content=await resolve_prompt("system")),  # 统一人设与批改原则
-        HumanMessage(content=review_prompt),  # 评分任务 + 上一步的推理结论
-    ])
+    structured_llm = await get_structured_llm("exam", SubjectiveReviewResult)
+    result: SubjectiveReviewResult = await structured_llm.ainvoke(
+        [
+            SystemMessage(content=await resolve_prompt("system")),  # 统一人设与批改原则
+            HumanMessage(content=review_prompt),  # 评分任务 + 上一步的推理结论
+        ]
+    )
     return ByQuestionItem(
         question_id=q.question_id,
         question_no=q.question_no,
-        question_type='short_answer',
+        question_type="short_answer",
         knowledge_tag=q.knowledge_tag,
         content=q.content,
         student_answer=q.student_answer,
@@ -408,7 +413,7 @@ async def _run_subjective_track(questions: list[ParsedQuestion]) -> list[ByQuest
         return []
 
     group_size = 3
-    groups = [questions[i:i + group_size] for i in range(0, len(questions), group_size)]
+    groups = [questions[i : i + group_size] for i in range(0, len(questions), group_size)]
     all_results: list[ByQuestionItem] = []
     for group in groups:
         group_results = await asyncio.gather(
@@ -419,24 +424,26 @@ async def _run_subjective_track(questions: list[ParsedQuestion]) -> list[ByQuest
             if isinstance(result, Exception):
                 # 单题失败降级：标记 needs_review=True，不阻断整批
                 logger.warning(
-                    'subjective_track.question_failed',
+                    "subjective_track.question_failed",
                     question_id=q.question_id,
                     error=str(result),
                 )
-                all_results.append(ByQuestionItem(
-                    question_id=q.question_id,
-                    question_no=q.question_no,
-                    question_type='short_answer',
-                    knowledge_tag=q.knowledge_tag,
-                    content=q.content,
-                    student_answer=q.student_answer,
-                    score=0,
-                    full_score=q.full_score,
-                    needs_review=True,
-                    confidence=0.0,
-                    ai_feedback='AI 评分失败，已标记需教师人工批改',
-                    point_results=[],
-                ))
+                all_results.append(
+                    ByQuestionItem(
+                        question_id=q.question_id,
+                        question_no=q.question_no,
+                        question_type="short_answer",
+                        knowledge_tag=q.knowledge_tag,
+                        content=q.content,
+                        student_answer=q.student_answer,
+                        score=0,
+                        full_score=q.full_score,
+                        needs_review=True,
+                        confidence=0.0,
+                        ai_feedback="AI 评分失败，已标记需教师人工批改",
+                        point_results=[],
+                    )
+                )
             else:
                 all_results.append(result)
 
@@ -470,7 +477,7 @@ async def _review_one_code(q: ParsedQuestion) -> ByQuestionItem:
     返回：一道代码题的批改结果（ByQuestionItem）。
     """
     student_code = q.student_answer  # 取出学员代码
-    reference_solution = q.correct_answer or ''  # 取出参考实现（缺省给空串）
+    reference_solution = q.correct_answer or ""  # 取出参考实现（缺省给空串）
 
     # 交给大模型评分：返回（逐条评语, 得分, 把握度）三元组
     feedback, score, confidence = await _llm_code_review(
@@ -483,7 +490,7 @@ async def _review_one_code(q: ParsedQuestion) -> ByQuestionItem:
     return ByQuestionItem(
         question_id=q.question_id,  # 题目 ID
         question_no=q.question_no,  # 题号
-        question_type='code',  # 题型固定 code
+        question_type="code",  # 题型固定 code
         knowledge_tag=q.knowledge_tag,  # 知识点（缺省空串）
         content=q.content,  # 题目内容
         student_answer=student_code,  # 学员代码
@@ -492,15 +499,15 @@ async def _review_one_code(q: ParsedQuestion) -> ByQuestionItem:
         confidence=confidence,  # LLM 评分把握度（0~1）
         needs_review=confidence < 0.7,  # 把握度低于 0.7 → 标记教师复核
         quality_feedback=feedback,  # LLM 逐条评语
-        ai_feedback='\n'.join(feedback),  # 评语拼成单个字符串，方便展示
+        ai_feedback="\n".join(feedback),  # 评语拼成单个字符串，方便展示
     )
 
 
 async def _llm_code_review(
-        question_content: str,  # 题目内容
-        student_code: str,  # 学员代码
-        full_score: int,  # 该题满分（评分上限）
-        reference_solution: str = '',  # 参考实现（默认空串）
+    question_content: str,  # 题目内容
+    student_code: str,  # 学员代码
+    full_score: int,  # 该题满分（评分上限）
+    reference_solution: str = "",  # 参考实现（默认空串）
 ) -> tuple[list[str], int, float]:
     """
     大模型综合评估代码：功能正确性 + 代码质量。
@@ -513,28 +520,31 @@ async def _llm_code_review(
     # 用模板拼出完整 Prompt（把题目 / 参考实现 / 学员代码 / 满分填进去）
     prompt = (await resolve_prompt("code_review")).format(
         question=question_content,  # {question}
-        reference_solution=reference_solution or '（无参考实现，仅按代码本身评估）',  # {reference_solution}，没有就填兜底语
-        code=student_code or '（未提交代码）',  # {code}，没提交就填兜底语
+        reference_solution=reference_solution
+        or "（无参考实现，仅按代码本身评估）",  # {reference_solution}，没有就填兜底语
+        code=student_code or "（未提交代码）",  # {code}，没提交就填兜底语
         full_score=full_score,  # {full_score}：满分制
     )
 
-    llm = await get_llm('exam')  # 从 llm_factory 取「代码评估」用的模型实例
-    response = await llm.ainvoke([  # 异步调用大模型
-        SystemMessage(content=await resolve_prompt("system")),  # 系统提示（统一人设/规则）
-        HumanMessage(content=prompt),  # 把上面拼好的 Prompt 作为用户消息
-    ])
+    llm = await get_llm("exam")  # 从 llm_factory 取「代码评估」用的模型实例
+    response = await llm.ainvoke(
+        [  # 异步调用大模型
+            SystemMessage(content=await resolve_prompt("system")),  # 系统提示（统一人设/规则）
+            HumanMessage(content=prompt),  # 把上面拼好的 Prompt 作为用户消息
+        ]
+    )
 
     # 取出回复纯文本，并去掉模型可能多带的 ```json 代码围栏，方便 json.loads
-    raw = str(response.content).strip().replace('```json', '').replace('```', '').strip()
+    raw = str(response.content).strip().replace("```json", "").replace("```", "").strip()
     try:  # 解析可能失败，包 try
         data = json.loads(raw)  # 把回复解析成字典
-        feedback = data.get('feedback', [])  # 取逐条评语列表（缺省空列表）
-        score = min(int(data.get('score', 0)), full_score)  # 取分数，封顶到满分
-        confidence = float(data.get('confidence', 0))  # 取把握度（缺省 0）
+        feedback = data.get("feedback", [])  # 取逐条评语列表（缺省空列表）
+        score = min(int(data.get("score", 0)), full_score)  # 取分数，封顶到满分
+        confidence = float(data.get("confidence", 0))  # 取把握度（缺省 0）
     except Exception as e:  # 模型没返回合法 JSON
-        logger.error(f'code_review.error | {e}')
+        logger.exception(f"code_review.error | {e}")
         # JSON 解析失败时的降级：不崩，给 0 分 + 把握度 0（→ 必复核）+ 提示人工
-        feedback = ['代码评估结果解析失败，请教师人工复核']
+        feedback = ["代码评估结果解析失败，请教师人工复核"]
         score = 0
         confidence = 0.0
 
@@ -559,16 +569,20 @@ async def run_three_tracks_node(state: ExamState) -> dict:
     asyncio.gather(return_exceptions=True)：
         某一轨抛异常不会中断其他轨，异常作为返回值处理；失败的轨结果置为空列表。
     """
-    agent_questions = state['parsed_questions']  # 取出合并好的题目列表
+    agent_questions = state["parsed_questions"]  # 取出合并好的题目列表
 
     # 按题型把题目分成三组，分别喂给三条轨
-    objective_qs = [q for q in agent_questions if q.question_type in  # 客观题：单选/多选/判断
-                    ('single_choice', 'multi_choice', 'judge')]
-    subjective_qs = [q for q in agent_questions if q.question_type == 'short_answer']  # 简答题
-    code_qs = [q for q in agent_questions if q.question_type == 'code']  # 代码题
+    objective_qs = [
+        q
+        for q in agent_questions
+        if q.question_type  # 客观题：单选/多选/判断
+        in ("single_choice", "multi_choice", "judge")
+    ]
+    subjective_qs = [q for q in agent_questions if q.question_type == "short_answer"]  # 简答题
+    code_qs = [q for q in agent_questions if q.question_type == "code"]  # 代码题
 
     logger.info(  # 记一条日志：三轨各有多少题
-        'three_tracks.start',
+        "three_tracks.start",
         objective=len(objective_qs),
         subjective=len(subjective_qs),
         code=len(code_qs),
@@ -588,15 +602,15 @@ async def run_three_tracks_node(state: ExamState) -> dict:
     code_results = raw[2] if not isinstance(raw[2], Exception) else []
 
     # 把失败的轨记到错误日志（不影响其余两轨的正常流程）
-    for name, exc in zip(['objective', 'subjective', 'code'], raw):  # 轨名与返回值配对
+    for name, exc in zip(["objective", "subjective", "code"], raw):  # 轨名与返回值配对
         if isinstance(exc, Exception):
-            logger.error(f'three_tracks.{name}_failed | {exc}')
+            logger.error(f"three_tracks.{name}_failed | {exc}")
 
-    logger.debug('three_tracks.done')
+    logger.debug("three_tracks.done")
     return {
-        'objective_results': objective_results,
-        'subjective_results': subjective_results,
-        'code_results': code_results,
+        "objective_results": objective_results,
+        "subjective_results": subjective_results,
+        "code_results": code_results,
     }
 
 
@@ -612,9 +626,9 @@ async def aggregate_results_node(state: ExamState) -> dict:
                             它是后续 HitL（6.9）展示给教师的核心数据结构。
     """
     all_results = (  # 三轨结果拼成一个大列表
-            state.get('objective_results', [])  # 客观题结果（缺省空列表）
-            + state.get('subjective_results', [])  # 简答题结果
-            + state.get('code_results', [])  # 代码题结果
+        state.get("objective_results", [])  # 客观题结果（缺省空列表）
+        + state.get("subjective_results", [])  # 简答题结果
+        + state.get("code_results", [])  # 代码题结果
     )
     all_results.sort(key=lambda x: x.question_no)  # 按题号升序排（三轨混在一起，重排成卷面顺序）
     total_score = sum(r.score for r in all_results)  # 累加每题得分 = 总分
@@ -631,12 +645,14 @@ async def aggregate_results_node(state: ExamState) -> dict:
     )
 
     logger.info(  # 记一条汇总日志
-        'aggregate_results.done',
-        total_score=total_score, full_score=full_score,
-        score_rate=score_rate, needs_review=needs_review_count,
+        "aggregate_results.done",
+        total_score=total_score,
+        full_score=full_score,
+        score_rate=score_rate,
+        needs_review=needs_review_count,
     )
 
-    return {'pre_review_summary': summary}  # 返回汇总，写回 state
+    return {"pre_review_summary": summary}  # 返回汇总，写回 state
 
 
 # 节点⑤：知识薄弱点分析
@@ -656,19 +672,16 @@ async def analyze_weak_points_node(state: ExamState) -> dict:
         路径2：失分题整体交 LLM → 推断无标签题的知识点 + 为各薄弱点生成复习建议
     两路合并去重，按 wrong_count 降序排列。
     """
-    raw_summary = state.get('pre_review_summary')
+    raw_summary = state.get("pre_review_summary")
     summary = TypeAdapter(PreReviewSummary).validate_python(raw_summary) if raw_summary else None
     all_results = summary.by_question if summary else []  # 取逐题结果
 
     # 收集失分题（得分 < 满分就算失分，满分题不算薄弱）
-    wrong_questions = [
-        r for r in all_results
-        if r.score < r.full_score
-    ]
+    wrong_questions = [r for r in all_results if r.score < r.full_score]
     if not wrong_questions:  # 全部答对：没有薄弱点
         return {
-            'weak_points': [],  # 空薄弱点列表
-            'weak_points_summary': '本次试卷全部答对，表现优秀！',
+            "weak_points": [],  # 空薄弱点列表
+            "weak_points_summary": "本次试卷全部答对，表现优秀！",
         }
     # ── 路径1：有标签 → 按 knowledge_tag 直接聚合 ─────────────────
     tagged = [r for r in wrong_questions if r.knowledge_tag]  # 有知识点标签的失分题
@@ -679,45 +692,49 @@ async def analyze_weak_points_node(state: ExamState) -> dict:
         tag = r.knowledge_tag  # 这道题的知识点
         if tag not in tagged_weak:  # 第一次见这个标签：建一个空聚合项
             tagged_weak[tag] = {
-                'tag': tag,
-                'wrong_count': 0,  # 该知识点错题数
-                'total_count': 0,  # 该知识点涉及题数
-                'question_nos': [],  # 涉及的题号
-                'suggestion': '',  # 复习建议（稍后由 LLM 补）
+                "tag": tag,
+                "wrong_count": 0,  # 该知识点错题数
+                "total_count": 0,  # 该知识点涉及题数
+                "question_nos": [],  # 涉及的题号
+                "suggestion": "",  # 复习建议（稍后由 LLM 补）
             }
-        tagged_weak[tag]['wrong_count'] += 1  # 错题数 +1
-        tagged_weak[tag]['total_count'] += 1  # 题数 +1
-        tagged_weak[tag]['question_nos'].append(r.question_no)  # 记下题号
+        tagged_weak[tag]["wrong_count"] += 1  # 错题数 +1
+        tagged_weak[tag]["total_count"] += 1  # 题数 +1
+        tagged_weak[tag]["question_nos"].append(r.question_no)  # 记下题号
 
     # ── 路径2：失分题整体交 LLM（推断知识点 + 生成 suggestion / summary）──
     llm_weak_points: list[dict] = []  # LLM 给出的薄弱点列表
-    llm_summary = ''  # LLM 给出的整体评价
+    llm_summary = ""  # LLM 给出的整体评价
 
     agent_questions_for_llm = tagged + untagged  # 全部失分题都给 LLM（有标签的也要 LLM 补建议）
     if agent_questions_for_llm:  # 有失分题才调 LLM
-        wrong_desc = '\n'.join([  # 把失分题拼成给 LLM 看的描述文本
-            f'第{r.question_no}题（{r.question_type}，{r.score}/{r.full_score}分）：'
-            f'\n  题目：{r.content[:200]}'  # 题目（截断 200 字）
-            f'\n  AI反馈：{r.ai_feedback[:150]}'  # AI 反馈（截断 150 字）
-            for r in agent_questions_for_llm
-        ])
+        wrong_desc = "\n".join(
+            [  # 把失分题拼成给 LLM 看的描述文本
+                f"第{r.question_no}题（{r.question_type}，{r.score}/{r.full_score}分）："
+                f"\n  题目：{r.content[:200]}"  # 题目（截断 200 字）
+                f"\n  AI反馈：{r.ai_feedback[:150]}"  # AI 反馈（截断 150 字）
+                for r in agent_questions_for_llm
+            ]
+        )
 
         prompt = (await resolve_prompt("weak_points_analysis")).format(
             wrong_questions=wrong_desc
         )  # 拼 Prompt
-        logger.debug(f'len(prompt):{len(prompt)}')
-        structured_llm = await get_structured_llm('exam', WeakPointsReport)  # 结构化输出模型
+        logger.debug(f"len(prompt):{len(prompt)}")
+        structured_llm = await get_structured_llm("exam", WeakPointsReport)  # 结构化输出模型
 
         try:  # LLM 可能失败，包 try
-            report: WeakPointsReport = await structured_llm.ainvoke([  # 调用 → 得到 WeakPointsReport
-                SystemMessage(content=await resolve_prompt("system")),
-                HumanMessage(content=prompt),
-            ])
+            report: WeakPointsReport = await structured_llm.ainvoke(
+                [  # 调用 → 得到 WeakPointsReport
+                    SystemMessage(content=await resolve_prompt("system")),
+                    HumanMessage(content=prompt),
+                ]
+            )
             llm_weak_points = [wp.model_dump() for wp in report.weak_points]  # 转成 dict 列表
             llm_summary = report.overall_summary  # 整体评价
         except Exception as e:  # LLM 失败：降级，不崩
-            logger.warning('analyze_weak_points.llm_failed', error=str(e))
-            llm_summary = '薄弱点分析失败，请教师根据错题情况人工判断。'
+            logger.exception("analyze_weak_points.llm_failed", error=str(e))
+            llm_summary = "薄弱点分析失败，请教师根据错题情况人工判断。"
 
     # ── 合并两路结果，去重 ────────────────────────────────────
     # 优先用规则聚合的结果（准确），LLM 只负责补 suggestion 和无标签题的知识点。
@@ -725,31 +742,31 @@ async def analyze_weak_points_node(state: ExamState) -> dict:
     final_weak_points = []  # 最终薄弱点列表
 
     for llm_wp in llm_weak_points:  # 遍历 LLM 给的每个薄弱点
-        tag = llm_wp.get('tag', '')
+        tag = llm_wp.get("tag", "")
         if tag in tagged_weak:  # 这个标签规则已聚合 → 只取 LLM 的建议
-            tagged_weak[tag]['suggestion'] = llm_wp.get('suggestion', '')
+            tagged_weak[tag]["suggestion"] = llm_wp.get("suggestion", "")
         elif tag not in merged_tags:  # 纯 LLM 推断出的新知识点（无标签题）
             final_weak_points.append(llm_wp)  # 直接收入
             merged_tags.add(tag)
 
     # 规则聚合的结果（已补上 suggestion）也加入最终列表
     for wp in tagged_weak.values():
-        if not wp['suggestion']:  # LLM 没给建议时给个兜底建议
-            wp['suggestion'] = f'建议重点复习 {wp['tag']} 相关知识点。'
+        if not wp["suggestion"]:  # LLM 没给建议时给个兜底建议
+            wp["suggestion"] = f"建议重点复习 {wp['tag']} 相关知识点。"
         final_weak_points.append(wp)
 
     # 按 wrong_count 降序排（错得最多的知识点排最前）
-    final_weak_points.sort(key=lambda x: x.get('wrong_count', 0), reverse=True)
+    final_weak_points.sort(key=lambda x: x.get("wrong_count", 0), reverse=True)
 
     logger.info(  # 记一条日志
-        'analyze_weak_points.done',
+        "analyze_weak_points.done",
         # submission_id=state['submission_id'],
         weak_count=len(final_weak_points),
     )
 
     return {  # 返回薄弱点 + 整体评价，写回 state
-        'weak_points': [WeakPoint(**wp) for wp in final_weak_points],
-        'weak_points_summary': llm_summary or '已完成薄弱点分析，请查看详情。',
+        "weak_points": [WeakPoint(**wp) for wp in final_weak_points],
+        "weak_points_summary": llm_summary or "已完成薄弱点分析，请查看详情。",
     }
 
 
@@ -766,19 +783,19 @@ async def notify_teacher_node(state: ExamState) -> dict:
         async with session.begin():
             await session.execute(
                 text(
-                    '''
+                    """
                     UPDATE agent_exam_submissions
                        SET status = 'pending_review'
                      WHERE id = :submission_id
-                    '''
+                    """
                 ),
-                {'submission_id': state['submission_id']},
+                {"submission_id": state["submission_id"]},
             )
 
     # Todo: 真实通知渠道（钉钉/企业微信/WebSocket 推送）可在这里接入；当前只通过数据库状态表达「等待教师复核」。
 
-    logger.debug('notify_teacher.done', submission_id=state['submission_id'])
-    return {'teacher_notified': True}
+    logger.debug("notify_teacher.done", submission_id=state["submission_id"])
+    return {"teacher_notified": True}
 
 
 # 节点⑦：Human-in-the-Loop 暂停点
@@ -795,23 +812,21 @@ async def teacher_review_node(state: ExamState) -> dict:
     """
     # 下面的内容作为 interrupt 的返回值暴露给外部，教师确认页上需要看到这些全部内容
     display_data = {
-        'submission_id': state['submission_id'],
-        'student_id': state['student_id'],
-        'pre_review_summary': state.get('pre_review_summary', {}),
-        'weak_points': state.get('weak_points', []),
-        'weak_points_summary': state.get('weak_points_summary', ''),
-        'message': '请检查 AI 预批改结果和知识薄弱点分析，确认无误后点击发布。',
+        "submission_id": state["submission_id"],
+        "student_id": state["student_id"],
+        "pre_review_summary": state.get("pre_review_summary", {}),
+        "weak_points": state.get("weak_points", []),
+        "weak_points_summary": state.get("weak_points_summary", ""),
+        "message": "请检查 AI 预批改结果和知识薄弱点分析，确认无误后点击发布。",
     }
 
-    # interrupt() 在此暂停图执行：
-    #   - 当前 state 由 checkpointer 保存；
-    #   - 函数在这里「挂起」，直到外部用 Command(resume=decision) 恢复；
-    #   - 恢复后本节点会从头重新执行，interrupt() 直接返回 decision。
-    # 因此 interrupt() 之前的代码必须没有副作用（本节点只组装 dict，是安全的）。
+    # interrupt() 挂起图、checkpointer 存 state；外部 Command(resume=decision) 恢复后本节点从头重跑，故其前不能有副作用。
     teacher_decision = interrupt(display_data)
 
-    logger.debug(f'teacher_review.resumed | submission_id={state['submission_id']} | action={teacher_decision.get('action', 'unknown')}')
-    return {'teacher_decision': teacher_decision}
+    logger.debug(
+        f"teacher_review.resumed | submission_id={state['submission_id']} | action={teacher_decision.get('action', 'unknown')}"
+    )
+    return {"teacher_decision": teacher_decision}
 
 
 # 节点⑧：合并教师修改
@@ -822,11 +837,11 @@ async def apply_teacher_decision_node(state: ExamState) -> dict:
     approve：直接把 AI 分数作为最终分数
     modify： 按 modifications 列表覆盖指定题目的得分和评语
     """
-    decision: dict = state.get('teacher_decision') or {}
-    action = decision.get('action', 'approve')
-    modifications = decision.get('modifications', [])
+    decision: dict = state.get("teacher_decision") or {}
+    action = decision.get("action", "approve")
+    modifications = decision.get("modifications", [])
 
-    raw_summary = state.get('pre_review_summary')
+    raw_summary = state.get("pre_review_summary")
     summary = TypeAdapter(PreReviewSummary).validate_python(raw_summary) if raw_summary else None
     all_results = list(summary.by_question) if summary else []
 
@@ -836,21 +851,23 @@ async def apply_teacher_decision_node(state: ExamState) -> dict:
 
     # modify 时，按 question_id 找到对应题目，覆盖分数和评语。
     # 先建「question_id → 下标」索引，避免每条修改都线性扫描一遍列表。
-    if action == 'modify' and modifications:
+    if action == "modify" and modifications:
         id_to_idx = {r.question_id: i for i, r in enumerate(all_results)}
         for mod in modifications:
-            qid = mod.get('question_id')
+            qid = mod.get("question_id")
             if qid in id_to_idx:  # 找不到对应题目的修改项直接忽略
                 idx = id_to_idx[qid]
-                if 'new_score' in mod:
+                if "new_score" in mod:
                     # 同时保留 AI 分（score）和教师分（teacher_score），
-                    all_results[idx].teacher_score = mod['new_score']
-                    all_results[idx].final_score = mod['new_score']
-                if 'comment' in mod:
-                    all_results[idx].teacher_comment = mod['comment']
+                    all_results[idx].teacher_score = mod["new_score"]
+                    all_results[idx].final_score = mod["new_score"]
+                if "comment" in mod:
+                    all_results[idx].teacher_comment = mod["comment"]
 
-    logger.debug(f'apply_teacher_decision.done | {action=} | modifications_count={len(modifications)}')
-    return {'final_results': all_results}
+    logger.debug(
+        f"apply_teacher_decision.done | {action=} | modifications_count={len(modifications)}"
+    )
+    return {"final_results": all_results}
 
 
 # 节点⑨：发布批改结果
@@ -868,11 +885,11 @@ async def publish_results_node(state: ExamState) -> dict:
     重复调用本节点不会产生重复批改记录。
     """
     final_results: list[ByQuestionItem] = TypeAdapter(list[ByQuestionItem]).validate_python(
-        state.get('final_results', [])
+        state.get("final_results", [])
     )
-    submission_id = state['submission_id']
-    teacher_id = (state.get('teacher_decision') or {}).get('teacher_id', '')
-    weak_points = state.get('weak_points', [])
+    submission_id = state["submission_id"]
+    teacher_id = (state.get("teacher_decision") or {}).get("teacher_id", "")
+    weak_points = state.get("weak_points", [])
 
     async with session_scope() as session:
         async with session.begin():
@@ -880,20 +897,17 @@ async def publish_results_node(state: ExamState) -> dict:
                 # 先删后插：避免重复发布时产生重复记录
                 await session.execute(
                     text(
-                        '''
+                        """
                         DELETE FROM agent_exam_reviews
                         WHERE submission_id = :submission_id
                           AND question_id   = :question_id
-                        '''
+                        """
                     ),
-                    {
-                        'submission_id': submission_id,
-                        'question_id': r['question_id']
-                    },
+                    {"submission_id": submission_id, "question_id": r["question_id"]},
                 )
                 await session.execute(
                     text(
-                        '''
+                        """
                         INSERT INTO agent_exam_reviews
                             (
                             id, submission_id, question_id, question_type,
@@ -912,32 +926,34 @@ async def publish_results_node(state: ExamState) -> dict:
                             :needs_review, :reviewed_user_id, NOW(),
                             :create_user_id, :update_user_id
                             )
-                        '''
+                        """
                     ),
                     {
-                        'id': str(uuid.uuid4()),
-                        'submission_id': submission_id,
-                        'question_id': r.question_id,
-                        'question_type': r.question_type,
-                        'knowledge_tag': r.knowledge_tag,
-                        'student_answer': r.student_answer,
-                        'ai_score': r.score,
-                        'ai_feedback': r.ai_feedback,
-                        'ai_raw_result': json.dumps(r.model_dump()),
-                        'teacher_score': r.teacher_score if r.teacher_score is not None else r.final_score,
-                        'teacher_comment': r.teacher_comment or '',
-                        'final_score': r.final_score,
-                        'needs_review': r.needs_review,
-                        'reviewed_user_id': teacher_id,
-                        'create_user_id': teacher_id,
-                        'update_user_id': teacher_id,
+                        "id": str(uuid.uuid4()),
+                        "submission_id": submission_id,
+                        "question_id": r.question_id,
+                        "question_type": r.question_type,
+                        "knowledge_tag": r.knowledge_tag,
+                        "student_answer": r.student_answer,
+                        "ai_score": r.score,
+                        "ai_feedback": r.ai_feedback,
+                        "ai_raw_result": json.dumps(r.model_dump()),
+                        "teacher_score": r.teacher_score
+                        if r.teacher_score is not None
+                        else r.final_score,
+                        "teacher_comment": r.teacher_comment or "",
+                        "final_score": r.final_score,
+                        "needs_review": r.needs_review,
+                        "reviewed_user_id": teacher_id,
+                        "create_user_id": teacher_id,
+                        "update_user_id": teacher_id,
                     },
                 )
 
             # 更新提交状态为已发布
             await session.execute(
                 text(
-                    '''
+                    """
                     UPDATE agent_exam_submissions
                        SET status = 'published'
                          , published_at = NOW()
@@ -945,31 +961,32 @@ async def publish_results_node(state: ExamState) -> dict:
                          , weak_points = :weak_points
                          , weak_points_summary = :weak_points_summary
                      WHERE id = :submission_id
-                    '''
+                    """
                 ),
                 {
-                    'submission_id': submission_id,
-                    'weak_points': json.dumps([wp.model_dump() if isinstance(wp, WeakPoint) else wp for wp in weak_points]),
-                    'weak_points_summary': state.get('weak_points_summary', ''),
+                    "submission_id": submission_id,
+                    "weak_points": json.dumps(
+                        [wp.model_dump() if isinstance(wp, WeakPoint) else wp for wp in weak_points]
+                    ),
+                    "weak_points_summary": state.get("weak_points_summary", ""),
                 },
             )
 
     total_final = sum(r.final_score for r in final_results)
     full_score = sum(r.full_score for r in final_results)
 
-    logger.info(f'publish_results.done | {submission_id=} | {total_final=} | weak_points_count={len(weak_points)}')
+    logger.info(
+        f"publish_results.done | {submission_id=} | {total_final=} | weak_points_count={len(weak_points)}"
+    )
     return {
-        'published': True,
-        'structured_output': {
-            'submission_id': submission_id,
-            'final_score': total_final,
-            'full_score': full_score,
-            'score_rate': round(total_final / full_score, 4) if full_score else 0,
-            'weak_points': weak_points,
-            'weak_points_summary': state.get('weak_points_summary', ''),
-            'published': True,
+        "published": True,
+        "structured_output": {
+            "submission_id": submission_id,
+            "final_score": total_final,
+            "full_score": full_score,
+            "score_rate": round(total_final / full_score, 4) if full_score else 0,
+            "weak_points": weak_points,
+            "weak_points_summary": state.get("weak_points_summary", ""),
+            "published": True,
         },
     }
-
-
-

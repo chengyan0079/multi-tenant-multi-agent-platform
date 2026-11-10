@@ -1,4 +1,5 @@
 """QAAgent：智能问答 Agent 定义。"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -20,7 +21,10 @@ class QAAgent(Agent):
                 "query": {"type": "string", "description": "用户提问内容"},
                 "tenant_id": {"type": "integer", "description": "租户 ID（多租户隔离）"},
                 "user_id": {"type": "integer", "description": "用户 ID"},
-                "session_id": {"type": "string", "description": "会话 ID（可选，用于构造 thread_id）"},
+                "session_id": {
+                    "type": "string",
+                    "description": "会话 ID（可选，用于构造 thread_id）",
+                },
             },
             "required": ["query", "tenant_id", "user_id"],
         }

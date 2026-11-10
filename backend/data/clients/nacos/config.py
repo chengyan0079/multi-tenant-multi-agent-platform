@@ -1,12 +1,5 @@
-"""Nacos 配置中心客户端封装（SDK NacosConfigService，gRPC）。
+"""Nacos 配置中心客户端：SDK gRPC 读写，未暴露接口用 OpenAPI 兜底。"""
 
-数据源统一为 SDK：
-- get / publish / remove / listen / health 走 SDK gRPC；
-- SDK 未暴露的 配置列表 / 历史 / 元信息(get_config_info)，用 Nacos OpenAPI（HTTP）兜底实现。
-
-因此本类是唯一配置客户端，替代旧 REST 直连模块（common/config_center/nacos_config）。
-auth 透传同 naming（user/password 或 access_key/secret_key）。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +78,7 @@ class NacosConfigClient(BaseClient):
         try:
             from v2.nacos import ClientConfig, NacosConfigService
         except ImportError:
-            logger.warning(import_error_hint("Nacos 配置中心"))
+            logger.exception(import_error_hint("Nacos 配置中心"))
             return
         cc = ClientConfig(
             server_addresses=self._server_addr,
@@ -235,10 +228,12 @@ class NacosConfigClient(BaseClient):
             pass
         try:
             resp = requests.get(
-                self._path("namespaces"), params={},
-                headers=self._auth_header(), timeout=self._timeout,
+                self._path("namespaces"),
+                params={},
+                headers=self._auth_header(),
+                timeout=self._timeout,
             )
-            for n in (self._check(resp) or []):
+            for n in self._check(resp) or []:
                 if isinstance(n, dict) and n.get("namespaceShowName") == self._namespace:
                     self._ns_resolved = n["namespace"]
                     return self._ns_resolved
@@ -275,8 +270,10 @@ class NacosConfigClient(BaseClient):
         """配置元信息（content/type/md5/时间）；不存在返回 None。"""
         params = self._query({"dataId": data_id, "groupName": group or self._group})
         resp = requests.get(
-            self._path("get"), params=params,
-            headers=self._auth_header(), timeout=self._timeout,
+            self._path("get"),
+            params=params,
+            headers=self._auth_header(),
+            timeout=self._timeout,
         )
         if resp.status_code == 404:
             return None
@@ -328,16 +325,21 @@ class NacosConfigClient(BaseClient):
     ) -> dict:
         resp = requests.get(
             self._path("list"),
-            params=self._query({
-                "pageNo": page_no, "pageSize": page_size,
-                # group 为空表示跨全部分组；不能回落到 self._group，否则其它 group 的配置会“消失”
-                "groupName": group or "", "dataId": data_id or "",
-            }),
-            headers=self._auth_header(), timeout=self._timeout,
+            params=self._query(
+                {
+                    "pageNo": page_no,
+                    "pageSize": page_size,
+                    # group 为空表示跨全部分组；不能回落到 self._group，否则其它 group 的配置会“消失”
+                    "groupName": group or "",
+                    "dataId": data_id or "",
+                }
+            ),
+            headers=self._auth_header(),
+            timeout=self._timeout,
         )
         data = self._check(resp) or {}
         if with_meta and isinstance(data, dict):
-            for it in (data.get("pageItems") or []):
+            for it in data.get("pageItems") or []:
                 if isinstance(it, dict):
                     self._fill_config_meta(it)
         return data
@@ -363,14 +365,19 @@ class NacosConfigClient(BaseClient):
     ) -> dict:
         resp = requests.get(
             self._path("history"),
-            params=self._query({
-                "dataId": data_id, "groupName": group or self._group,
-                "pageNo": page_no, "pageSize": page_size,
-            }),
-            headers=self._auth_header(), timeout=self._timeout,
+            params=self._query(
+                {
+                    "dataId": data_id,
+                    "groupName": group or self._group,
+                    "pageNo": page_no,
+                    "pageSize": page_size,
+                }
+            ),
+            headers=self._auth_header(),
+            timeout=self._timeout,
         )
         data = self._check(resp) or {}
-        for it in (data.get("pageItems") or []):
+        for it in data.get("pageItems") or []:
             if not isinstance(it, dict):
                 continue
             # nid：不同 Nacos 版本返回 id 或 nid
@@ -398,7 +405,9 @@ class NacosConfigClient(BaseClient):
                     elif isinstance(content, str) and content:
                         it["md5"] = hashlib.md5(content.encode("utf-8")).hexdigest()
                     if not it.get("createdTime"):
-                        it["createdTime"] = detail.get("createdTime") or detail.get("lastModifiedTime")
+                        it["createdTime"] = detail.get("createdTime") or detail.get(
+                            "lastModifiedTime"
+                        )
         return data
 
     async def list_history(
@@ -408,17 +417,20 @@ class NacosConfigClient(BaseClient):
         page_no: int = 1,
         page_size: int = 100,
     ) -> dict:
-        return await asyncio.to_thread(
-            self._rest_list_history, data_id, group, page_no, page_size
-        )
+        return await asyncio.to_thread(self._rest_list_history, data_id, group, page_no, page_size)
 
     def _rest_get_history(self, data_id: str, nid: int, group: str | None = None) -> dict | None:
         resp = requests.get(
             self._path("history_detail"),
-            params=self._query({
-                "dataId": data_id, "groupName": group or self._group, "nid": nid,
-            }),
-            headers=self._auth_header(), timeout=self._timeout,
+            params=self._query(
+                {
+                    "dataId": data_id,
+                    "groupName": group or self._group,
+                    "nid": nid,
+                }
+            ),
+            headers=self._auth_header(),
+            timeout=self._timeout,
         )
         data = self._check(resp)
         if isinstance(data, dict):
@@ -428,7 +440,13 @@ class NacosConfigClient(BaseClient):
                 if "nid" not in obj and "id" in obj:
                     obj["nid"] = obj["id"]
                 if not obj.get("createdTime"):
-                    for key in ("lastModifiedTime", "modifyTime", "gmtModified", "createTime", "timestamp"):
+                    for key in (
+                        "lastModifiedTime",
+                        "modifyTime",
+                        "gmtModified",
+                        "createTime",
+                        "timestamp",
+                    ):
                         if obj.get(key) is not None:
                             obj["createdTime"] = obj[key]
                             break

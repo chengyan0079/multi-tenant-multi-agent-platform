@@ -1,4 +1,5 @@
 """审计日志。"""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -23,13 +24,17 @@ class AgentAuditLog(TimestampMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, server_default=text("uuid_generate_v4()"),
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("uuid_generate_v4()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[Optional[int]] = mapped_column(
         BigInteger, nullable=True, comment="租户ID（隔离边界，BigInteger；超管无租户为 NULL）"
     )
-    user_id: Mapped[int] = mapped_column(BigInteger, default=0, comment="操作人（user_id，BigInteger）")
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, default=0, comment="操作人（user_id，BigInteger）"
+    )
     action: Mapped[str] = mapped_column(String(64), default="", comment="操作类型")
     target: Mapped[str] = mapped_column(String(128), default="", comment="操作对象")
     detail: Mapped[str] = mapped_column(Text, default="{}", comment="操作详情（JSON）")

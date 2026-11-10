@@ -2,6 +2,7 @@
 
 落库是旁路：写失败仅告警，绝不影响接口返回。
 """
+
 from __future__ import annotations
 
 import json
@@ -101,6 +102,10 @@ class ApiLogDao:
         count_sql = text(f"{_COUNT_BASE} {where}")
         async with session_scope() as session:
             return await fetch_page(
-                session, list_sql, count_sql, params,
-                page=page, page_size=page_size,
+                session,
+                list_sql,
+                count_sql,
+                params,
+                page=page,
+                page_size=page_size,
             )

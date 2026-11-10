@@ -1,4 +1,5 @@
 """SQL 访问层：运行时只用 text() 写显式 SQL，不经过 ORM 映射。"""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager

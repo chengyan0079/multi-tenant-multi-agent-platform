@@ -1,11 +1,5 @@
-"""
-logger - 日志配置（基于 loguru）
+"""日志配置（loguru）：trace_id 注入每条日志，控制台+文件双写，旧切片 zip 归档。"""
 
-全程 trace_id 注入每条日志（由中间件写入 contextvars，patcher 读取），便于按链路收集。
-控制台 + 文件双写；文件按日期切片，超过保留天数的旧切片由后台任务打包为 zip 归档。
-get_logger 返回 loguru 单例。
-日志文件路径若配成相对路径，按项目根目录解析，不受启动时 cwd 影响。
-"""
 from __future__ import annotations
 
 import sys
@@ -52,10 +46,8 @@ def _inject_trace_id(record: dict) -> None:
 
 
 # loguru 为单例：附加包名前缀与 trace_id 注入两个 patcher
-logger = (
-    _logger
-    .patch(lambda r: r.update(name=f"{BASE_DIR.name}.{r['name']}"))
-    .patch(_inject_trace_id)
+logger = _logger.patch(lambda r: r.update(name=f"{BASE_DIR.name}.{r['name']}")).patch(
+    _inject_trace_id
 )
 
 # 字段取值来自 loguru record：
@@ -89,19 +81,17 @@ def setup_logging(*, level: str | None = None) -> None:
     _logger.add(
         str(_log_path(config.logging.file)),
         level=lvl,
-        rotation="00:00",            # 每天零点切片
+        rotation="00:00",  # 每天零点切片
         # 不在切片时立即压缩：近 N 天保留明文便于 tail/grep，更早的由 archive_old_logs 打包；
         # retention 留 N+7 天缓冲，避免后台归档还没来得及打包就被 loguru 删掉。
         retention=f"{config.logging.days + 7} days",
-        enqueue=True,               # 异步写入，避免阻塞主逻辑
+        enqueue=True,  # 异步写入，避免阻塞主逻辑
         encoding="utf-8",
         format=LOG_FORMAT,
     )
 
 
-def archive_old_logs(
-    *, days: int | None = None, log_file: str | None = None
-) -> list[Path]:
+def archive_old_logs(*, days: int | None = None, log_file: str | None = None) -> list[Path]:
     """把超过 `days` 天的切片日志打包成 zip 并删除原文件。
 
     loguru 的 compression 会在每次切片时立即压缩，做不到「近 N 天保留明文、

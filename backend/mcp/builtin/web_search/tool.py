@@ -1,4 +1,5 @@
 """web_search 工具：低置信问答的联网兜底。"""
+
 from __future__ import annotations
 
 from typing import Any, List

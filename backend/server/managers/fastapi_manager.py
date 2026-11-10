@@ -1,4 +1,5 @@
 """FastAPI 装配：挂载 routers + 中间件 + SSE + 可配置文档。"""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager

@@ -23,7 +23,7 @@ export interface QaResultDetail extends QaResultItem {
   retrieved_contexts: { doc_id: string; content: string; score: number; source?: string }[];
   sources: string[];
   reference_answer: string | null;
-  token_usage: Record<string, number> | null;
+  token_usage: Record<string, unknown> | null;
   enable_web_search: boolean;
   error_msg: string | null;
   extra: Record<string, unknown> | null;

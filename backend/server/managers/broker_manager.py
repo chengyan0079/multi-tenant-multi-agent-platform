@@ -1,9 +1,5 @@
-"""BrokerManager（order=20）：建立 RabbitMQ 连接、声明基础设施、启动消费协程。
+"""BrokerManager（order=20）：建 RabbitMQ 连接、声明基础设施、启消费协程；未启用不阻断启动。"""
 
-启用由 BrokerSettings.enabled 控制（默认 False）：未启用则不注册、不连接，
-避免无 broker 时阻断整个服务启动（AppServer fail-fast 回滚）。broker 是独立中间件，
-与其它基础设施（Redis / PG）无依赖，故放同一阶段并行。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +20,7 @@ class BrokerManager(BaseManager):
 
     async def start(self) -> None:
         if not app_state.settings.broker.enabled:
-            logger.info("RabbitMQ 未启用（RABBITMQ_ENABLED=false），跳过")
+            logger.warning("RabbitMQ 未启用（RABBITMQ_ENABLED=false），跳过")
             return
         # 连接由 ClientBundle 显式持有，stop 时统一释放
         client = app_state.clients.ensure(

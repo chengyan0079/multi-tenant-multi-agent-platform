@@ -1,4 +1,5 @@
 """InterviewAgent：模拟面试 Agent 定义。"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -18,15 +19,23 @@ class InterviewAgent(Agent):
             "type": "object",
             "properties": {
                 "session_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "target_position": {"type": "string"},
                 "candidate_answer": {"type": "string"},
-                "tenant_id": {"type": "string"},
+                "resume_review_id": {"type": ["string", "null"]},
+                "tenant_id": {"type": "integer"},
+                "user_id": {"type": "integer"},
             },
-            "required": ["session_id"],
+            "required": ["session_id", "target_position"],
         }
 
     def metadata(self) -> Dict[str, Any]:
         return {
-            "description": "模拟面试：状态机推进→质量评估→面试官回应→报告",
-            "pattern": "state-machine + sse",
-            "capabilities": ["interview_bank_retriever", "interview_evaluator", "interviewer_persona"],
+            "description": "模拟面试：阶段推进→回答评估→面试官回应→报告",
+            "pattern": "state-machine + checkpointer + sse",
+            "capabilities": [
+                "interview_question_bank",
+                "interview_evaluator",
+                "interviewer_persona",
+            ],
         }

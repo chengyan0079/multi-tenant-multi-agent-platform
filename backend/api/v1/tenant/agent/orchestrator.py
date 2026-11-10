@@ -1,4 +1,5 @@
 """编排与运维端点。"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -26,7 +27,13 @@ async def run(
     body: OrchestratorRunIn,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> dict:
-    """指定 agent_type 或 pipeline_plan 运行。"""
+    """运行单个 agent 或串联 pipeline。
+
+    说明：pipeline 逐步校验权限，避免用单步权限绕过其它 agent；orchestrator 未就绪返回错误。
+    请求：body { agent_type?, pipeline_plan?: list[str], thread_id: str, inputs?: dict }
+    权限：对应 agent 的 scope
+    返回：图执行结果
+    """
     orch = app_state.orchestrator
     if orch is None:
         raise BizException(ErrCode.INTERNAL, "orchestrator 未就绪")
@@ -46,7 +53,13 @@ async def resume(
     body: OrchestratorResumeIn,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> dict:
-    """HITL 注入决策后继续。"""
+    """HITL 注入决策后恢复执行。
+
+    说明：校验对应 agent 权限后，向被 interrupt() 挂起的图注入决策。
+    请求：body { agent_type: str, thread_id: str, value: dict }
+    权限：对应 agent 的 scope
+    返回：图执行结果
+    """
     orch = app_state.orchestrator
     if orch is None:
         raise BizException(ErrCode.INTERNAL, "orchestrator 未就绪")

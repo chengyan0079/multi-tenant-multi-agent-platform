@@ -1,13 +1,5 @@
-"""auth 接口：登录 / 菜单下发 / 当前身份（设计文档 §3、§7）。
+"""认证接口：登录签发 token、当前用户菜单树、当前身份、登出。"""
 
-- POST /login：无鉴权，按 username + password 校验，返回 token / 租户 / 权限 / 菜单；
-  每次调用（成功或失败）落一行 agent_login_log：登录事件是安全审计的入口，失败也要留痕；
-- GET /menus：按 token 里的身份下发菜单树（超管只下发基建菜单）；
-- GET /me：返回当前身份与布尔标志、scopes。
-
-鉴权只在装配处决定哪些路由需要 get_current_user；本文件里 /login 不挂、其余两接口各自
-用 Depends(get_current_user) 声明，避免登录接口被挡在鉴权外。
-"""
 from __future__ import annotations
 
 import re
@@ -67,9 +59,7 @@ def _client_meta(request: Request) -> tuple[str, str, str]:
     反向代理下直接取 request.client 会拿到代理地址，故 X-Forwarded-For 首段优先。
     """
     xff = request.headers.get("x-forwarded-for", "")
-    ip = xff.split(",")[0].strip() if xff else (
-        request.client.host if request.client else ""
-    )
+    ip = xff.split(",")[0].strip() if xff else (request.client.host if request.client else "")
     ua = request.headers.get("user-agent", "")
     return ip[:64], ua[:512], _parse_client(ua)
 
@@ -139,7 +129,9 @@ async def _login(username: str, password: str, tenant_id: int | None = None) -> 
     if tenant_id is not None:
         chosen = next((a for a in enabled if a["tenant_id"] == tenant_id), None)
         if chosen is None:
-            raise AuthError("指定的租户不在该用户的可用租户内", code=ErrCode.FORBIDDEN, http_status=403)
+            raise AuthError(
+                "指定的租户不在该用户的可用租户内", code=ErrCode.FORBIDDEN, http_status=403
+            )
     else:
         home = user.get("tenant_id")
         chosen = next((a for a in enabled if a["tenant_id"] == home), None) or enabled[0]
@@ -173,9 +165,7 @@ async def login(request: Request, body: LoginIn) -> Any:
         result = await _login(body.username, body.password, body.tenant_id)
     except AuthError as exc:
         # 失败也记：撞库与误配置（如用户未分配租户）都靠这条线索
-        await _record_login(
-            request, username=body.username, success=False, fail_reason=exc.msg
-        )
+        await _record_login(request, username=body.username, success=False, fail_reason=exc.msg)
         raise
     await _record_login(
         request,
@@ -189,24 +179,38 @@ async def login(request: Request, body: LoginIn) -> Any:
 
 @router.get("/menus", summary="当前用户菜单树")
 async def menus(current: CurrentUser = Depends(get_current_user)) -> Any:
+    """按当前用户 scopes 下发菜单树（超管仅基建菜单）。
+
+    请求：无
+    权限：登录态
+    返回：{ menus: [...] }
+    """
     tree = await MenuDao.build(current.scopes)
     return success({"menus": tree})
 
 
 @router.get("/me", summary="当前身份")
 async def me(current: CurrentUser = Depends(get_current_user)) -> Any:
+    """返回当前用户身份与权限信息。
+
+    请求：无
+    权限：登录态
+    返回：{ user_id, username, name, tenant_id, is_super_admin, is_tenant_admin, role_name, scopes }
+    """
     user = await UserDao.get(current.user_id)
-    return success({
-        "user_id": current.user_id,
-        "username": user["username"] if user else None,
-        "name": user["name"] if user else None,
-        "tenant_id": current.tenant_id,
-        "home_tenant_id": current.home_tenant_id,
-        "is_super_admin": current.is_super_admin,
-        "is_tenant_admin": current.is_tenant_admin,
-        "role_name": current.role_name,
-        "scopes": current.scopes,
-    })
+    return success(
+        {
+            "user_id": current.user_id,
+            "username": user["username"] if user else None,
+            "name": user["name"] if user else None,
+            "tenant_id": current.tenant_id,
+            "home_tenant_id": current.home_tenant_id,
+            "is_super_admin": current.is_super_admin,
+            "is_tenant_admin": current.is_tenant_admin,
+            "role_name": current.role_name,
+            "scopes": current.scopes,
+        }
+    )
 
 
 @router.post("/logout", summary="登出（使当前 token 立即失效）")

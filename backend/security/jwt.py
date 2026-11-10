@@ -1,8 +1,5 @@
-"""JWT 签发（登录响应用，见设计文档 §3）。
+"""JWT 签发：登录响应用，token 为唯一身份来源（超管不含 tenant_id）。"""
 
-token 是唯一身份来源：普通用户/租户管理员含 user_id + tenant_id，平台超管只含 user_id。
-验签与解析在 middleware/auth.py（只用 HS256 + JWT_SECRET，不读任何请求头）。
-"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

@@ -3,6 +3,7 @@
 `minio` SDK 为软依赖：安装缺失在真正创建客户端时才报错（给出安装提示），
 不会因缺包导致导入失败或启动崩溃。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -93,7 +94,11 @@ class MinioClient(BaseClient):
 
     # ---------- 对象读写（SDK 同步接口，调用方用 asyncio.to_thread 包装） ----------
     def put_bytes(
-        self, key: str, data: bytes, *, content_type: str | None = None,
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str | None = None,
         bucket: str | None = None,
     ) -> None:
         """上传字节到对象存储。"""

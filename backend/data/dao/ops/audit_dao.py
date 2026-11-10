@@ -1,4 +1,5 @@
 """审计日志 DAO：写入与查询（agent_audit_log）。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -21,7 +22,7 @@ _LIST = text(
     "a.action, a.target, a.detail, a.result, a.trace_id, a.ip, a.create_at "
     "FROM agent_audit_log a "
     "LEFT JOIN agent_tenant t ON t.id = a.tenant_id "
-    "LEFT JOIN \"agent_user\" u ON u.id = a.user_id "
+    'LEFT JOIN "agent_user" u ON u.id = a.user_id '
     "WHERE (CAST(:tenant_id AS BIGINT) IS NULL OR a.tenant_id = CAST(:tenant_id AS BIGINT)) "
     "ORDER BY a.create_at DESC LIMIT :limit OFFSET :offset"
 )
@@ -77,8 +78,12 @@ class AuditDao:
     ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST, _COUNT, {"tenant_id": tenant_id},
-                page=page, page_size=page_size,
+                session,
+                _LIST,
+                _COUNT,
+                {"tenant_id": tenant_id},
+                page=page,
+                page_size=page_size,
             )
 
     @staticmethod
@@ -97,7 +102,7 @@ class AuditDao:
                     "a.action, a.target, a.detail, a.result, a.trace_id, a.ip, a.create_at "
                     "FROM agent_audit_log a "
                     "LEFT JOIN agent_tenant t ON t.id = a.tenant_id "
-                    "LEFT JOIN \"agent_user\" u ON u.id = a.user_id "
+                    'LEFT JOIN "agent_user" u ON u.id = a.user_id '
                     "WHERE a.id = :id"
                 ),
                 {"id": log_id},

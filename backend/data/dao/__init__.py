@@ -1,7 +1,1 @@
-"""DAO 包：按域分包，运行时数据访问统一 text() 手写 SQL。
-
-- `auth`     用户/租户/角色权限/菜单/登录日志
-- `agent`    Agent 定义/会话线程/模型注册
-- `business` 业务统计与业务表读写
-- `ops`      配置中心/审计/接口日志
-"""
+"""DAO 包：按域分包，运行时统一走 text() 手写 SQL（auth/agent/business/ops）。"""

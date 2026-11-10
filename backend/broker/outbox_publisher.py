@@ -1,11 +1,5 @@
-"""Outbox 投递协程：周期扫 agent_outbox(pending)，发往 MQ 并推进状态。
+"""Outbox 投递协程：周期扫描 pending 发往 MQ 并推进状态，信封非法/超限置 failed。"""
 
-- 发成功 → mark_sent；
-- 发失败 → inc_retry，超限 mark_failed（不再投递，留待排查）；
-- 信封解析失败（结构非法 / 类型未知）→ 直接 mark_failed，不做无意义重试；
-- 目标交换机由 routing.route() 决定，本模块不判断业务 / 广播；
-- 协程随 BrokerManager 启停（broker 未启用则不跑，Outbox 消息留存）。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -51,7 +45,7 @@ async def _publish_one(client: "BrokerClient", row: dict) -> None:
     except MessageFormatError as exc:
         # 信封本身坏了，重试也不会变好，直接置 failed 留待排查
         await OutboxDao.mark_failed(oid, f"信封非法：{exc}", row["retry_count"])
-        logger.error(f"Outbox 信封非法，标记 failed key={oid}：{exc}")
+        logger.exception(f"Outbox 信封非法，标记 failed key={oid}：{exc}")
         return
 
     target = route(msg.type)
@@ -68,6 +62,6 @@ async def _publish_one(client: "BrokerClient", row: dict) -> None:
         retry_count = await OutboxDao.inc_retry(oid, str(exc))
         if retry_count >= MAX_RETRIES:
             await OutboxDao.mark_failed(oid, str(exc), retry_count)
-            logger.error(f"Outbox 投递超限，标记 failed key={oid}：{exc}")
+            logger.exception(f"Outbox 投递超限，标记 failed key={oid}：{exc}")
         else:
-            logger.warning(f"Outbox 投递失败（将重试）key={oid}：{exc}")
+            logger.exception(f"Outbox 投递失败（将重试）key={oid}：{exc}")

@@ -1,0 +1,122 @@
+# =====================================================================
+# Langfuse v4 自托管（复用现有基建版）
+# ---------------------------------------------------------------------
+# 复用：PostgreSQL / Redis / MinIO（你已有的基建，本文件不再启动）
+# 新增：ClickHouse（v4 trace 分析存储，必选，且必须 UTC 时区）
+#
+# 启动前必做：
+#   1) 现有 PG 建库： CREATE DATABASE langfuse;
+#   2) 现有 MinIO 建桶： langfuse                       （Langfuse 不会自动建桶）
+#   3) 项目根 .env 中 NEXTAUTH_SECRET / SALT / ENCRYPTION_KEY 当前为空，须先填：
+#      openssl rand -hex 32 -> NEXTAUTH_SECRET / ENCRYPTION_KEY；openssl rand -hex 16 -> SALT
+#   4) 容器访问宿主基建：compose 内 host 部分用 host.docker.internal（Docker Desktop 可用）
+#   5) 运行须加载根 .env（见下方“运行”命令的 --env-file）
+#
+# 运行（在项目根目录执行，确保变量来自根 .env）：
+#   docker compose --env-file .env -f deploy/langfuse/docker-compose.yml up -d
+# 访问： http://localhost:3100  （宿主 3000 被占用，已改绑 3100；无默认账号，首次注册即管理员）
+# =====================================================================
+
+x-langfuse-env: &langfuse-env
+  # ---- Langfuse 自身密钥（取自项目根 .env；当前为空，运行前必须填入）----
+  NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3100}
+  NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+  SALT: ${SALT}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+  TELEMETRY_ENABLED: "false"
+
+  # ---- PostgreSQL（复用现有基建；账号/密码/端口取自 .env，库名 langfuse 需手动建）----
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:${POSTGRES_PORT}/langfuse
+
+  # ---- ClickHouse（本栈新增；账号/密码取自 .env）----
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+  CLICKHOUSE_DB: ${CLICKHOUSE_DB:-default}
+
+  # ---- Redis（复用现有基建；用 DB 3，密码取自 .env；host.docker.internal 指向宿主）----
+  REDIS_CONNECTION_STRING: redis://:${REDIS_PASSWORD}@host.docker.internal:6379/3
+  REDIS_HOST: host.docker.internal
+  REDIS_PORT: ${REDIS_PORT}
+  REDIS_AUTH: ${REDIS_PASSWORD}
+
+  # ---- MinIO / S3（复用现有基建；桶 langfuse 需手动建，账号/密码取自 .env）----
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://host.docker.internal:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY}
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://host.docker.internal:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+
+services:
+  langfuse-web:
+    image: langfuse/langfuse:4
+    restart: always
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3100:3000"
+    environment:
+      <<: *langfuse-env
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/public/health", "||", "exit", "1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4
+    restart: always
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3030:3030"   # worker 健康检查端口（仅本机）
+    environment:
+      <<: *langfuse-env
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3030/health", "||", "exit", "1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # ---- 本栈唯一新增的基础设施：ClickHouse ----
+  # Langfuse v4 用 ClickHouse 存 trace 分析数据；必须 UTC。
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3.62.3
+    restart: always
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-default}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?请在 .env 设置 CLICKHOUSE_PASSWORD}
+      TZ: UTC
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+      # 启用 ClickHouse Keeper + default 集群（Langfuse v4 的 ReplicatedMergeTree ON CLUSTER default 依赖）
+      - ./clickhouse/config.d/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
+    # 不映射宿主端口：ClickHouse 仅被 langfuse-web/worker 经容器网络(clickhouse:8123/9000)访问；
+    # 原 9000 与宿主 MinIO 冲突，故取消宿主暴露。如需本机调试可改绑 19123/19000 等非冲突端口。
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:

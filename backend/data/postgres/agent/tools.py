@@ -1,4 +1,5 @@
 """工具目录。"""
+
 from __future__ import annotations
 
 from sqlalchemy import String, Text, UUID, text
@@ -14,7 +15,10 @@ class AgentTool(TimestampMixin, Base):
     __table_args__ = {"comment": "工具目录"}
 
     id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, server_default=text("uuid_generate_v4()"), comment="主键（UUID）"
+        UUID(as_uuid=False),
+        primary_key=True,
+        server_default=text("uuid_generate_v4()"),
+        comment="主键（UUID）",
     )
     name: Mapped[str] = mapped_column(String(64), unique=True, comment="工具名")
     plugin: Mapped[str] = mapped_column(String(64), default="", comment="所属插件")

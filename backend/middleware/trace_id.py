@@ -1,12 +1,5 @@
-"""trace_id - 全链路 trace_id 注入（设计文档 §9 可观测）
+"""trace_id 注入中间件：请求级生成/透传 trace_id（兼容 SSE 流式），写入 contextvars。"""
 
-每个请求生成/透传 trace_id，写入 contextvars（日志 patcher 读取）。
-支持上游通过 X-Trace-Id 头传入，便于跨服务串联；上游不带则后端自行生成。
-
-实现为**纯 ASGI 中间件**：BaseHTTPMiddleware 与 SSE（EventSourceResponse）等
-流式响应组合时会触发 `RuntimeError: No response returned`，这里改为直接包装
-send，兼容流式响应。
-"""
 from __future__ import annotations
 
 import uuid6

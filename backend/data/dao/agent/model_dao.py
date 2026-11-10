@@ -1,11 +1,19 @@
 """模型配置注册表 DAO。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _TYPE_BIND = bindparam("model_type", type_=String)
@@ -17,7 +25,9 @@ WHERE (:model_type IS NULL OR model_type = :model_type)
 ORDER BY model_type, sort_order, id LIMIT :limit OFFSET :offset
 """).bindparams(
     # todo asyncpg 扩展协议下 "IS NULL" 参数无法推断类型，需显式声明
-    _TYPE_BIND, bindparam("limit", type_=Integer), bindparam("offset", type_=Integer)
+    _TYPE_BIND,
+    bindparam("limit", type_=Integer),
+    bindparam("offset", type_=Integer),
 )
 _COUNT = text("""
 SELECT count(*) FROM agent_model_registry
@@ -86,8 +96,12 @@ class ModelDao:
     ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST, _COUNT, {"model_type": model_type},
-                page=page, page_size=page_size,
+                session,
+                _LIST,
+                _COUNT,
+                {"model_type": model_type},
+                page=page,
+                page_size=page_size,
             )
 
     @staticmethod

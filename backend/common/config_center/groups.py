@@ -1,4 +1,5 @@
 """配置分组（data_id 的 group 维度）。"""
+
 from __future__ import annotations
 
 from enum import Enum

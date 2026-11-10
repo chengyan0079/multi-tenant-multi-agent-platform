@@ -1,10 +1,5 @@
-"""
-memory - 分层记忆抽象（设计文档 §6.1）
+"""分层记忆抽象：短期 Redis 滚动窗口 + 长期 PG 分页块，统一接口。"""
 
-短期 Redis 滚动窗口 / 长期 PG（Letta 式分页块）/ 语义检索走 Milvus（文档 RAG 向量，非记忆）。
-本文件定义统一接口与基于 Redis 的短期记忆实现；长期记忆落 PG（agent_long_term_memory），
-语义检索由文档解析链路写入 Milvus 供 RAG 使用。单 Agent 直接复用，无需自建。
-"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -82,7 +77,7 @@ class MemoryStore:
                 content=content,
             )
         except Exception as e:  # noqa: BLE001 - 表未创建/连接异常时降级
-            logger.warning(f"长记忆写入 PG 失败（表可能尚未创建）：{e}")
+            logger.exception(f"长记忆写入 PG 失败（表可能尚未创建）：{e}")
 
     async def stop(self) -> None:
         return None

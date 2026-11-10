@@ -1,10 +1,5 @@
-"""
-loader - 配置中心热加载
+"""配置中心热加载：gRPC 长连接订阅 Nacos 变更热更新本地缓存（适配 3.x + sdk 2.0+）。"""
 
-业务侧从 Nacos 配置中心读取配置并监听变更热更新到本地缓存。
-与「直连 Nacos 查询」(nacos_config) 不同，本 loader 用 SDK 的 gRPC 长连接订阅变更，避免轮询。
-适配 Nacos 3.x + nacos-sdk-python 2.0+（v2.nacos，全异步）。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -43,12 +38,12 @@ class ConfigCenterLoader:
     async def start(self) -> None:
         """连接 Nacos 配置中心（gRPC）；未启用或 SDK 缺失时跳过。"""
         if not app_config.nacos_config.enabled:
-            logger.info("配置中心未启用（NACOS_CONFIG_ENABLED=False），跳过热加载")
+            logger.warning("配置中心未启用（NACOS_CONFIG_ENABLED=False），跳过热加载")
             return
         try:
             from v2.nacos import ClientConfig, NacosConfigService
         except ImportError:
-            logger.warning(import_error_hint("配置中心热加载"))
+            logger.exception(import_error_hint("配置中心热加载"))
             return
         ns_id = await asyncio.to_thread(
             resolve_namespace_id,
@@ -96,7 +91,7 @@ class ConfigCenterLoader:
         try:
             content = await self._client.get_config(ConfigParam(data_id=data_id, group=key[0]))
         except NacosException as e:
-            logger.warning(f"配置中心读取失败: data_id={data_id} err={e}")
+            logger.exception(f"配置中心读取失败: data_id={data_id} err={e}")
             return None
         if not content:
             return None
@@ -104,7 +99,7 @@ class ConfigCenterLoader:
         try:
             await self._client.add_listener(data_id, key[0], self._on_change)
         except NacosException as e:
-            logger.warning(f"注册配置监听失败（不影响读取）: data_id={data_id} err={e}")
+            logger.exception(f"注册配置监听失败（不影响读取）: data_id={data_id} err={e}")
         return content
 
     async def get_json(self, data_id: str, group: str | None = None) -> Optional[dict]:
@@ -117,12 +112,12 @@ class ConfigCenterLoader:
             try:
                 return yaml.safe_load(content)  # type: ignore[union-attr]
             except yaml.YAMLError:  # type: ignore[union-attr]
-                logger.warning(f"配置非 YAML，无法解析: data_id={data_id}")
+                logger.exception(f"配置非 YAML，无法解析: data_id={data_id}")
                 return None
         try:
             return json.loads(content)
         except json.JSONDecodeError:
-            logger.warning(f"配置非 JSON，无法解析: data_id={data_id}")
+            logger.exception(f"配置非 JSON，无法解析: data_id={data_id}")
             return None
 
     async def subscribe(self, data_id: str, group: str | None, callback: WatcherCb) -> None:

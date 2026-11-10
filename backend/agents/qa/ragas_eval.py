@@ -1,8 +1,5 @@
-"""RAGAS 质量评估（自定义 LLM 打分，不依赖 ragas 库）。
+"""RAGAS 质量评估：自定义 LLM 打分（不依赖 ragas 库），五项指标 0~1。"""
 
-按 RAGAS 五项指标定义构造评分 Prompt，用现有结构化 LLM 输出 0~1 分数：
-faithfulness / answer_relevancy / context_precision / context_recall / answer_correctness。
-"""
 from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -52,9 +49,10 @@ async def evaluate_qa_result(
     *, question: str, answer: str, contexts: list[str], reference_answer: str
 ) -> RagasScores:
     """对一条问答结果做 RAGAS 五项指标打分。"""
-    ctx_text = "\n---\n".join(
-        f"[{i + 1}] {c}" for i, c in enumerate(contexts) if (c or "").strip()
-    ) or "（无检索上下文）"
+    ctx_text = (
+        "\n---\n".join(f"[{i + 1}] {c}" for i, c in enumerate(contexts) if (c or "").strip())
+        or "（无检索上下文）"
+    )
     prompt = _USER.format(
         question=_truncate(question, 2000),
         answer=_truncate(answer, 4000),

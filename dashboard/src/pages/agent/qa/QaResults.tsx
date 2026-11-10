@@ -53,6 +53,8 @@ interface QaResultRow {
   retrievedContexts: { docId: string; content: string; score: number }[];
   sources: string[];
   referenceAnswer?: string | null;
+  tokenUsage: Record<string, unknown> | null;
+  extra: Record<string, unknown> | null;
 }
 
 interface RagasEvalRow {
@@ -130,6 +132,8 @@ const mapItem = (row: QaResultItem): QaResultRow => ({
   createdAt: toTime(row.created_at),
   retrievedContexts: [],
   sources: [],
+  tokenUsage: null,
+  extra: null,
 });
 
 const mapDetail = (row: ApiQaResultDetail): QaResultRow => ({
@@ -143,6 +147,8 @@ const mapDetail = (row: ApiQaResultDetail): QaResultRow => ({
   })),
   sources: row.sources ?? [],
   referenceAnswer: row.reference_answer,
+  tokenUsage: row.token_usage ?? null,
+  extra: row.extra ?? null,
   errorMsg: row.error_msg ?? undefined,
   createdAt: toTime(row.created_at),
 });
@@ -219,6 +225,17 @@ function ContextList({ contexts }: { contexts: QaResultRow['retrievedContexts'] 
 }
 
 /** 问答字段统一展示（详情 / 质量分析 / 问答测评复用）。 */
+function JsonBlock({ value }: { value: Record<string, unknown> | null }) {
+  if (!value || Object.keys(value).length === 0) {
+    return <Typography.Text type="secondary">-</Typography.Text>;
+  }
+  return (
+    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+      {JSON.stringify(value, null, 2)}
+    </pre>
+  );
+}
+
 function QaInfo({ row }: { row: QaResultRow }) {
   return (
     <Descriptions
@@ -256,6 +273,12 @@ function QaInfo({ row }: { row: QaResultRow }) {
         </Tag>
       </Descriptions.Item>
       <Descriptions.Item label="耗时">{row.latencyMs} ms</Descriptions.Item>
+      <Descriptions.Item label="Token 用量">
+        <JsonBlock value={row.tokenUsage} />
+      </Descriptions.Item>
+      <Descriptions.Item label="扩展信息">
+        <JsonBlock value={row.extra} />
+      </Descriptions.Item>
       <Descriptions.Item label="时间">{row.createdAt}</Descriptions.Item>
       {row.errorMsg ? (
         <Descriptions.Item label="错误">

@@ -1,18 +1,5 @@
-"""
-auth - 认证依赖 get_current_user（设计文档 §4）
+"""认证依赖 get_current_user：token 单源解析身份并查库授权。"""
 
-token 单源（2026-10-24 定版）：身份只来自 Authorization: Bearer <JWT>，不读任何身份头、不读 body/query/cookie。
-JWT payload：普通用户/租户管理员含 user_id + tenant_id；平台超管只含 user_id（tenant_id 不进 token）。
-验签失败/过期 → 403；user_id 缺失或非整数 → 401；token 不含 tenant_id 且非超管 → 403。
-
-解析流程（数据库为唯一真相源，无硬编码常量兜底）：
-- 有 tenant_id → 租户分支：agent_user_tenant + agent_role + tenant 查身份（租户停用/无分配 → 403）；
-- 无 tenant_id → 超管分支：只看 agent_user.is_super_admin，命中则 tenant_id=None（超管不挂租户）、is_super_admin=True、scopes=种子里 admin 角色的具体权限点（菜单由 scope 驱动，超管自然只看到有权限的基建菜单）。
-
-写入 request.state：user_id / tenant_id（超管恒 None）/ home_tenant_id（user.tenant_id，仅审计归属）/
-role_name / roles / is_super_admin / is_tenant_admin / scopes；并写入 contextvars（user_id_ctx / tenant_id_ctx）
-供审计、memory、限流、数据过滤全链路消费（middleware 只写这一处）。
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -81,9 +68,7 @@ async def _resolve_tenant_identity(user_id: int, tenant_id: int) -> Identity:
         identity = await RbacService.resolve_identity(user_id, tenant_id)
     except Exception as exc:
         # 数据库不可用时无法解析角色，按未授权处理（数据须提前录入）
-        raise HTTPException(
-            status_code=403, detail=f"角色解析失败（数据库不可用）：{exc}"
-        )
+        raise HTTPException(status_code=403, detail=f"角色解析失败（数据库不可用）：{exc}")
     if identity is None:
         raise HTTPException(
             status_code=403,
@@ -97,13 +82,9 @@ async def _resolve_super_admin(user_id: int) -> Identity:
     try:
         identity = await RbacService.resolve_super_admin(user_id)
     except Exception as exc:
-        raise HTTPException(
-            status_code=403, detail=f"角色解析失败（数据库不可用）：{exc}"
-        )
+        raise HTTPException(status_code=403, detail=f"角色解析失败（数据库不可用）：{exc}")
     if identity is None:
-        raise HTTPException(
-            status_code=403, detail="token 不含租户，且该用户不是平台超管"
-        )
+        raise HTTPException(status_code=403, detail="token 不含租户，且该用户不是平台超管")
     return identity
 
 
@@ -124,15 +105,13 @@ async def get_current_user(
         token = credentials.credentials
     else:
         auth = request.headers.get("Authorization", "")
-        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else None
+        token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="缺少 Authorization")
     if not cfg.jwt_secret:
         raise HTTPException(status_code=401, detail="JWT_SECRET 未配置")
     try:
-        payload = jwt.decode(
-            token, cfg.jwt_secret, algorithms=[cfg.jwt_algorithm]
-        )
+        payload = jwt.decode(token, cfg.jwt_secret, algorithms=[cfg.jwt_algorithm])
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=403, detail="凭证无效或过期")
 

@@ -1,13 +1,5 @@
-"""
-app_state - 全局共享状态与请求上下文
+"""全局共享状态与请求上下文：启动注入依赖，请求期 contextvars 透传。"""
 
-启动期注入：settings / clients（中间件客户端容器）/ redis / db_engine / milvus / llm_factory / memory /
-plugin_registry / orchestrator / checkpointer / fastapi_app。请求期（contextvars）：tenant_id / user_id / trace_id，
-由 middleware 透传，保证多任务下不串号。
-
-说明：`clients` 是中间件客户端的**显式容器**（ClientBundle），manager 启动时把各客户端实例注册进去，
-其余便捷字段（redis / db_engine / milvus_client…）仍指向同一实例，供存量代码直接读取。
-"""
 from __future__ import annotations
 
 import contextvars
@@ -67,7 +59,9 @@ class _AppState:
 app_state = _AppState()
 
 # 请求级上下文
-tenant_id_ctx: contextvars.ContextVar[int | None] = contextvars.ContextVar("tenant_id", default=None)
+tenant_id_ctx: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "tenant_id", default=None
+)
 user_id_ctx: contextvars.ContextVar[int | None] = contextvars.ContextVar("user_id", default=None)
 
 

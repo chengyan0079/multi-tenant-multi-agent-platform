@@ -1,9 +1,5 @@
-"""Milvus 客户端对象（AsyncMilvusClient 封装 + 建库 + 集合生命周期）。
+"""Milvus 客户端：AsyncMilvusClient 封装 + 建库 + 集合生命周期，字段参数由调用方注入。"""
 
-连接 URI 由 host/port 拼装（该拼装原先写在 manager 内，已下沉到本类）。
-集合的「表结构 / 索引参数」由调用方以参数注入（见 ensure_collection），本类只负责
-连接、建库、集合就绪等「实现逻辑」，具体字段待定。
-"""
 from __future__ import annotations
 
 import functools

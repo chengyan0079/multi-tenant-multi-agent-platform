@@ -1,21 +1,5 @@
-"""跨副本配置刷新：Redis 版本号信号 + 各副本定时拉取。
+"""跨副本配置刷新：Redis 版本号信号 + 各副本定时 poll 增量 reload，Redis 不可用退化全量。"""
 
-背景：AgentRegistry / LLMFactory / PluginRegistry 都是进程内缓存，启动时从 DB 一次性
-加载。超管在后台改配置后，只有处理该请求的副本刷新了本地内存，其它副本仍是旧数据。
-
-方案（不再走 MQ 广播）：
-- 变更方 `publish(targets)` 对**每个 target 独立的 Redis key** 执行 INCR，写入单调递增版本号；
-  Redis 里只放"变了"的信号，不放配置内容——DB 始终是权威源，避免双写一致性问题。
-- 每个副本由 SchedulerManager 定时 `poll_once()`：一次 MGET 拿全部版本号，与本地
-  `_seen_versions` 比对，仅对变化的 target 调用对应 reload；INCR 单调，天然幂等，
-  不受时钟回拨影响（替代旧 handler 里的 `_seen_ts` 时间戳）。
-- 启动时各副本本来就 `load_from_db()` 拿最新，故只需把首次 MGET 的结果记为基线，
-  不必在启动时重复 reload。晚启动的副本天然能看到最新配置。
-- Redis 不可用：publish 记 warning 但不阻断管理接口（本副本已刷新）；poll 侧按
-  `FALLBACK_RELOAD_INTERVAL_S` 退化为定时全量 reload，保证最终一致。
-
-key 前缀沿用 `prompts_cache.py` 的 `agent:prompt:{data_id}` 风格。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -84,7 +68,7 @@ async def publish(*targets: str) -> None:
         try:
             await r.incr(_key(target))
         except Exception as exc:  # noqa: BLE001 - Redis 抖动不阻断管理接口
-            logger.warning(f"config.refresh: 版本写入失败 target={target}：{exc}")
+            logger.exception(f"config.refresh: 版本写入失败 target={target}：{exc}")
     logger.debug(f"config.refresh: publish targets={list(targets)}")
 
 
@@ -109,13 +93,12 @@ async def poll_once() -> None:
     try:
         values = await r.mget([_key(t) for t in TARGETS])
     except Exception as exc:  # noqa: BLE001 - Redis 抖动走兜底，不阻断调度循环
-        logger.warning(f"config.refresh: 版本读取失败，走兜底：{exc}")
+        logger.exception(f"config.refresh: 版本读取失败，走兜底：{exc}")
         await _fallback_reload()
         return
 
     versions = {
-        target: int(v) if v not in (None, b"", "") else 0
-        for target, v in zip(TARGETS, values)
+        target: int(v) if v not in (None, b"", "") else 0 for target, v in zip(TARGETS, values)
     }
 
     # 首次轮询只建立基线：启动时已从 DB 加载最新配置，重复 reload 无意义

@@ -2,6 +2,7 @@
 
 写入是旁路：写失败只告警，不影响登录结果。
 """
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -62,18 +63,21 @@ class LoginLogDao:
             return  # 单测/降级场景没有数据库，跳过
         try:
             async with session_scope() as session:
-                await session.execute(_INSERT, {
-                    "user_id": user_id,
-                    "username": username,
-                    "tenant_id": tenant_id,
-                    "login_type": login_type,
-                    "success": success,
-                    "fail_reason": fail_reason,
-                    "ip": ip,
-                    "user_agent": user_agent,
-                    "client": client,
-                    "trace_id": trace_id,
-                })
+                await session.execute(
+                    _INSERT,
+                    {
+                        "user_id": user_id,
+                        "username": username,
+                        "tenant_id": tenant_id,
+                        "login_type": login_type,
+                        "success": success,
+                        "fail_reason": fail_reason,
+                        "ip": ip,
+                        "user_agent": user_agent,
+                        "client": client,
+                        "trace_id": trace_id,
+                    },
+                )
                 await session.commit()
         except Exception:  # noqa: BLE001  登录日志是旁路，失败不影响登录
             logger.exception("登录日志落库失败（不影响登录结果）")
@@ -84,6 +88,10 @@ class LoginLogDao:
     ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST, _COUNT, {"tenant_id": tenant_id},
-                page=page, page_size=page_size,
+                session,
+                _LIST,
+                _COUNT,
+                {"tenant_id": tenant_id},
+                page=page,
+                page_size=page_size,
             )

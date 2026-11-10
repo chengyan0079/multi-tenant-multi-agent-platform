@@ -1,9 +1,5 @@
-"""任务入队：业务代码唯一的发消息入口。
+"""任务入队：业务代码唯一的发消息入口，仅写 Outbox 即返回，投递由协程异步完成。"""
 
-本模块只写 agent_outbox(pending) 就返回，真正投递由 OutboxPublisher 协程异步完成；
-broker 未启用时消息留在 Outbox，启用后补发，调用方无需关心连接状态。
-消息走哪个交换机由 routing.route() 按 type 决定，调用方不需要也不应该指定。
-"""
 from __future__ import annotations
 
 import uuid6
@@ -47,7 +43,7 @@ async def enqueue_task(
             message_kind=route(type).kind.value,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error(f"写 Outbox 失败 type={type} tenant={tenant_id}：{exc}")
+        logger.exception(f"写 Outbox 失败 type={type} tenant={tenant_id}：{exc}")
         return None
     logger.debug(f"[outbox] enqueue {type} key={outbox_id}")
     return str(outbox_id)

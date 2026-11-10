@@ -3,6 +3,7 @@ main - 入口：装配 AppServer().run()
 
 启动顺序由 register() 决定（order 0→100）；停机逆序释放。HTTP 由 uvicorn 拉起，引用 app_state.fastapi_app。
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -1,4 +1,5 @@
 """插件管理：以 DB 启用清单为白名单，装配运行时单例注册表。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +37,7 @@ async def _build_registry() -> PluginRegistry:
         try:
             plugin.configure(_parse_config(row["config"]))
         except (ValueError, TypeError) as exc:
-            logger.warning(f"插件 config 非法，跳过: {plugin.manifest.name} - {exc}")
+            logger.exception(f"插件 config 非法，跳过: {plugin.manifest.name} - {exc}")
             continue
         registry.register_plugin(plugin)
 

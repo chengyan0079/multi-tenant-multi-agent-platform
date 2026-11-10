@@ -1,9 +1,5 @@
-"""Redis 异步客户端对象（redis.asyncio）。
+"""Redis 异步客户端：由 LoggedRedis 统一打 debug 日志，业务侧无感全覆盖。"""
 
-读写日志：redis.asyncio 的所有命令最终都走 execute_command，因此用 LoggedRedis
-子类在此处统一打 debug 日志，业务侧（memory / session / 提示词缓存 / 看板 /
-配置刷新）无需改动即可全覆盖。
-"""
 from __future__ import annotations
 
 import time
@@ -59,9 +55,7 @@ class RedisClient(BaseClient):
     async def connect(self) -> None:
         if self._client is None:
             # from_url 内部用 cls(...) 构造，故返回的正是 LoggedRedis 实例
-            self._client = LoggedRedis.from_url(
-                self._url, decode_responses=self._decode_responses
-            )
+            self._client = LoggedRedis.from_url(self._url, decode_responses=self._decode_responses)
 
     async def close(self) -> None:
         if self._client is not None:

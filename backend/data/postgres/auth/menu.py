@@ -5,6 +5,7 @@
 - 前端只认后端下发的菜单树，不再维护静态菜单。
 - 与其余表遵循全库"逻辑外键"策略，不建物理外键。
 """
+
 from sqlalchemy import BigInteger, Boolean, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,7 +22,10 @@ class Menu(Base):
     name: Mapped[str] = mapped_column(String(64), nullable=False, comment="菜单名称（前端展示）")
     path: Mapped[str] = mapped_column(String(128), nullable=False, comment="前端路由路径")
     icon: Mapped[str] = mapped_column(
-        String(64), nullable=False, server_default=text("''"), comment="图标名（前端展示用，如 DashboardOutlined）"
+        String(64),
+        nullable=False,
+        server_default=text("''"),
+        comment="图标名（前端展示用，如 DashboardOutlined）",
     )
     parent_id: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0"), comment="父菜单ID（0=顶级菜单）"

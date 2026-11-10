@@ -1,9 +1,5 @@
-"""索引类业务的实现入口：委托 backend/rag 完成文档解析与知识库回流。
+"""索引类业务入口：委托 rag 完成文档解析与知识库回流，终点为 Milvus 双向量。"""
 
-两条链路的共同终点是 Milvus（dense + sparse 双向量），差别在数据来源：
-- 文档解析（qa.parse）：MinIO 文件 → 解析 → 父子片切分 → 子片向量化写 Milvus
-  （父片全文冗余在子片行，检索命中后回填上下文并按命中子片高亮）；
-"""
 from __future__ import annotations
 
 from backend.common.logger import logger
@@ -38,5 +34,5 @@ async def parse_document(
         )
     except Exception as exc:
         await mark_parse_failed(file_id, tenant_id)
-        logger.error(f"[qa.parse] 解析失败 file_id={file_id}：{exc}")
+        logger.exception(f"[qa.parse] 解析失败 file_id={file_id}：{exc}")
         raise

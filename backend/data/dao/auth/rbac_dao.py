@@ -1,4 +1,5 @@
 """RBAC DAO：角色目录、角色权限、用户-租户-角色分配。"""
+
 # todo 各表审计列不一致：agent_role 仅 user 列，中间表无审计列，写 SQL 前先核对列定义。
 from __future__ import annotations
 
@@ -6,7 +7,14 @@ from typing import Any
 
 from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 from backend.data.sql.audit import audit_on_insert
 from backend.observability.exception import BizException, ErrCode
 
@@ -256,8 +264,11 @@ class RbacDao:
     ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
             rows, total = await fetch_page(
-                session, _LIST_ROLES_PAGED, _COUNT_ROLES,
-                page=page, page_size=page_size,
+                session,
+                _LIST_ROLES_PAGED,
+                _COUNT_ROLES,
+                page=page,
+                page_size=page_size,
             )
         _normalize_scopes(rows)
         return rows, total
@@ -269,14 +280,12 @@ class RbacDao:
 
     @staticmethod
     async def set_role_permissions(role_id: int, scopes: list[str]) -> None:
-            """覆盖角色权限点：先清空再插入，单事务提交（§6.5 改权限即时生效）。"""
-            async with session_scope() as session:
-                await execute_write(session, _DELETE_ROLE_PERMS, {"role_id": role_id})
-                for s in scopes:
-                    await execute_write(
-                        session, _INSERT_PERMISSION, {"role_id": role_id, "scope": s}
-                    )
-                await session.commit()
+        """覆盖角色权限点：先清空再插入，单事务提交（§6.5 改权限即时生效）。"""
+        async with session_scope() as session:
+            await execute_write(session, _DELETE_ROLE_PERMS, {"role_id": role_id})
+            for s in scopes:
+                await execute_write(session, _INSERT_PERMISSION, {"role_id": role_id, "scope": s})
+            await session.commit()
 
     @staticmethod
     async def update_role(
@@ -371,32 +380,32 @@ class RbacDao:
 
     @staticmethod
     async def assign_role(user_id: int, tenant_id: int, role_id: int) -> None:
-            """普通分配/改角色（student/teacher），PK 冲突即更新。"""
-            await RbacDao.upsert_membership(user_id, tenant_id, role_id)
+        """普通分配/改角色（student/teacher），PK 冲突即更新。"""
+        await RbacDao.upsert_membership(user_id, tenant_id, role_id)
 
     @staticmethod
     async def get_membership(user_id: int, tenant_id: int) -> str | None:
-            """取用户在某租户的角色名（租户管理员改/解绑前校验归属与防自锁）。"""
-            async with session_scope() as session:
-                row = await fetch_one(
-                    session, _GET_MEMBERSHIP, {"user_id": user_id, "tenant_id": tenant_id}
-                )
-            return row["role_name"] if row else None
+        """取用户在某租户的角色名（租户管理员改/解绑前校验归属与防自锁）。"""
+        async with session_scope() as session:
+            row = await fetch_one(
+                session, _GET_MEMBERSHIP, {"user_id": user_id, "tenant_id": tenant_id}
+            )
+        return row["role_name"] if row else None
 
     @staticmethod
     async def delete_membership(user_id: int, tenant_id: int) -> int:
-            """从租户解绑用户（不删 user 记录）。返回受影响行数。"""
-            async with session_scope() as session:
-                n = await execute_write(
-                    session,
-                    text(
-                        "DELETE FROM agent_user_tenant "
-                        "WHERE user_id = :user_id AND tenant_id = :tenant_id"
-                    ),
-                    {"user_id": user_id, "tenant_id": tenant_id},
-                )
-                await session.commit()
-                return n
+        """从租户解绑用户（不删 user 记录）。返回受影响行数。"""
+        async with session_scope() as session:
+            n = await execute_write(
+                session,
+                text(
+                    "DELETE FROM agent_user_tenant "
+                    "WHERE user_id = :user_id AND tenant_id = :tenant_id"
+                ),
+                {"user_id": user_id, "tenant_id": tenant_id},
+            )
+            await session.commit()
+            return n
 
     @staticmethod
     async def list_tenant_members(
@@ -417,8 +426,12 @@ class RbacDao:
         }
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST_TENANT_MEMBERS, _COUNT_TENANT_MEMBERS, params,
-                page=page, page_size=page_size,
+                session,
+                _LIST_TENANT_MEMBERS,
+                _COUNT_TENANT_MEMBERS,
+                params,
+                page=page,
+                page_size=page_size,
             )
 
     @staticmethod

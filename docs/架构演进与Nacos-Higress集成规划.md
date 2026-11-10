@@ -107,7 +107,7 @@ flowchart TB
 ### 2.2 Nacos 接入现状（已落地，Python 侧）
 
 - `NacosConfigManager`：对接 Nacos Config，承载配置中心审批与 Prompt 动态读取。
-- Prompt 消费已落地：QA / 简历 / 考试各自 `resolve_prompt()` 按 `group=PROMPT` 读取 `qa_*` / `resume_*` / `exam_*` 小写 data_id；Nacos 缺失/不可达时回退代码内置默认值。
+- Prompt 消费已落地：QA / 简历 / 考试 / 面试各自 `resolve_prompt()` 按 `group=PROMPT` 读取 `qa_*` / `resume_*` / `exam_*` / `interview_*` 小写 data_id；Nacos 缺失/不可达时回退代码内置默认值。面试字典型提示词额外兼容 JSON 与 Python 字典字面量。
 - `NacosDiscoverManager`：对接 Nacos Discovery。
 - `NacosAIManager`（**已新建，单测 5 passed**）：启动时把**平台 MCP Server** `release_mcp_server` 到 Nacos AI（`order=75`）。
   - 限制：当前 SDK（`v2.nacos.ai`）仅支持 `release_mcp_server` 与 `release_agent_card` 两类发布；**Prompt / Skill 无发布接口**（消费侧 `get/subscribe` 可用）。

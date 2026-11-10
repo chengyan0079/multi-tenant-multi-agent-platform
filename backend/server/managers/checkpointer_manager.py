@@ -1,12 +1,5 @@
-"""LangGraph checkpointer：用 psycopg 连接池跑 setup() 建表，状态外置。
+"""LangGraph checkpointer：psycopg 连接池跑 setup() 建表，状态外置同一 schema。"""
 
-注意：本版本 AsyncPostgresSaver 要的是 psycopg 连接（非 SQLAlchemy 引擎），且 setup()
-是实例方法——需先构造一个绑定连接的 saver 再调用。建表统一落在业务同 schema
-（config.postgres.search_path），避免与 ORM/DAO 的表分散在不同 schema 造成的读写错位。
-
-用 AsyncConnectionPool 而非单连接：多 agent / 高并发下 checkpoint I/O 可并行，
-避免单连接串行化瓶颈与单点故障。
-"""
 from __future__ import annotations
 
 from psycopg import AsyncConnection

@@ -1,4 +1,5 @@
 """工具与插件管理端点（/api/v1/admin/plugins）。"""
+
 from __future__ import annotations
 
 import json
@@ -76,6 +77,12 @@ async def list_plugins(
     _: object = Depends(require_scope(Scope.TOOL_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """插件列表分页查询（按名称/状态过滤）。
+
+    请求：query { name?, status?, page, page_size }
+    权限：tool:page
+    返回：items / total / page / page_size
+    """
     rows, total = await PluginDao.list_paged(
         name=name, status=status, page=page, page_size=page_size
     )
@@ -88,6 +95,12 @@ async def get_plugin(
     _: object = Depends(require_scope(Scope.TOOL_VIEW)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """插件详情。
+
+    请求：path { plugin_id }（UUID）
+    权限：tool:view
+    返回：单条插件记录
+    """
     row = await PluginDao.get(_parse_id(plugin_id))
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, "插件不存在")
@@ -100,6 +113,12 @@ async def create_plugin(
     _: object = Depends(require_scope(Scope.TOOL_ADD)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """新增插件（校验 JSON 字段与租户/用户引用，刷新插件注册表）。
+
+    请求：body { name, version, capabilities(JSON), config(JSON), status, tenant_id, user_id }
+    权限：tool:add
+    返回：{ id }
+    """
     _validate(body)
     await _check_refs(body.tenant_id, body.user_id)
     if await PluginDao.name_exists(body.name):
@@ -116,6 +135,12 @@ async def update_plugin(
     _: object = Depends(require_scope(Scope.TOOL_UPDATE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """更新插件（不可改名/改归属租户，刷新插件注册表）。
+
+    请求：path { plugin_id }, body { version?, capabilities?, config?, status?, user_id? }
+    权限：tool:update
+    返回：{ id }
+    """
     pid = _parse_id(plugin_id)
     _validate(body)
     await _check_refs(body.tenant_id, body.user_id)
@@ -137,6 +162,12 @@ async def delete_plugin(
     _: object = Depends(require_scope(Scope.TOOL_DELETE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """删除插件并刷新插件注册表。
+
+    请求：path { plugin_id }
+    权限：tool:delete
+    返回：{ id }
+    """
     pid = _parse_id(plugin_id)
     if await PluginDao.get(pid) is None:
         raise BizException(ErrCode.NOT_FOUND, "插件不存在")
@@ -152,6 +183,12 @@ async def set_status(
     _: object = Depends(require_scope(Scope.TOOL_STATUS)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """插件启停（status 仅 enabled/disabled，刷新插件注册表）。
+
+    请求：path { plugin_id }, body { status }
+    权限：tool:status
+    返回：{ id, status }
+    """
     pid = _parse_id(plugin_id)
     if body.status not in _STATUSES:
         raise BizException(ErrCode.PARAM_ERROR, f"status 仅支持 {_STATUSES}")

@@ -1,9 +1,5 @@
-"""消费端鉴权：按消息中的 tenant_id / user_id 重新校验，零信任。
+"""消费端鉴权：按消息 tenant_id/user_id 重校验（零信任），复用请求期同一套身份解析。"""
 
-broker 本身不做业务鉴权，鉴权在消费端落地——消息可能被重投或（broker 未鉴权时）
-被伪造，必须以消费端校验为准。鉴权复用请求期同一套身份解析（RbacService.resolve_identity），
-保证 HTTP 入口与 MQ 消费端口径一致。
-"""
 from __future__ import annotations
 
 from backend.common.logger import logger

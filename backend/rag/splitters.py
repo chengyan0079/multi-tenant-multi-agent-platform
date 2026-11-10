@@ -1,17 +1,5 @@
-"""文档分块：父子片两阶段切分（small-to-big）+ 标题感知。
+"""文档分块：父子片两阶段切分 + 标题感知，子片带向量、父片回填上下文并高亮。"""
 
-参照 RAG-Ultra/core/rag_indexer/document_processor.py 的父子片范式：
-- 父片：大粒度上下文块，不参与向量召回，命中子片后回填给 LLM；
-- 子片：父片内的小粒度块，才有向量、参与混合召回；
-- 每个子片带 parent_id / parent_content，检索时可回退到父片上下文并按命中子片高亮。
-
-本项目优化：
-- RAG-Ultra 父片用 BGE 语义切分（需 langchain_experimental / HuggingFace 模型），
-  本项目未装这些依赖且已有预热的 LLMFactory，故父片用已有的
-  RecursiveCharacterTextSplitter 大块 + Markdown 标题块，零新增依赖；
-- 保留 thy-edu-agent 的中文标点分隔符与 Markdown 标题两阶段切分；
-- `.pdf/.md/.txt` 全支持；参数走 config.qa；额外元数据收口到 extra。
-"""
 from __future__ import annotations
 
 from langchain_text_splitters import (
@@ -32,21 +20,33 @@ _HEADERS_TO_SPLIT_ON = [
 ]
 
 _SEPARATORS = [
-    "\n\n",            # 强段落
-    "\n",              # 换行
-    r"。|！|？",        # 中文句末
+    "\n\n",  # 强段落
+    "\n",  # 换行
+    r"。|！|？",  # 中文句末
     r"\.\s|\!\s|\?\s",  # 英文句末（带空格）
-    r"；|;\s",          # 分号
-    r"，|,\s",          # 逗号
-    " ",               # 空格
-    "",                # 字符级兜底
+    r"；|;\s",  # 分号
+    r"，|,\s",  # 逗号
+    " ",  # 空格
+    "",  # 字符级兜底
 ]
 
 # 显式字段（store.add_chunks 会读取）；其余元数据收口进 extra
-_RESERVED_META = frozenset({
-    "parent_id", "parent_content", "chunk_type", "chunk_index", "child_index",
-    "page", "source_location", "file_name", "file_id", "tenant_id", "text", "extra",
-})
+_RESERVED_META = frozenset(
+    {
+        "parent_id",
+        "parent_content",
+        "chunk_type",
+        "chunk_index",
+        "child_index",
+        "page",
+        "source_location",
+        "file_name",
+        "file_id",
+        "tenant_id",
+        "text",
+        "extra",
+    }
+)
 
 
 def _recursive_splitter(*, chunk_size: int, chunk_overlap: int) -> RecursiveCharacterTextSplitter:
@@ -112,7 +112,9 @@ def _child_split(parent_text: str) -> list[str]:
     return [p for p in child_splitter.split_text(parent_text) if p.strip()]
 
 
-def split_documents(pages: list[LoadedPage], *, file_ext: str, file_id: str = "") -> list[TextChunk]:
+def split_documents(
+    pages: list[LoadedPage], *, file_ext: str, file_id: str = ""
+) -> list[TextChunk]:
     """统一分块入口：父片 → 子片，返回带父子关系与全局 chunk_index 的子片列表。
 
     parent_id 规则：{file_id}:parent:{父片序号}（file_id 由 indexing 传入，保证跨文件唯一）；

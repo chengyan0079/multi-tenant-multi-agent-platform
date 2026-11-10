@@ -1,10 +1,5 @@
-"""长记忆（PG 落库，Letta 式分页块）。
+"""长记忆模型：PG 落库，一行一段记忆块；仅用于 gen_schema 产出 DDL。"""
 
-原长期/语义记忆走 Milvus，现按决策迁到 PG（Milvus 仅用于文档 RAG 向量检索）。
-一行 = 一段长期记忆块；按 租户 + 用户 + 智能体 + block 归属，检索按同条件过滤。
-
-模型仅用于 `scripts/gen_schema.py` 产出 DDL；运行期访问一律走 `long_term_memory_dao` 的 `text()`。
-"""
 from __future__ import annotations
 
 from sqlalchemy import BigInteger, Integer, String, Text
@@ -29,7 +24,10 @@ class LongTermMemory(TimestampMixin, Base):
         "agent_id", String(64), nullable=False, comment="智能体ID"
     )
     block: Mapped[str] = mapped_column(
-        "block", String(32), nullable=False, comment="记忆块标识（如 core / user_profile / scratch）"
+        "block",
+        String(32),
+        nullable=False,
+        comment="记忆块标识（如 core / user_profile / scratch）",
     )
     content: Mapped[str] = mapped_column("content", Text, nullable=False, comment="记忆内容")
     token_count: Mapped[int] = mapped_column(

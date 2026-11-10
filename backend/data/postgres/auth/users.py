@@ -1,14 +1,5 @@
-"""user / tenant 表模型（登录认证与租户边界）。
+"""user/tenant 表模型：登录认证与租户边界；password 明文、超管不挂租户，鉴权以 JWT payload 为准。"""
 
-设计说明：
-- `user` 是登录认证主表：`username` 唯一、`password` 明文存储（登录直接比对）。
-- `tenant` 提供租户显示名与启停状态，所有租户地位平等（无主租户概念）；
-  超管身份只以 `agent_user.is_super_admin` 标记为准，超管不挂任何租户。
-- 运行时鉴权以 `agent_user_tenant` 为准：user_id / tenant_id 取自
-  `Authorization: Bearer <JWT>` 的 payload，不接受请求体传入。
-- `user` 是 PostgreSQL 保留字，故 User 表显式 quote=True（表名已改为 agent_user）。
-- 与其余表遵循全库"逻辑外键"策略，不建物理外键。
-"""
 from sqlalchemy import BigInteger, Boolean, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,7 +16,8 @@ class User(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True,
+        BigInteger,
+        primary_key=True,
         comment="用户ID（与全局 user_id 对齐）",
     )
     username: Mapped[str] = mapped_column(
@@ -38,7 +30,9 @@ class User(TimestampMixin, Base):
         String(128), nullable=False, comment="明文密码，登录时直接字符串比对（不哈希）"
     )
     tenant_id: Mapped[int | None] = mapped_column(
-        BigInteger, index=True, nullable=True,
+        BigInteger,
+        index=True,
+        nullable=True,
         comment="归属租户ID（登录默认选中；超管为 NULL；真实授权以 agent_user_tenant 为准）",
     )
 
@@ -47,16 +41,17 @@ class Tenant(TimestampMixin, Base):
     """租户（隔离边界）。"""
 
     __tablename__ = "agent_tenant"
-    __table_args__ = (
-        {"comment": "租户（隔离边界，登录响应与菜单展示用）"},
-    )
+    __table_args__ = ({"comment": "租户（隔离边界，登录响应与菜单展示用）"},)
 
     id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True,
+        BigInteger,
+        primary_key=True,
         comment="租户ID（与全局 tenant_id 对齐）",
     )
     name: Mapped[str] = mapped_column(String(64), nullable=False, comment="租户显示名")
     enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true"),
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
         comment="是否启用；停用后不可登录、不可切换，数据保留",
     )

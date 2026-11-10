@@ -1,7 +1,5 @@
-"""Nacos AI 客户端封装（SDK NacosAIService）：MCP Server / Agent Card / Prompt / Skill。
+"""Nacos AI 客户端封装（SDK NacosAIService）：MCP Server/Agent Card/Prompt/Skill；需 >=3.1.0，SDK 缺失软降级。"""
 
-需 Nacos 服务端 >= 3.1.0。auth 透传同 naming/config。SDK 缺失时软降级。
-"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -26,11 +24,8 @@ try:  # SDK 软依赖：缺失时模块仍可加载，调用能力方法时由 r
         SubscribeMcpServerParam,
         SubscribePromptParam,
     )
-    # 修复 v2.nacos 在 pydantic v2 下的序列化崩溃：其 GrpcUtils.to_json 对 pydantic 模型调用
-    # model_dump() 时未用 mode='json'，导致嵌套 Enum 成员（如 McpCapability.TOOL）保持为枚举对象，
-    # 落入兜底分支 d.update(obj.__dict__)，进而递归进枚举类的 __dict__（含 builtin 方法 __new__），
-    # 触发 "'builtin_function_or_method' object has no attribute '__dict__'"。
-    # 改为 mode='json' 让枚举直接落为其值（如 'TOOL'），并对裸枚举/对象做安全兜底。
+
+    # 修 v2.nacos 在 pydantic v2 下序列化崩溃：GrpcUtils.to_json 未用 mode='json'，嵌套 Enum 落入 __dict__ 递归报错，故打补丁。
     from enum import Enum
     from v2.nacos.transport.grpc_util import GrpcUtils
 
@@ -271,15 +266,19 @@ class NacosAIClient(BaseClient):
         )
 
     # ---------- Prompt ----------
-    async def get_prompt(self, prompt_key: str, version: str | None = None, label: str | None = None):
+    async def get_prompt(
+        self, prompt_key: str, version: str | None = None, label: str | None = None
+    ):
         return await self.raw.get_prompt(
-            _guard_param(GetPromptParam)(
-                prompt_key=prompt_key, version=version, label=label
-            )
+            _guard_param(GetPromptParam)(prompt_key=prompt_key, version=version, label=label)
         )
 
     async def subscribe_prompt(
-        self, prompt_key: str, version: str | None, subscribe_callback: Any, label: str | None = None
+        self,
+        prompt_key: str,
+        version: str | None,
+        subscribe_callback: Any,
+        label: str | None = None,
     ):
         return await self.raw.subscribe_prompt(
             _guard_param(SubscribePromptParam)(
@@ -291,7 +290,11 @@ class NacosAIClient(BaseClient):
         )
 
     async def unsubscribe_prompt(
-        self, prompt_key: str, version: str | None, subscribe_callback: Any, label: str | None = None
+        self,
+        prompt_key: str,
+        version: str | None,
+        subscribe_callback: Any,
+        label: str | None = None,
     ) -> None:
         await self.raw.unsubscribe_prompt(
             _guard_param(SubscribePromptParam)(
@@ -307,7 +310,5 @@ class NacosAIClient(BaseClient):
         self, skill_name: str, version: str | None = None, label: str | None = None
     ):
         return await self.raw.download_skill_zip(
-            _guard_param(DownloadSkillParam)(
-                skill_name=skill_name, version=version, label=label
-            )
+            _guard_param(DownloadSkillParam)(skill_name=skill_name, version=version, label=label)
         )

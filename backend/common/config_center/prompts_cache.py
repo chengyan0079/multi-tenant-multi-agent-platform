@@ -1,13 +1,5 @@
-"""
-prompts_cache - 提示词缓存（先 Redis 再 Nacos）
+"""提示词缓存：先 Redis 后 Nacos（PROMPT 组），Redis 不可用降级直连，均 async。"""
 
-读取链路：1) Redis（进程外共享，启动预热写入）；2) Nacos 配置中心（PROMPT 组，命名空间 agent-platform）。
-Nacos 不可达/缺失时，调用方应回退到内置模板。Redis 不可用时自动降级直连 Nacos，不阻断业务。
-
-注意：app_state.redis 是 redis.asyncio 客户端，本模块所有函数均为 **async**，
-Redis 调用必须 await；调用方直接 await 即可，不要用 asyncio.to_thread 派发
-（协程被丢进别的线程不会执行，这正是此前缓存失效的根因）。
-"""
 from __future__ import annotations
 
 import json
@@ -34,19 +26,19 @@ async def get_prompt(data_id: str, group: str = ConfigGroup.PROMPT.value) -> Opt
             if cached:
                 return cached if isinstance(cached, str) else cached.decode("utf-8")
         except Exception as e:
-            logger.warning(f"提示词缓存：Redis 读取失败，回退 Nacos: {e}")
+            logger.exception(f"提示词缓存：Redis 读取失败，回退 Nacos: {e}")
 
     try:
         content = await get_config_center_client().get_config(data_id, group)
     except ConfigCenterError as e:
-        logger.warning(f"提示词缓存：Nacos 读取失败 data_id={data_id}: {e}")
+        logger.exception(f"提示词缓存：Nacos 读取失败 data_id={data_id}: {e}")
         content = None
 
     if content is not None and r is not None:
         try:
             await r.set(_cache_key(data_id), content, ex=PROMPT_TTL_S)
         except Exception as e:
-            logger.warning(f"提示词缓存：Redis 回填失败 data_id={data_id}: {e}")
+            logger.exception(f"提示词缓存：Redis 回填失败 data_id={data_id}: {e}")
     return content
 
 
@@ -74,7 +66,7 @@ async def warmup_prompts(group: str = ConfigGroup.PROMPT.value) -> int:
         resp = await get_config_center_client().list_configs(group=group, page_size=200)
         items = resp.get("pageItems") or []
     except ConfigCenterError as e:
-        logger.warning(f"提示词预热：Nacos 列举失败: {e}")
+        logger.exception(f"提示词预热：Nacos 列举失败: {e}")
         return 0
     n = 0
     for it in items:
@@ -88,7 +80,7 @@ async def warmup_prompts(group: str = ConfigGroup.PROMPT.value) -> int:
             await r.set(_cache_key(did), content, ex=PROMPT_TTL_S)
             n += 1
         except Exception as e:
-            logger.warning(f"提示词预热：单条失败 data_id={did}: {e}")
+            logger.exception(f"提示词预热：单条失败 data_id={did}: {e}")
     logger.info(f"提示词预热完成：group={group} 共 {n} 条")
     return n
 
@@ -105,4 +97,4 @@ async def refresh_prompt(data_id: str, group: str = ConfigGroup.PROMPT.value) ->
         else:
             await r.set(_cache_key(data_id), content, ex=PROMPT_TTL_S)
     except Exception as e:
-        logger.warning(f"提示词刷新失败 data_id={data_id}: {e}")
+        logger.exception(f"提示词刷新失败 data_id={data_id}: {e}")

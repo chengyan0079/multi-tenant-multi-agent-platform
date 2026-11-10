@@ -1,17 +1,5 @@
-"""
-service - 配置中心审批流服务（ConfigChangeService）
+"""配置中心审批流服务：申请/复核/执行/回滚，Nacos 写仅审批后触发并带 casMd5 乐观锁。"""
 
-职责：申请 / 复核 / 执行 / 回滚 / 列表查询。所有 Nacos 写操作仅在审批通过后由本服务触发，
-并携带 casMd5 做乐观锁（见配置中心对接设计相关文档 §6.1）。
-
-并发控制（配置中心为管理员低频操作，无高并发）：
-- 悲观锁：复核时对申请单行加 FOR UPDATE，保证状态只迁移一次。
-- 乐观锁：执行 Nacos 写时携带申请时抓取的当前 md5 作为 casMd5；期间若配置被改则拒绝。
-
-数据访问：`ConfigDao` 只负责 SQL，事务边界由 `backend.data.sql.session_scope`
-（session.begin()）统一控制；本模块不再手动 commit/rollback。「复核 → 调 Nacos →
-回填 nid」作为一个事务：Nacos 成功→块退出自动提交，Nacos 抛异常→块退出自动回滚。
-"""
 from __future__ import annotations
 
 import json
@@ -83,7 +71,7 @@ def _validate_content(data_id: str, content: str | None) -> None:
     try:
         import yaml
     except ImportError:
-        logger.warning("未安装 PyYAML，跳过 YAML 格式校验")
+        logger.exception("未安装 PyYAML，跳过 YAML 格式校验")
         return
     try:
         yaml.safe_load(content)
@@ -141,15 +129,23 @@ async def create_request(
     if op_type == OP_DELETE:
         # 删除不发布到 Nacos，仅记录类型用于展示：优先 Nacos 当前配置真实 type，
         # 其次请求传入的真实类型，再回落 text
-        content_format = (cur.get("type") if isinstance(cur, dict) else None) or content_format or "text"
+        content_format = (
+            (cur.get("type") if isinstance(cur, dict) else None) or content_format or "text"
+        )
 
     req = await ConfigDao.add_request(
         session,
-        namespace=namespace, group_id=group_id, data_id=data_id,
-        op_type=op_type, title=title, content_new=content_new,
-        content_format=content_format, reason=reason,
+        namespace=namespace,
+        group_id=group_id,
+        data_id=data_id,
+        op_type=op_type,
+        title=title,
+        content_new=content_new,
+        content_format=content_format,
+        reason=reason,
         src_history_nid=None,
-        applicant_user_id=_operator(), status=ST_PENDING,
+        applicant_user_id=_operator(),
+        status=ST_PENDING,
     )
     logger.info(f"配置变更申请已创建: id={req['id']} op={_OP_NAME[op_type]} data_id={data_id}")
     return req
@@ -174,13 +170,18 @@ async def create_rollback(
     _validate_content(data_id, hist.get("content"))
     req = await ConfigDao.add_request(
         session,
-        namespace=namespace, group_id=group_id, data_id=data_id,
-        op_type=OP_ROLLBACK, title=title or f"回滚至历史 nid={src_history_nid}",
+        namespace=namespace,
+        group_id=group_id,
+        data_id=data_id,
+        op_type=OP_ROLLBACK,
+        title=title or f"回滚至历史 nid={src_history_nid}",
         # 回滚内容类型优先用历史版本真实 type；历史详情缺 type 时回落请求传入的真实类型，再回落 text
         content_new=hist.get("content"),
-        content_format=hist.get("type") or content_format or "text", reason=reason,
+        content_format=hist.get("type") or content_format or "text",
+        reason=reason,
         src_history_nid=src_history_nid,
-        applicant_user_id=_operator(), status=ST_PENDING,
+        applicant_user_id=_operator(),
+        status=ST_PENDING,
     )
     logger.info(f"回滚申请已创建: id={req['id']} data_id={data_id} src_nid={src_history_nid}")
     return req
@@ -218,7 +219,10 @@ async def review(
     )
     if action == RV_REJECT:
         await _apply_update(
-            session, req, status=ST_REJECTED, reviewer_user_id=reviewer_user_id,
+            session,
+            req,
+            status=ST_REJECTED,
+            reviewer_user_id=reviewer_user_id,
             effective_at=True,
         )
         logger.info(f"配置申请已驳回: id={request_id} reviewer_user_id={reviewer_user_id}")
@@ -244,9 +248,7 @@ async def execute_request(
     if req is None:
         raise BizException(40400, "申请不存在")
     if req["status"] != ST_APPROVED:
-        raise BizException(
-            40000, f"申请未处于待执行状态（status={req['status']}），请先通过复核"
-        )
+        raise BizException(40000, f"申请未处于待执行状态（status={req['status']}），请先通过复核")
 
     client = get_config_center_client()
     cur = await _current_config(client, req["data_id"], req["group_id"])
@@ -258,13 +260,18 @@ async def execute_request(
     try:
         if op == OP_DELETE:
             ok = await _nacos_call(
-                client.remove_config, req["data_id"], req["group_id"],
+                client.remove_config,
+                req["data_id"],
+                req["group_id"],
                 cas_md5=cur["md5"] if cur else None,
             )
         else:  # OP_ADD / OP_MODIFY / OP_ROLLBACK：统一用申请单已存内容发布，类型随申请记录
             ok = await _nacos_call(
-                client.publish_config, req["data_id"], req["content_new"] or "",
-                req["group_id"], content_format=req["content_format"] or "text",
+                client.publish_config,
+                req["data_id"],
+                req["content_new"] or "",
+                req["group_id"],
+                content_format=req["content_format"] or "text",
                 cas_md5=cur["md5"] if cur else None,
             )
     except ConfigCenterError as e:
@@ -322,9 +329,7 @@ async def _resolve_history_nids(
     return new_nid, old_nid
 
 
-async def sync_history_nids(
-    session: AsyncSession, *, request_id: int
-) -> dict[str, Any] | None:
+async def sync_history_nids(session: AsyncSession, *, request_id: int) -> dict[str, Any] | None:
     """补偿：重新从 Nacos 拉历史，回填 old_history_nid / nacos_history_nid。"""
     req = await get_request(session, request_id=request_id)
     if req["status"] != ST_EXECUTED:
@@ -335,12 +340,8 @@ async def sync_history_nids(
         client, req["data_id"], req["group_id"], cur["md5"] if cur else None
     )
     if req["nacos_history_nid"] != new_nid:
-        await _apply_update(
-            session, req, nacos_history_nid=new_nid
-        )
-        logger.info(
-            f"配置历史 nid 补偿完成: id={req['id']} new_nid={new_nid}"
-        )
+        await _apply_update(session, req, nacos_history_nid=new_nid)
+        logger.info(f"配置历史 nid 补偿完成: id={req['id']} new_nid={new_nid}")
     return req
 
 
@@ -411,33 +412,37 @@ async def get_request_detail(session: AsyncSession, *, request_id: int) -> dict[
     if req["op_type"] != OP_ADD:
         client = get_config_center_client()
         try:
-            old_content = await _nacos_call(
-                client.get_config, req["data_id"], req["group_id"]
-            )
+            old_content = await _nacos_call(client.get_config, req["data_id"], req["group_id"])
         except ConfigCenterError:
             old_content = None
     return {
-        "id": req["id"], "namespace": req["namespace"], "group_id": req["group_id"],
-        "data_id": req["data_id"], "op_type": req["op_type"],
-        "title": req["title"], "content_format": req["content_format"],
-        "content_new": req["content_new"], "old_content": old_content,
-        "status": req["status"], "applicant_user_id": req["applicant_user_id"],
+        "id": req["id"],
+        "namespace": req["namespace"],
+        "group_id": req["group_id"],
+        "data_id": req["data_id"],
+        "op_type": req["op_type"],
+        "title": req["title"],
+        "content_format": req["content_format"],
+        "content_new": req["content_new"],
+        "old_content": old_content,
+        "status": req["status"],
+        "applicant_user_id": req["applicant_user_id"],
         "applicant_name": names.get(req["applicant_user_id"]),
         "reviewer_user_id": req["reviewer_user_id"],
         "reviewer_name": names.get(req["reviewer_user_id"]),
-        "reason": req["reason"], "src_history_nid": req["src_history_nid"],
+        "reason": req["reason"],
+        "src_history_nid": req["src_history_nid"],
         "nacos_history_nid": req["nacos_history_nid"],
         "effective_at": req.get("effective_at"),
-        "create_at": req["create_at"], "updated_at": req["updated_at"],
+        "create_at": req["create_at"],
+        "updated_at": req["updated_at"],
     }
 
 
 async def get_reviews(session: AsyncSession, *, approval_id: int) -> list[dict[str, Any]]:
     """某审批单的复核记录（按时间正序），并把复核人 id 解析成 username。"""
     reviews = await ConfigDao.list_reviews(session, approval_id=approval_id)
-    names = await ConfigDao.resolve_usernames(
-        session, [r["reviewer_user_id"] for r in reviews]
-    )
+    names = await ConfigDao.resolve_usernames(session, [r["reviewer_user_id"] for r in reviews])
     for r in reviews:
         r["reviewer_name"] = names.get(r["reviewer_user_id"])
     return reviews

@@ -1,17 +1,19 @@
-"""agent 与模型的绑定 DAO（agent_model 表）。
+"""agent 与模型绑定 DAO：resolve 按 is_default/priority 解析，无绑定回退 active。"""
 
-- 全局表（无 tenant 列），只描述 agent 默认使用哪个 model_registry 模型；
-- resolve() 按 (agent_type, model_type) 解析出该 agent 实际使用的模型配置：
-  is_default 优先、其次 priority 最小，无绑定则回退到 model_registry 的 active；
-- 本文件在 resolve 之外补充了「绑定关系维护」所需的增删改查接口。
-"""
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from sqlalchemy import Integer, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _COLS = (
@@ -68,9 +70,7 @@ ON CONFLICT (agent_id, model_id) DO UPDATE
 SET is_default = EXCLUDED.is_default, priority = EXCLUDED.priority, update_user_id = EXCLUDED.update_user_id
 """)
 
-_DELETE_REL = text(
-    "DELETE FROM agent_model WHERE agent_id = :agent_id AND model_id = :model_id"
-)
+_DELETE_REL = text("DELETE FROM agent_model WHERE agent_id = :agent_id AND model_id = :model_id")
 
 _UPDATE_REL = text("""
 UPDATE agent_model SET
@@ -100,7 +100,9 @@ class AgentModelRelDao:
         调用方据此回退到 model_registry 的全局 active。
         """
         async with session_scope() as session:
-            return await fetch_one(session, _RESOLVE, {"agent_type": agent_type, "model_type": model_type})
+            return await fetch_one(
+                session, _RESOLVE, {"agent_type": agent_type, "model_type": model_type}
+            )
 
     @staticmethod
     async def list_by_agent_paged(
@@ -108,8 +110,12 @@ class AgentModelRelDao:
     ) -> tuple[list[dict[str, Any]], int]:
         async with session_scope() as session:
             return await fetch_page(
-                session, _LIST_BY_AGENT, _COUNT_BY_AGENT_TYPE, {"agent_type": agent_type},
-                page=page, page_size=page_size,
+                session,
+                _LIST_BY_AGENT,
+                _COUNT_BY_AGENT_TYPE,
+                {"agent_type": agent_type},
+                page=page,
+                page_size=page_size,
             )
 
     @staticmethod
@@ -125,9 +131,7 @@ class AgentModelRelDao:
             return await fetch_one(session, _GET_REL, {"agent_id": agent_id, "model_id": model_id})
 
     @staticmethod
-    async def add(
-        agent_id: int, model_id: int, *, is_default: bool, priority: int
-    ) -> None:
+    async def add(agent_id: int, model_id: int, *, is_default: bool, priority: int) -> None:
         """新增或覆盖一条绑定（同一 agent+model 冲突则更新默认/优先级）。"""
         async with session_scope() as session:
             await execute_write(

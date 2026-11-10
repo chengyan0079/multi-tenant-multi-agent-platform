@@ -1,9 +1,5 @@
-"""
-loader - 插件扫描加载（设计文档 §8）
+"""插件扫描加载：扫描 builtin 子包并预留外部插件挂载点，单插件失败不影响其余。"""
 
-启动时扫描 backend/plugins/builtin 下各子包（含 manifest.yaml 与 __init__ 导出的 plugin 实例），
-并预留 entry-points 外部插件挂载点（external/）。失败单个插件不影响其余。
-"""
 from __future__ import annotations
 
 import importlib
@@ -54,7 +50,7 @@ def discover_builtin() -> List[AgentPlugin]:
             plugins.append(plugin)
             logger.info(f"发现插件: {name}")
         except Exception as exc:
-            logger.warning(f"插件加载失败(已跳过): {name} - {exc}")
+            logger.exception(f"插件加载失败(已跳过): {name} - {exc}")
     return plugins
 
 
@@ -64,4 +60,4 @@ async def load_all(registry: PluginRegistry) -> None:
         try:
             registry.register_plugin(plugin)
         except Exception as exc:
-            logger.warning(f"插件注册失败(已跳过): {plugin.manifest.name} - {exc}")
+            logger.exception(f"插件注册失败(已跳过): {plugin.manifest.name} - {exc}")

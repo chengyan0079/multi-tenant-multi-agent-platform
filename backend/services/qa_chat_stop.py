@@ -1,10 +1,5 @@
-"""QA 流式回答的停止标记（Redis，跨 worker 生效）。
+"""QA 流式停止标记（Redis，跨 worker）：POST /stop 写短 TTL，生成前检查，结束清理。"""
 
-参考 RAG-Ultra：
-- `POST /qa/chat/stop` 写入短 TTL 标记；
-- 流式生成器在产出事件前检查标记，命中则停止；
-- 进入/结束时清理，避免残留误停。
-"""
 from __future__ import annotations
 
 from backend.app_state import app_state
@@ -26,7 +21,7 @@ async def set_chat_stop(tenant_id: int, user_id: int, session_id: str) -> None:
     try:
         await redis.set(_key(tenant_id, user_id, session_id), "1", ex=_STOP_TTL_S)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"qa_chat_stop.set_failed | session={session_id} | {exc}")
+        logger.exception(f"qa_chat_stop.set_failed | session={session_id} | {exc}")
 
 
 async def is_chat_stopped(tenant_id: int, user_id: int, session_id: str) -> bool:

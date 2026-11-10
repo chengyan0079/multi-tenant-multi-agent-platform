@@ -1,4 +1,5 @@
 """安全启动项（认证/护栏依赖在请求期生效，此处仅占位校验配置）。"""
+
 from __future__ import annotations
 
 from backend.app_state import app_state

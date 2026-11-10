@@ -1,19 +1,5 @@
-"""
-api_log - API 调用日志中间件（纯 ASGI）
+"""API 调用日志中间件（纯 ASGI）：请求/响应各一条日志，敏感字段脱敏，仅捕获可控 body。"""
 
-记录每次 API 调用的调用方 / 请求头 / 方法 / 路由 / 状态 / 耗时，
-"请求"与"响应"各打一条日志（便于按时间线排障），并合并落一行到 agent_api_call_log。
-x-trace-id 的强制传播与生成由外层 TraceIdMiddleware 负责：登录接口（获取 token）允许为空
-（后端生成），其余接口必须携带 x-trace-id（来自同一操作链上游），缺失即拒绝（400）且不重新
-生成；本中间件仅读取 TraceIdMiddleware 已确定的 trace_id 写日志。
-请求参数默认就记录：GET/DELETE 解析 query 为结构化 params 打印，POST/PUT/PATCH 取 body，
-两者敏感字段（password/token/secret...）均脱敏为 ***，
-避免明文凭据落到 DEBUG 日志（需 LOG_LEVEL=DEBUG 才打印）；body 仅对 POST/PUT/PATCH 且长度可控者捕获并重放给下游，
-multipart 与超大体不消费、不记录。
-响应体受 `API_LOG_SAVE_BODY` 控制（默认不记录，开启时按上限截断、同样脱敏）。
-实现要点（不用 BaseHTTPMiddleware，纯 ASGI 不吃大文件）：
-  - 敏感头（authorization/cookie/...）与敏感 body 字段均脱敏为 ***。
-"""
 from __future__ import annotations
 
 import json
@@ -28,18 +14,37 @@ from backend.app_state import app_state, get_tenant_id, get_user_id, trace_id_ct
 from backend.config import config
 from backend.common.logger import ensure_trace_id, logger
 
-_SENSITIVE_HEADERS = frozenset({
-    "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key",
-    "x-auth-signature",
-})
+_SENSITIVE_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-signature",
+    }
+)
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
 # 请求/响应体里需脱敏的字段（避免明文密码/token/secret 落到 DEBUG 日志）
-_SENSITIVE_BODY_KEYS = frozenset({
-    "password", "pwd", "passwd", "old_password", "new_password",
-    "token", "access_token", "refresh_token", "secret", "api_key",
-    "authorization", "auth_sign", "code", "captcha",
-})
+_SENSITIVE_BODY_KEYS = frozenset(
+    {
+        "password",
+        "pwd",
+        "passwd",
+        "old_password",
+        "new_password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "secret",
+        "api_key",
+        "authorization",
+        "auth_sign",
+        "code",
+        "captcha",
+    }
+)
 
 
 def _safe_json(text: str) -> Any:
@@ -188,8 +193,7 @@ class ApiLogMiddleware:
 
         logger.debug(
             f"API 请求 trace={tid} {method} {path} caller={caller} "
-            f"headers={_compact(headers)}"
-            + (f" params={req_params}" if req_params else "")
+            f"headers={_compact(headers)}" + (f" params={req_params}" if req_params else "")
         )
 
         status: dict[str, Any] = {}
@@ -234,18 +238,20 @@ class ApiLogMiddleware:
             if config.api_log.db:
                 from backend.data.dao.ops.api_log_dao import ApiLogDao
 
-                await ApiLogDao().save({
-                    "trace_id": tid,
-                    "caller": caller,
-                    "user_id": user_id,
-                    "tenant_id": tenant_id,
-                    "method": method,
-                    "path": path,
-                    "route": _full_route(path, getattr(scope.get("route"), "path", None)),
-                    "query_string": query,
-                    "req_headers": headers,
-                    "req_time": req_at,
-                    "status_code": status_code,
-                    "resp_time": resp_at,
-                    "cost_ms": cost_ms,
-                })
+                await ApiLogDao().save(
+                    {
+                        "trace_id": tid,
+                        "caller": caller,
+                        "user_id": user_id,
+                        "tenant_id": tenant_id,
+                        "method": method,
+                        "path": path,
+                        "route": _full_route(path, getattr(scope.get("route"), "path", None)),
+                        "query_string": query,
+                        "req_headers": headers,
+                        "req_time": req_at,
+                        "status_code": status_code,
+                        "resp_time": resp_at,
+                        "cost_ms": cost_ms,
+                    }
+                )

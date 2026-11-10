@@ -1,4 +1,5 @@
 """记忆存储（短期/长期/语义）。"""
+
 from __future__ import annotations
 
 from backend.app_state import app_state

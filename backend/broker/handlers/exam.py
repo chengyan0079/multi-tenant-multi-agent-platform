@@ -1,10 +1,5 @@
-"""试卷批改 handler：消费 exam.review 消息，跑 Orchestrator 批改工作流。
+"""试卷批改 handler：消费 exam.review，跑 Orchestrator 批改工作流，到 HITL 暂停后 ack。"""
 
-幂等与 ack 由消费框架统一负责（见 broker/consumer/strategies.py）：业务级幂等——
-提交记录已非 ai_processing 则跳过，避免重复跑图。跑图到 teacher_review 时
-interrupt 暂停（状态存 checkpointer），本函数返回后消息被 ack；教师 confirm 经 API
-调 Orchestrator.resume 恢复，继续跑 apply_teacher_decision → publish_results 发布。
-"""
 from __future__ import annotations
 
 from sqlalchemy import text
@@ -21,11 +16,15 @@ async def _fetch_status(submission_id: str) -> str | None:
     """取提交记录当前状态；不存在返回 None。"""
     async with session_scope() as session:
         row = (
-            await session.execute(
-                text("SELECT status FROM agent_exam_submissions WHERE id = :id"),
-                {"id": submission_id},
+            (
+                await session.execute(
+                    text("SELECT status FROM agent_exam_submissions WHERE id = :id"),
+                    {"id": submission_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
     return row["status"] if row else None
 
 

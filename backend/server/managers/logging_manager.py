@@ -1,4 +1,5 @@
 """日志启动项：触发 loguru 配置（控制台 + 文件双写），并定期把过期日志打包为 zip。"""
+
 from __future__ import annotations
 
 import asyncio

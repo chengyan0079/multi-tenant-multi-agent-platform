@@ -1,4 +1,5 @@
 """模型配置管理端点（超管）：model_registry 增删改查。"""
+
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -52,15 +53,35 @@ async def list_models(
     _: object = Depends(require_scope(Scope.MODEL_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """模型列表分页查询（可按 model_type 过滤）。
+
+    请求：query { model_type?, page, page_size }
+    权限：model:page
+    返回：items(api_key 已脱敏) / total / page / page_size
+    """
     rows, total = await ModelDao.list_models(model_type, page=page, page_size=page_size)
-    return success({
-        "items": [_serialize(r) for r in rows],
-        "total": total, "page": page, "page_size": page_size,
-    })
+    return success(
+        {
+            "items": [_serialize(r) for r in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+    )
 
 
 @router.get("/{model_id}", summary="模型详情")
-async def get_model(model_id: int, _: object = Depends(require_scope(Scope.MODEL_VIEW)), __: object = Depends(get_current_user)):  # noqa: B008
+async def get_model(
+    model_id: int,
+    _: object = Depends(require_scope(Scope.MODEL_VIEW)),
+    __: object = Depends(get_current_user),
+):  # noqa: B008
+    """模型详情（api_key 已脱敏）。
+
+    请求：path { model_id }
+    权限：model:view
+    返回：模型视图
+    """
     row = await ModelDao.get(model_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
@@ -68,7 +89,17 @@ async def get_model(model_id: int, _: object = Depends(require_scope(Scope.MODEL
 
 
 @router.post("", summary="新增模型")
-async def create_model(body: ModelIn, _: object = Depends(require_scope(Scope.MODEL_ADD)), __: object = Depends(get_current_user)):  # noqa: B008
+async def create_model(
+    body: ModelIn,
+    _: object = Depends(require_scope(Scope.MODEL_ADD)),
+    __: object = Depends(get_current_user),
+):  # noqa: B008
+    """新增模型并刷新 LLM 工厂。
+
+    请求：body { model_type, name, provider, base_url, api_key?, endpoint_path?, ... }
+    权限：model:add
+    返回：{ id }
+    """
     new_id = await ModelDao.create(
         model_type=body.model_type,
         name=body.name,
@@ -89,8 +120,17 @@ async def create_model(body: ModelIn, _: object = Depends(require_scope(Scope.MO
 
 @router.put("/{model_id}", summary="更新模型")
 async def update_model(
-    model_id: int, body: ModelIn, _: object = Depends(require_scope(Scope.MODEL_UPDATE)), __: object = Depends(get_current_user)  # noqa: B008
+    model_id: int,
+    body: ModelIn,
+    _: object = Depends(require_scope(Scope.MODEL_UPDATE)),
+    __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """更新模型（api_key 留空则保留原值）并刷新 LLM 工厂。
+
+    请求：path { model_id }, body { model_type, name, provider, ... }
+    权限：model:update
+    返回：{ id }
+    """
     row = await ModelDao.get(model_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
@@ -116,7 +156,17 @@ async def update_model(
 
 
 @router.delete("/{model_id}", summary="删除模型")
-async def delete_model(model_id: int, _: object = Depends(require_scope(Scope.MODEL_DELETE)), __: object = Depends(get_current_user)):  # noqa: B008
+async def delete_model(
+    model_id: int,
+    _: object = Depends(require_scope(Scope.MODEL_DELETE)),
+    __: object = Depends(get_current_user),
+):  # noqa: B008
+    """删除模型并刷新 LLM 工厂。
+
+    请求：path { model_id }
+    权限：model:delete
+    返回：{ id }
+    """
     row = await ModelDao.get(model_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")
@@ -132,6 +182,12 @@ async def set_status(
     _: object = Depends(require_scope(Scope.MODEL_STATUS)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """启停模型并刷新 LLM 工厂。
+
+    请求：path { model_id }, body { enabled: bool }
+    权限：model:status
+    返回：{ id, enabled }
+    """
     row = await ModelDao.get(model_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"模型不存在: {model_id}")

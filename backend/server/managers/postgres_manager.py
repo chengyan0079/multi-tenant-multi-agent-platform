@@ -1,8 +1,5 @@
-"""PostgreSQL 异步引擎（checkpointer + 业务 + 记忆）生命周期。
+"""PostgreSQL 异步引擎生命周期（checkpointer+业务+记忆）：start 装配并注册 app_state.clients，stop 释放。"""
 
-连接由 `PostgresClient` 封装，本 manager 只负责生命周期：
-start 装配实例并注册进 `app_state.clients`，stop 释放。
-"""
 from __future__ import annotations
 
 from sqlalchemy import text

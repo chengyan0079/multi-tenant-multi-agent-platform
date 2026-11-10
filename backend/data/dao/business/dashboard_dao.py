@@ -1,22 +1,5 @@
-"""监控看板 DAO：跨表聚合统计（只读，不做任何写操作）。
+"""监控看板 DAO：跨表只读聚合统计，数据范围由调用方 tenant_id 决定；指标口径对齐前端 Dashboard。"""
 
-数据范围由调用方传 `tenant_id` 决定，本 DAO 不擅自判断权限：
-- `tenant_id=None` → 全平台（仅超管）；
-- `tenant_id=N` → 该租户（租户管理员固定为本租户）。
-
-隔离口径：所有带业务数据的表都以 `tenant_id` 列为边界（agent_thread / agent_run /
-agent_audit_log / agent_api_call_log / agent_capability_policy），
-`agent` / `model_registry` / `agent_plugin` / `tenant` 是平台级全局表，只出现于超管视图。
-
-时间列不统一，按表取值：业务表与审计表统一是 `create_at`（见 AuditMixin/TimestampMixin），
-只有 API 日志是 `req_time`。
-
-指标口径与前端 Dashboard 页一一对应：
-- 今日调用量 = agent_api_call_log 当日条数，环比昨日同期；
-- 活跃会话 = 统计区间内仍有活动的 active 会话，环比上一区间；
-- 智能体总数 = 超管取 agent.enabled 数，租户取 agent_capability_policy 已开通数；
-- 平均成功率 = 1 - agent_run.error/total（不是 HTTP 成功率，业务成败更贴近看板语义）。
-"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -42,37 +25,37 @@ def _scope(alias: str) -> str:
 _STATS = text(f"""
 SELECT
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE {_scope('l')} AND l.req_time >= date_trunc('day', now())) AS api_calls_today,
+     WHERE {_scope("l")} AND l.req_time >= date_trunc('day', now())) AS api_calls_today,
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE {_scope('l')}
+     WHERE {_scope("l")}
        AND l.req_time >= date_trunc('day', now()) - INTERVAL '1 day'
        AND l.req_time < now() - INTERVAL '1 day') AS api_calls_prev,
   (SELECT COUNT(*) FROM agent_thread th
-     WHERE {_scope('th')} AND th.status = 'active' AND th.updated_at >= :since)
+     WHERE {_scope("th")} AND th.status = 'active' AND th.updated_at >= :since)
      AS active_threads,
   (SELECT COUNT(*) FROM agent_thread th
-     WHERE {_scope('th')} AND th.status = 'active'
+     WHERE {_scope("th")} AND th.status = 'active'
        AND th.updated_at >= :prev_since AND th.updated_at < :since)
      AS active_threads_prev,
   (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope('r')} AND r.create_at >= :since) AS runs,
+     WHERE {_scope("r")} AND r.create_at >= :since) AS runs,
   (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope('r')} AND r.create_at >= :since AND r.status = 'error') AS error_runs,
+     WHERE {_scope("r")} AND r.create_at >= :since AND r.status = 'error') AS error_runs,
   (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope('r')} AND r.create_at >= :prev_since AND r.create_at < :since) AS runs_prev,
+     WHERE {_scope("r")} AND r.create_at >= :prev_since AND r.create_at < :since) AS runs_prev,
   (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope('r')} AND r.create_at >= :prev_since AND r.create_at < :since
+     WHERE {_scope("r")} AND r.create_at >= :prev_since AND r.create_at < :since
        AND r.status = 'error') AS error_runs_prev,
   -- agent_run 尚未接入时，用 API 日志兜底成功率，避免永远显示 100%
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE {_scope('l')} AND l.req_time >= :since) AS api_requests,
+     WHERE {_scope("l")} AND l.req_time >= :since) AS api_requests,
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE {_scope('l')} AND l.req_time >= :since
+     WHERE {_scope("l")} AND l.req_time >= :since
        AND (l.status_code IS NULL OR l.status_code >= 400)) AS api_errors,
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE {_scope('l')} AND l.req_time >= :prev_since AND l.req_time < :since) AS api_requests_prev,
+     WHERE {_scope("l")} AND l.req_time >= :prev_since AND l.req_time < :since) AS api_requests_prev,
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE {_scope('l')} AND l.req_time >= :prev_since AND l.req_time < :since
+     WHERE {_scope("l")} AND l.req_time >= :prev_since AND l.req_time < :since
        AND (l.status_code IS NULL OR l.status_code >= 400)) AS api_errors_prev
 """)
 
@@ -97,7 +80,7 @@ SELECT
   COUNT(*) AS requests,
   COUNT(*) FILTER (WHERE l.status_code >= 400) AS errors
 FROM agent_api_call_log l
-WHERE {_scope('l')} AND l.req_time >= :since
+WHERE {_scope("l")} AND l.req_time >= :since
 GROUP BY date_trunc('day', l.req_time)
 ORDER BY date_trunc('day', l.req_time)
 """)
@@ -109,7 +92,7 @@ SELECT
   COUNT(*) AS value
 FROM agent_run r
 LEFT JOIN agent a ON a.agent_type = r.graph_name
-WHERE {_scope('r')} AND r.create_at >= :since
+WHERE {_scope("r")} AND r.create_at >= :since
 GROUP BY COALESCE(a.name, r.graph_name)
 ORDER BY value DESC, name ASC
 LIMIT :limit
@@ -129,7 +112,7 @@ FROM (
     ELSE NULL
   END AS agent_type
   FROM agent_api_call_log l
-  WHERE {_scope('l')} AND l.req_time >= :since
+  WHERE {_scope("l")} AND l.req_time >= :since
 ) x
 LEFT JOIN agent a ON a.agent_type = x.agent_type
 WHERE x.agent_type IS NOT NULL
@@ -144,7 +127,7 @@ SELECT
   (EXTRACT(HOUR FROM l.req_time)::int / 4) * 4 AS bucket,
   CAST(COALESCE(AVG(l.cost_ms), 0) AS BIGINT) AS avg_ms
 FROM agent_api_call_log l
-WHERE {_scope('l')} AND l.req_time >= :since
+WHERE {_scope("l")} AND l.req_time >= :since
 GROUP BY 1
 ORDER BY 1
 """)
@@ -160,7 +143,7 @@ SELECT
   COALESCE(al.result, '成功') AS result
 FROM agent_audit_log al
 LEFT JOIN "agent_user" u ON u.id = al.user_id
-WHERE {_scope('al')}
+WHERE {_scope("al")}
 ORDER BY al.create_at DESC
 LIMIT :limit
 """)
@@ -179,7 +162,7 @@ SELECT
        ELSE '失败' END AS result
 FROM agent_api_call_log l
 LEFT JOIN "agent_user" u ON u.id = l.user_id
-WHERE {_scope('l')}
+WHERE {_scope("l")}
 ORDER BY l.req_time DESC
 LIMIT :limit
 """)
@@ -240,9 +223,7 @@ class DashboardDao:
         return int((row or {}).get("total") or 0)
 
     @staticmethod
-    async def request_trend(
-        *, tenant_id: Optional[int], since: datetime
-    ) -> list[dict[str, Any]]:
+    async def request_trend(*, tenant_id: Optional[int], since: datetime) -> list[dict[str, Any]]:
         """按天请求量 / 错误量（无数据的天由端点补零）。"""
         async with session_scope() as session:
             return await fetch_all(
@@ -274,18 +255,12 @@ class DashboardDao:
             )
 
     @staticmethod
-    async def latency_by_hour(
-        *, tenant_id: Optional[int], since: datetime
-    ) -> list[dict[str, Any]]:
+    async def latency_by_hour(*, tenant_id: Optional[int], since: datetime) -> list[dict[str, Any]]:
         """各时段平均耗时（固定 6 桶，每 4 小时）。"""
         async with session_scope() as session:
-            rows = await fetch_all(
-                session, _LATENCY, {"tenant_id": tenant_id, "since": since}
-            )
+            rows = await fetch_all(session, _LATENCY, {"tenant_id": tenant_id, "since": since})
         found = {int(r["bucket"]): int(r["avg_ms"] or 0) for r in rows}
-        return [
-            {"hour": f"{b:02d}", "avg": found.get(b, 0)} for b in _LATENCY_BUCKETS
-        ]
+        return [{"hour": f"{b:02d}", "avg": found.get(b, 0)} for b in _LATENCY_BUCKETS]
 
     @staticmethod
     async def recent_activities(
@@ -293,9 +268,7 @@ class DashboardDao:
     ) -> list[dict[str, Any]]:
         """最近审计动作（前端「最近活动」表格）。"""
         async with session_scope() as session:
-            return await fetch_all(
-                session, _RECENT, {"tenant_id": tenant_id, "limit": limit}
-            )
+            return await fetch_all(session, _RECENT, {"tenant_id": tenant_id, "limit": limit})
 
     @staticmethod
     async def recent_activities_from_api(
@@ -303,9 +276,7 @@ class DashboardDao:
     ) -> list[dict[str, Any]]:
         """审计为空时，用最近 API 调用兜底最近活动。"""
         async with session_scope() as session:
-            return await fetch_all(
-                session, _RECENT_API, {"tenant_id": tenant_id, "limit": limit}
-            )
+            return await fetch_all(session, _RECENT_API, {"tenant_id": tenant_id, "limit": limit})
 
     @staticmethod
     async def global_overview() -> dict[str, Any]:
@@ -318,6 +289,4 @@ class DashboardDao:
     async def tenant_ranking(*, since: datetime, limit: int = 10) -> list[dict[str, Any]]:
         """租户用量排行（仅超管视角）：按区间运行量倒序。"""
         async with session_scope() as session:
-            return await fetch_all(
-                session, _RANKING, {"since": since, "limit": limit}
-            )
+            return await fetch_all(session, _RANKING, {"since": since, "limit": limit})

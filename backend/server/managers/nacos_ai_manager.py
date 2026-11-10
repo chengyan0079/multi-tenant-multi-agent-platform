@@ -1,15 +1,5 @@
-"""NacosAIManager：Nacos AI 接入（发布 + 加载远程资产）。
+"""NacosAIManager：发布本平台 MCP Server + 加载远程资产（Agent Card/MCP），SDK 缺失软降级。"""
 
-两段职责：
-1. 发布本平台 MCP Server 到 Nacos AI（release_mcp_server）。
-2. 从 Nacos AI 加载远程资产（Agent Card / MCP Server），按 allow-list 名称清单，
-   默认走 subscribe_* 长连接实时更新（subscribe_remote=False 时退化为启动期 get_* 快照）。
-   加载结果缓存在 manager 实例上，经 ``app_state.nacos_ai`` 供查询接口 / 健康检查读取；
-   消费侧（如接进 plugin_registry 成可调用工具）后续单独做。
-
-需 Nacos 服务端 >= 3.1.0，SDK（v2.nacos）缺失时软降级，不阻断启动。
-生命周期与 NacosDiscoverManager 对齐：默认失败仅告警、不阻断启动（strict=True 时 fail-fast）。
-"""
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
@@ -50,7 +40,7 @@ class NacosAIManager(BaseManager):
     # -------------------------------------------------------------------------
     async def start(self) -> None:
         if not config.nacos_ai.enabled:
-            logger.info("Nacos AI 未启用（NACOS_AI_ENABLED=False），跳过")
+            logger.warning("Nacos AI 未启用（NACOS_AI_ENABLED=False），跳过")
             return
         app_state.nacos_ai = self
         client = app_state.clients.ensure(
@@ -66,28 +56,24 @@ class NacosAIManager(BaseManager):
         await self._load_remote_assets(client)
 
         if not config.nacos_ai.publish_mcp:
-            logger.info("Nacos AI MCP 发布未启用（publish_mcp=False），仅建立连接并加载远程资产")
+            logger.warning("Nacos AI MCP 发布未启用（publish_mcp=False），仅建立连接并加载远程资产")
             return
         try:
             params = build_mcp_release_params(config.nacos_ai, config.service)
         except Exception as e:  # 参数装配失败不应阻断启动
             if config.nacos_ai.strict:
                 raise
-            logger.warning(f"构造 Nacos AI MCP 发布参数失败，跳过发布: {e}")
+            logger.exception(f"构造 Nacos AI MCP 发布参数失败，跳过发布: {e}")
             return
         try:
             mcp_id = await self._release_mcp_server(client, params)
             self._released_id = mcp_id
             self._mcp_name = config.nacos_ai.mcp_server_name
-            logger.info(
-                f"Nacos AI 发布 MCP Server 成功: {self._mcp_name} (id={mcp_id})"
-            )
+            logger.info(f"Nacos AI 发布 MCP Server 成功: {self._mcp_name} (id={mcp_id})")
         except Exception as e:
             if config.nacos_ai.strict:
                 raise
-            logger.warning(
-                f"Nacos AI 发布 MCP Server 失败（{e}），跳过发布：服务继续启动"
-            )
+            logger.exception(f"Nacos AI 发布 MCP Server 失败（{e}），跳过发布：服务继续启动")
 
     async def _release_mcp_server(self, client: NacosAIClient, params: Dict[str, Any]) -> str:
         """幂等发布本平台 MCP Server：已存在同名同版本则跳过重复创建。
@@ -115,7 +101,7 @@ class NacosAIManager(BaseManager):
             )
         except Exception as e:
             if _is_already_exists(e):
-                logger.info(f"Nacos AI MCP Server 已存在 {name}@{version}（release 409），跳过")
+                logger.exception(f"Nacos AI MCP Server 已存在 {name}@{version}（release 409），跳过")
                 return name
             raise
 
@@ -132,7 +118,7 @@ class NacosAIManager(BaseManager):
                         sub["name"], sub["version"], sub["cb"]
                     )
             except Exception as e:  # 反订阅失败仅告警，不阻断关停
-                logger.warning(f"Nacos AI 反订阅失败: {sub['name']} ({e})")
+                logger.exception(f"Nacos AI 反订阅失败: {sub['name']} ({e})")
         self._subscriptions.clear()
         self._agent_cards.clear()
         self._mcp_servers.clear()
@@ -179,7 +165,7 @@ class NacosAIManager(BaseManager):
             except Exception as e:
                 if cfg.strict:
                     raise
-                logger.warning(f"Nacos AI 加载 Agent Card 失败: {name} ({e})，跳过")
+                logger.exception(f"Nacos AI 加载 Agent Card 失败: {name} ({e})，跳过")
 
         for name in cfg.load_mcp_servers or []:
             try:
@@ -187,7 +173,7 @@ class NacosAIManager(BaseManager):
             except Exception as e:
                 if cfg.strict:
                     raise
-                logger.warning(f"Nacos AI 加载 MCP Server 失败: {name} ({e})，跳过")
+                logger.exception(f"Nacos AI 加载 MCP Server 失败: {name} ({e})，跳过")
 
         if self._agent_cards or self._mcp_servers:
             logger.info(
@@ -207,13 +193,9 @@ class NacosAIManager(BaseManager):
                 {"kind": "agent_card", "name": name, "version": version, "cb": cb}
             )
         else:
-            detail = await client.get_agent_card(
-                name, version, cfg.agent_card_registration_type
-            )
+            detail = await client.get_agent_card(name, version, cfg.agent_card_registration_type)
         self._agent_cards[name] = detail
-        logger.info(
-            f"Nacos AI 加载 Agent Card 成功: {name} (订阅={cfg.subscribe_remote})"
-        )
+        logger.info(f"Nacos AI 加载 Agent Card 成功: {name} (订阅={cfg.subscribe_remote})")
 
     async def _load_mcp_server(self, client: NacosAIClient, name: str) -> None:
         """加载（订阅或一次性拉取）单个 MCP Server 并缓存。"""
@@ -222,15 +204,11 @@ class NacosAIManager(BaseManager):
         if cfg.subscribe_remote:
             cb = self._make_mcp_server_cb(name)
             detail = await client.subscribe_mcp_server(name, version, cb)
-            self._subscriptions.append(
-                {"kind": "mcp", "name": name, "version": version, "cb": cb}
-            )
+            self._subscriptions.append({"kind": "mcp", "name": name, "version": version, "cb": cb})
         else:
             detail = await client.get_mcp_server(name, version)
         self._mcp_servers[name] = detail
-        logger.info(
-            f"Nacos AI 加载 MCP Server 成功: {name} (订阅={cfg.subscribe_remote})"
-        )
+        logger.info(f"Nacos AI 加载 MCP Server 成功: {name} (订阅={cfg.subscribe_remote})")
 
     # -------------------------------------------------------------------------
     # 订阅回调（SDK 同步调用，detail 作为首参传入；用 *args 容错不同 SDK 版本）

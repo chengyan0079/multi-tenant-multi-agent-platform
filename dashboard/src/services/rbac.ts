@@ -226,6 +226,8 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'qa:page', label: 'qa:page（问答记录查询）' },
   { value: 'interview:ask', label: 'interview:ask（模拟面试）' },
   { value: 'interview:page', label: 'interview:page（面试记录查询）' },
+  { value: 'interview:view', label: 'interview:view（面试详情/报告）' },
+  { value: 'interview:delete', label: 'interview:delete（删除面试会话）' },
   { value: 'resume:ask', label: 'resume:ask（简历问答）' },
   { value: 'resume:upload', label: 'resume:upload（简历上传）' },
   { value: 'resume:page', label: 'resume:page（简历查询）' },

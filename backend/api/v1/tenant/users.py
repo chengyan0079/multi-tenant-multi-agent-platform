@@ -1,8 +1,5 @@
-"""租户管理员用户端点（/api/v1/tenant/users）。
+"""租户管理员用户端点：本租户用户列表/创建/改角色/解绑/详情（tenant_id 取自 token）。"""
 
-租户取自 token（require_tenant 已注入），body 不接受 tenant_id。可创建/改角色/解绑本租户用户，
-角色仅限 student / teacher；管理员（tenant_admin）的更换只归超管（PUT /admin/tenants/{id}/manager）。
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -22,6 +19,7 @@ from backend.security.security import require_scope
 
 router = APIRouter(prefix="/users", tags=["tenant"])
 
+
 @router.get(
     "",
     summary="本租户用户列表（分页）",
@@ -36,6 +34,12 @@ async def list_users(
     created_from: str | None = Query(None, description="创建日期起，格式 yyyy-MM-dd"),
     created_to: str | None = Query(None, description="创建日期止，格式 yyyy-MM-dd"),
 ) -> Any:
+    """本租户用户列表分页查询（名称/创建日期过滤，密码不外露）。
+
+    请求：query { page, page_size, username?, created_from?, created_to? }
+    权限：user:page
+    返回：items / total / page / page_size
+    """
     rows, total = await RbacDao.list_tenant_members(
         current.tenant_id,
         username=username,
@@ -65,6 +69,12 @@ async def create_user(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     __: object = Depends(require_scope(Scope.USER_ADD)),  # noqa: B008
 ) -> Any:
+    """在本租户创建普通用户并绑定角色（写审计日志）。
+
+    请求：body { username, name, password, role? }
+    权限：user:add
+    返回：{ id }
+    """
     if body.role not in await _assignable_roles():
         raise BizException(ErrCode.PARAM_ERROR, "本租户仅可创建普通角色（非 admin/tenant_admin）")
     if await UserDao.get_by_username(body.username) is not None:
@@ -78,8 +88,11 @@ async def create_user(
     )
     await RbacDao.assign_role(new_id, current.tenant_id, role_id)
     await AuditDao.write(
-        tenant_id=current.tenant_id, user_id=current.user_id,
-        action="rbac.grant", target=str(new_id), detail=f"本租户建用户 role={body.role}",
+        tenant_id=current.tenant_id,
+        user_id=current.user_id,
+        action="rbac.grant",
+        target=str(new_id),
+        detail=f"本租户建用户 role={body.role}",
     )
     return success({"id": new_id})
 
@@ -91,6 +104,12 @@ async def change_role(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     __: object = Depends(require_scope(Scope.USER_UPDATE)),  # noqa: B008
 ) -> Any:
+    """改本租户内用户角色（仅 student/teacher，写审计日志）。
+
+    请求：path { user_id }, body { role }
+    权限：user:update
+    返回：{ user_id, role }
+    """
     if body.role not in await _assignable_roles():
         raise BizException(ErrCode.PARAM_ERROR, "本租户仅可分配普通角色（非 admin/tenant_admin）")
     membership = await RbacDao.get_membership(user_id, current.tenant_id)
@@ -101,8 +120,11 @@ async def change_role(
     role_id = await RbacDao.get_role_id(body.role)
     await RbacDao.assign_role(user_id, current.tenant_id, role_id)
     await AuditDao.write(
-        tenant_id=current.tenant_id, user_id=current.user_id,
-        action="rbac.grant", target=str(user_id), detail=f"角色={body.role}",
+        tenant_id=current.tenant_id,
+        user_id=current.user_id,
+        action="rbac.grant",
+        target=str(user_id),
+        detail=f"角色={body.role}",
     )
     return success({"user_id": user_id, "role": body.role})
 
@@ -113,19 +135,26 @@ async def delete_user(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     __: object = Depends(require_scope(Scope.USER_DELETE)),  # noqa: B008
 ) -> Any:
+    """从本租户解绑用户（不可解绑自己/管理员，写审计日志）。
+
+    请求：path { user_id }
+    权限：user:delete
+    返回：{ user_id, removed }
+    """
     if user_id == current.user_id:
         raise BizException(ErrCode.FORBIDDEN, "不能解绑自己")
     membership = await RbacDao.get_membership(user_id, current.tenant_id)
     if membership is None:
         raise BizException(ErrCode.NOT_FOUND, "该用户不在本租户")
     if membership == RoleName.TENANT_ADMIN.value:
-        raise BizException(
-            ErrCode.FORBIDDEN, "租户管理员不可删除，请先更换", http_status=409
-        )
+        raise BizException(ErrCode.FORBIDDEN, "租户管理员不可删除，请先更换", http_status=409)
     removed = await RbacDao.delete_membership(user_id, current.tenant_id)
     await AuditDao.write(
-        tenant_id=current.tenant_id, user_id=current.user_id,
-        action="rbac.revoke", target=str(user_id), detail="从本租户解绑",
+        tenant_id=current.tenant_id,
+        user_id=current.user_id,
+        action="rbac.revoke",
+        target=str(user_id),
+        detail="从本租户解绑",
     )
     return success({"user_id": user_id, "removed": removed})
 
@@ -136,6 +165,12 @@ async def get_user(
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
     __: object = Depends(require_scope(Scope.USER_VIEW)),  # noqa: B008
 ) -> Any:
+    """本租户用户详情（越租户直接 404，密码字段已剥离）。
+
+    请求：path { user_id }
+    权限：user:view
+    返回：用户记录（无 password）
+    """
     # 越租户窥探防护：不在本租户直接 404，不暴露存在性
     if await RbacDao.get_membership(user_id, current.tenant_id) is None:
         raise BizException(ErrCode.NOT_FOUND, "该用户不在本租户")

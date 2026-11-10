@@ -6,6 +6,9 @@
 角色目录种子（原 DEFAULT_ROLES）已从代码移除，改由 scripts/schema.sql 静态注入，
 相关校验统一放在 tests/scripts/test_schema_sql.py，这里只测代码内的判定逻辑。
 """
+import re
+from pathlib import Path
+
 from backend.security.rbac import (
     Identity,
     RoleName,
@@ -33,7 +36,7 @@ def test_identity_flags() -> None:
     tenant_scoped_admin = Identity(2, 200, RoleName.ADMIN.value, [Scope.AGENT_PAGE])
     assert tenant_scoped_admin.is_super_admin is False
 
-    tenant_admin = Identity(3, 200, RoleName.TENANT_ADMIN.value, [Scope.QA_PAGE])
+    tenant_admin = Identity(3, 200, RoleName.TENANT_ADMIN.value, [Scope.QA_ASK])
     assert tenant_admin.is_tenant_admin is True
     assert tenant_admin.is_super_admin is False
 
@@ -58,15 +61,10 @@ def test_audit_scope_is_read_only() -> None:
 
 
 def test_scope_enum_covers_menu_scopes() -> None:
-    """菜单表用到的 scope 都必须在合法权限点集合里，否则 require_scope 会漏配。"""
-    expected = {
-        "agent:page",
-        "agent:update",
-        "model:page",
-        "tenant:page",
-        "role:page",
-        "user:page",
-        "menu:page",
-        "qa:page",
-    }
+    """菜单种子里的 `*:menu` scope 都必须在合法权限点集合里。"""
+    seed = (Path(__file__).resolve().parents[3] / "scripts" / "seed_data.sql").read_text(
+        encoding="utf-8"
+    )
+    expected = set(re.findall(r"'([a-z_]+:menu)'", seed))
+    assert expected  # 防止种子路径写错导致空集误通过
     assert expected <= VALID_SCOPES

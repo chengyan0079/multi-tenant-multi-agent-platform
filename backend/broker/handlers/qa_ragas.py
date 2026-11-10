@@ -1,9 +1,5 @@
-"""问答 RAGAS 质量测评 handler：消费 qa.ragas_review。
+"""问答 RAGAS 测评 handler（消费 qa.ragas_review）：仅 status='pending' 执行，失败交框架重试。"""
 
-幂等与重试由消费框架统一负责：
-- 业务幂等：仅 status='pending' 的评估记录才执行，避免重投重复打分；
-- 失败直接 raise 交给框架重试；重试耗尽前最后一次仍失败则标记 failed。
-"""
 from __future__ import annotations
 
 import json
@@ -70,7 +66,7 @@ async def handle_qa_ragas_review(msg: TaskMessage) -> None:
             reference_answer=str(result.get("reference_answer") or ""),
         )
     except Exception as exc:  # noqa: BLE001 - 交由框架重试/死信
-        logger.error(f"[qa.ragas_review] 评估失败 eval={eval_id}: {exc}", exc_info=True)
+        logger.exception(f"[qa.ragas_review] 评估失败 eval={eval_id}: {exc}")
         if msg.header.retry_count >= _MARK_FAILED_AT_RETRY:
             await QaResultDao.finish_eval(
                 eval_id=str(eval_id),

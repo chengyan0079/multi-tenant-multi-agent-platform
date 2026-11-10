@@ -1,20 +1,5 @@
-"""api 路由装配：把各业务域的路由统一挂到 /api/v1 下。
+"""api 路由装配：各业务域 router 统一挂到 /api/v1 下；权限由各端点 require_scope 决定，新增接口务必自挂 scope。"""
 
-装配只在这里做一次，业务模块内的 router 只声明资源路径（如 /tenants），
-不写版本前缀，避免再次出现 /v1/** 与 /api/v1/** 两种写法并存。
-
-按「谁在访问」分四组挂载，整组仅挂租户上下文依赖；权限判定改由各端点自身的
-require_scope 决定（不再按角色拦截）：
-- 基建域 /api/v1/admin/**：整组只做装配，无角色守卫；每个端点自行 require_scope，
-  超管无租户、不进业务链路（业务域 scope 超管不持有，自然不可见）；
-- 业务域 /api/v1/tenant/**：整组挂 require_tenant() 提供租户上下文，超管无租户调用直接 403；
-  业务端点各自 require_scope（如 qa:ask、interview:ask 等）；
-- 登录态 /api/v1/auth/**：无整组依赖，/login 公开、/menus 与 /me 各自挂 get_current_user；
-- 系统域 /api/v1/health、/api/v1/dashboard：直属 /api/v1，不进 admin 组——
-  /health 免鉴权（探针无 token），/dashboard 由端点自身 require_scope(DASHBOARD_VIEW) 决定
-  （dashboard:view 仅超管角色持有，菜单可见性另用 dashboard:menu 控制）。
-模块文件里每个端点都需自挂 require_scope，新增接口务必补上对应 scope。
-"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -51,12 +36,7 @@ API_PREFIX = "/api/v1"
 ADMIN_PREFIX = f"{API_PREFIX}/admin"
 TENANT_PREFIX = f"{API_PREFIX}/tenant"
 
-# 基建域：Agent 定义与开通策略、插件清单、模型注册表、租户/RBAC/审计
-# （后续 tenants/users 也归这组），整组 require_super_admin。
-# 注：rbac.router / messages.router 不在此组——读接口对超管+租户管理员开放，写接口仅超管，
-# 鉴权混用，单独挂载、由端点自行声明（见 admin/rbac.py / admin/messages.py）。
-# config_center.router 同样单独挂载：配置中心为协同流程（所有角色可提交/撤回，
-# 仅超管/租户管理员可复核/执行/删除），端点各自 require_scope，不挂整组超管。
+# 基建域整组 require_super_admin；rbac/messages/config_center 鉴权混用，单独挂载、由端点各自声明（见各 router）。
 _ADMIN = (
     admin_agents.router,
     admin_plugins.router,

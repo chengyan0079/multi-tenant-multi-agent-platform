@@ -1,15 +1,5 @@
-"""监控看板端点（/api/v1/dashboard）。
+"""监控看板端点：超管看全平台 / 租户管理员看本租户，按前端区块组织返回。"""
 
-准入：平台超管或租户管理员（装配处挂 require_admin_or_tenant_admin）。
-数据范围严格二分，不做隐式降级：
-- 超管无租户上下文（tenant_id=None）→ 全平台；传 tenant_id 则聚焦该租户；
-- 租户管理员 → 只能是本租户；显式传其他 tenant_id 直接 403，
-  而不是静默忽略，避免前端以为自己切到了别的租户却看到本租户数据。
-
-返回结构按前端 Dashboard 页的 5 个区块组织（stats / request_trend /
-agent_distribution / latency_by_hour / recent_activities），字段名与页面 dataIndex 对齐，
-前端不再需要 mock。`global` / `tenant_ranking` 是超管附加信息，前端未用，留给管理侧排障。
-"""
 from __future__ import annotations
 
 import json
@@ -54,9 +44,7 @@ def _pct(current: int | float, previous: int | float) -> float:
     return round((current - previous) / previous * 100, 1)
 
 
-def _fill_trend(
-    rows: list[dict[str, Any]], *, days: int, today: date
-) -> list[dict[str, Any]]:
+def _fill_trend(rows: list[dict[str, Any]], *, days: int, today: date) -> list[dict[str, Any]]:
     """按天补齐区间，缺数据的天填 0（否则前端折线会断点）。"""
     found = {r["date"]: r for r in rows}
     start = today - timedelta(days=days - 1)
@@ -64,24 +52,31 @@ def _fill_trend(
     for i in range(days):
         key = (start + timedelta(days=i)).strftime("%m-%d")
         row = found.get(key)
-        out.append({
-            "date": key,
-            "requests": int(row["requests"]) if row else 0,
-            "errors": int(row["errors"]) if row else 0,
-        })
+        out.append(
+            {
+                "date": key,
+                "requests": int(row["requests"]) if row else 0,
+                "errors": int(row["errors"]) if row else 0,
+            }
+        )
     return out
 
 
 @router.get("", summary="监控看板（超管全局 / 租户管理员本租户）")
 async def dashboard(
     days: int = Query(7, ge=1, le=90, description="统计区间（天）"),
-    tenant_id: Optional[int] = Query(
-        None, description="仅超管有效：聚焦某租户；不传为全平台"
-    ),
+    tenant_id: Optional[int] = Query(None, description="仅超管有效：聚焦某租户；不传为全平台"),
     refresh: bool = Query(False, description="跳过缓存，强制回源 DB"),
     _: object = Depends(require_scope(Scope.DASHBOARD_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """监控看板聚合数据（超管全平台 / 租户管理员本租户），含缓存与多源兜底。
+
+    说明：超管可聚焦某租户，租户管理员越权传 tenant_id 直接 403（不静默降级）；命中缓存直接返回。
+    请求：query { days?, tenant_id?, refresh? }
+    权限：dashboard:view
+    返回：stats / request_trend / agent_distribution / latency_by_hour / recent_activities / service
+    """
     # 角色准入由装配处 require_admin_or_tenant_admin 保证：超管看全平台，
     # 租户管理员只看本租户（下面的 tenant_id 校验兜住越权）
     if current.is_super_admin:
@@ -102,16 +97,14 @@ async def dashboard(
             if cached:
                 return success(json.loads(cached))
         except Exception:
-            logger.warning("dashboard 缓存读取失败，回源 DB", exc_info=True)
+            logger.exception("dashboard 缓存读取失败，回源 DB")
 
     today = datetime.now().date()
     since = datetime.combine(today - timedelta(days=days - 1), time.min)
     # 上一区间与当前区间等长，用于「较昨日/上一周期」的环比
     prev_since = since - timedelta(days=days)
 
-    raw = await DashboardDao.stats(
-        tenant_id=scope_tenant, since=since, prev_since=prev_since
-    )
+    raw = await DashboardDao.stats(tenant_id=scope_tenant, since=since, prev_since=prev_since)
     agent_total = await DashboardDao.agent_total(tenant_id=scope_tenant)
 
     api_today = int(raw.get("api_calls_today") or 0)
@@ -186,26 +179,22 @@ async def dashboard(
     ]
 
     # agent_run 尚未写入时，用 API 日志兜底调用占比；审计为空时用 API 调用兜底最近活动
-    distribution = await DashboardDao.agent_distribution(
-        tenant_id=scope_tenant, since=since
-    )
+    distribution = await DashboardDao.agent_distribution(tenant_id=scope_tenant, since=since)
     if not distribution:
         distribution = await DashboardDao.agent_distribution_from_api(
             tenant_id=scope_tenant, since=since
         )
 
-    recent_activities = await DashboardDao.recent_activities(
-        tenant_id=scope_tenant
-    )
+    recent_activities = await DashboardDao.recent_activities(tenant_id=scope_tenant)
     # 业务接口目前大多没有写审计：审计不足 5 条时用最近 API 调用补齐
     if len(recent_activities) < 5:
-        seen = {item["key"] for item in recent_activities}
-        for item in await DashboardDao.recent_activities_from_api(
-            tenant_id=scope_tenant
-        ):
-            if item["key"] not in seen:
+        # 兼容历史/缓存数据：审计项不一定都带 key，用 time 作为去重兜底
+        seen = {str(item.get("key") or item.get("time") or "") for item in recent_activities}
+        for item in await DashboardDao.recent_activities_from_api(tenant_id=scope_tenant):
+            item_key = str(item.get("key") or item.get("time") or "")
+            if item_key not in seen:
                 recent_activities.append(item)
-                seen.add(item["key"])
+                seen.add(item_key)
             if len(recent_activities) >= 5:
                 break
 
@@ -232,9 +221,7 @@ async def dashboard(
             today=today,
         ),
         "agent_distribution": distribution,
-        "latency_by_hour": await DashboardDao.latency_by_hour(
-            tenant_id=scope_tenant, since=since
-        ),
+        "latency_by_hour": await DashboardDao.latency_by_hour(tenant_id=scope_tenant, since=since),
         "recent_activities": recent_activities,
     }
 
@@ -248,10 +235,8 @@ async def dashboard(
     # 否则原生 json.dumps 会因 AVG() 返回的 Decimal 抛错
     if redis is not None:
         try:
-            await redis.set(
-                cache_key, json.dumps(jsonable_encoder(data)), ex=DASHBOARD_CACHE_TTL
-            )
+            await redis.set(cache_key, json.dumps(jsonable_encoder(data)), ex=DASHBOARD_CACHE_TTL)
         except Exception:
-            logger.warning("dashboard 缓存写入失败（不影响返回）", exc_info=True)
+            logger.exception("dashboard 缓存写入失败（不影响返回）")
 
     return success(data)

@@ -1,13 +1,5 @@
-"""登录会话的 Redis 层（滑动续期 + 登出失效）。
+"""登录会话 Redis 层：滑动续期 + 登出失效；Redis 不可用时静默放行退化纯 JWT。"""
 
-JWT 仍是身份载体（token 单源不变）；这里只管「会话是否仍有效」与 TTL：
-- 登录写 `auth:session:{jti}`，TTL 取 SESSION_TTL_SECONDS（默认 900s = 15 分钟）；
-- 每次成功请求 EXPIRE 重置 TTL（滑动续期，token 本身不变、前端无感）；
-- 登出 DELETE 该 key，立即失效。
-
-jti 缺失的旧 token（本功能上线前签发的）不查 Redis，兼容到期。Redis 不可用时
-所有函数静默放行，退化成纯 JWT 验签，不阻断业务。
-"""
 from __future__ import annotations
 
 import json
@@ -45,7 +37,7 @@ async def create_session(jti: str, user_id: int, tenant_id: Optional[int]) -> No
             ex=_ttl(),
         )
     except Exception:  # noqa: BLE001
-        logger.warning("写入登录会话失败（跳过 Redis 会话控制）")
+        logger.exception("写入登录会话失败（跳过 Redis 会话控制）")
 
 
 async def touch_session(jti: str) -> bool:
@@ -58,7 +50,7 @@ async def touch_session(jti: str) -> bool:
         ok = await r.expire(_key(jti), _ttl())
         return bool(ok)
     except Exception:  # noqa: BLE001
-        logger.warning("续期失败（放行本次请求）")
+        logger.exception("续期失败（放行本次请求）")
         return True
 
 
@@ -70,7 +62,7 @@ async def delete_session(jti: str) -> None:
     try:
         await r.delete(_key(jti))
     except Exception:  # noqa: BLE001
-        logger.warning("删除登录会话失败")
+        logger.exception("删除登录会话失败")
 
 
 async def delete_sessions_by_tenant(tenant_id: int) -> int:
@@ -100,7 +92,7 @@ async def delete_sessions_by_tenant(tenant_id: int) -> int:
             if cursor == 0:
                 break
     except Exception:  # noqa: BLE001
-        logger.warning("按租户批量删除会话失败")
+        logger.exception("按租户批量删除会话失败")
     return count
 
 

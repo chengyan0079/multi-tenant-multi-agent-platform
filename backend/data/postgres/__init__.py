@@ -1,14 +1,5 @@
-"""模型包：**只服务于 `scripts/gen_schema.py` 生成 DDL，运行期不加载**。
+"""模型包：仅服务于 gen_schema.py 生成 DDL，运行期不加载；业务访问走 dao 层 text()。"""
 
-按域分四个子包：
-- `auth`     登录鉴权：用户/租户、角色权限、菜单、登录日志
-- `agent`    Agent 运行时：Agent 定义、模型关联与注册、线程/消息/运行/工具/插件/记忆/升级
-- `business` 业务元数据：考试、简历审查、面试、QA、知识待入队
-- `ops`      运维：配置变更、审计日志、接口调用日志
-
-业务代码不要从这里 import：数据访问统一走 `backend/data/dao/` 的 `text()`，
-连接管理在 `backend/data/sql/`，审计列注入在 `backend/data/sql/audit.py`。
-"""
 from __future__ import annotations
 
 from backend.data.postgres.base import Base

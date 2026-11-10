@@ -1,10 +1,5 @@
-"""
-schemas - 配置 schema 定义（pydantic-settings v2）
+"""配置 schema 定义（pydantic-settings v2）：各分组映射 .env 扁平变量。"""
 
-集中声明配置分组；每个子模型继承 BaseSettings，通过 env_prefix / validation_alias
-直接映射 .env 中的扁平变量（POSTGRES_HOST 等），不再手工拼装。
-新增 Agent/插件配置时在此扩分组即可。
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -108,7 +103,9 @@ class BrokerSettings(BaseSettings):
         """拼出 AMQP 连接串；密码经 quote 转义。"""
         from urllib.parse import quote, urlunparse
 
-        netloc = f"{quote(self.user, safe='')}:{quote(self.password, safe='')}@{self.host}:{self.port}"
+        netloc = (
+            f"{quote(self.user, safe='')}:{quote(self.password, safe='')}@{self.host}:{self.port}"
+        )
         return urlunparse(("amqp", netloc, f"/{self.vhost}", "", "", ""))
 
 
@@ -133,10 +130,10 @@ class MilvusSettings(BaseSettings):
     token: str = ""
     db_name: str = "agent_platform"
     collection: str = "agent_rag_docs"
-    dense_dim: int = 1024          # bge-m3 dense 维度
-    dense_weight: float = 0.8      # 混合检索 dense 权重（与 sparse_weight 和为 1）
-    sparse_weight: float = 0.2     # 混合检索 sparse 权重
-    rrf_k: int = 60                # RRF 融合常数
+    dense_dim: int = 1024  # bge-m3 dense 维度
+    dense_weight: float = 0.8  # 混合检索 dense 权重（与 sparse_weight 和为 1）
+    sparse_weight: float = 0.2  # 混合检索 sparse 权重
+    rrf_k: int = 60  # RRF 融合常数
 
 
 class QaSettings(BaseSettings):
@@ -147,30 +144,30 @@ class QaSettings(BaseSettings):
     max_upload_mb: int = 200  # 单文件大小上限（MB）
     auto_parse: bool = True  # 上传成功后自动入队 qa.parse（关则只落库，需手动触发解析）
 
-    precise_top_k: int = 5               # PRECISE 单路检索召回数
-    vague_top_k: int = 8                 # VAGUE（HyDE）检索召回数
-    broad_per_query_top_k: int = 5       # BROAD 多查询每个子查询召回数
-    merge_top_k: int = 5                 # BROAD 合并后取前 N
+    precise_top_k: int = 5  # PRECISE 单路检索召回数
+    vague_top_k: int = 8  # VAGUE（HyDE）检索召回数
+    broad_per_query_top_k: int = 5  # BROAD 多查询每个子查询召回数
+    merge_top_k: int = 5  # BROAD 合并后取前 N
     high_confidence_threshold: float = 0.75  # 高置信度判定阈值（精排分数）
-    web_search_max_results: int = 5      # Web 搜索结果上限
-    summary_trigger_turns: int = 6       # 用户提问轮数达到即触发摘要压缩
+    web_search_max_results: int = 5  # Web 搜索结果上限
+    summary_trigger_turns: int = 6  # 用户提问轮数达到即触发摘要压缩
 
     # —— 文档解析 / 分块（backend/rag，参考 thy-edu-agent core/document_splitters）——
-    chunk_size: int = 512                # PDF/TXT 递归切分块大小（无父子片时的兜底）
-    chunk_overlap: int = 64              # PDF/TXT 重叠
-    md_chunk_size: int = 600             # Markdown 两阶段切分块大小
-    md_chunk_overlap: int = 60           # Markdown 重叠
+    chunk_size: int = 512  # PDF/TXT 递归切分块大小（无父子片时的兜底）
+    chunk_overlap: int = 64  # PDF/TXT 重叠
+    md_chunk_size: int = 600  # Markdown 两阶段切分块大小
+    md_chunk_overlap: int = 60  # Markdown 重叠
     # —— 父子片（small-to-big，参照 RAG-Ultra）——
-    parent_chunk_size: int = 1200        # 父片大小：命中子片后回填给 LLM 的完整上下文
-    parent_chunk_overlap: int = 100      # 父片重叠
-    child_chunk_size: int = 300          # 子片大小：实际参与向量召回
-    child_chunk_overlap: int = 20        # 子片重叠
+    parent_chunk_size: int = 1200  # 父片大小：命中子片后回填给 LLM 的完整上下文
+    parent_chunk_overlap: int = 100  # 父片重叠
+    child_chunk_size: int = 300  # 子片大小：实际参与向量召回
+    child_chunk_overlap: int = 20  # 子片重叠
     parent_context_by_highlight: bool = True  # 生成节点用"父片内高亮子片"替代纯子片
-    index_batch_size: int = 32           # 单批向量化/写入条数
+    index_batch_size: int = 32  # 单批向量化/写入条数
     # —— 检索 / 精排 ——
-    recall_top_k: int = 10               # 混合召回候选数（精排前）
-    rerank_top_k: int = 3                # 精排后保留条数
-    rerank_max_input_chars: int = 1200   # 单条候选送入精排的最大字符数
+    recall_top_k: int = 10  # 混合召回候选数（精排前）
+    rerank_top_k: int = 3  # 精排后保留条数
+    rerank_max_input_chars: int = 1200  # 单条候选送入精排的最大字符数
 
 
 class SecuritySettings(BaseSettings):
@@ -190,13 +187,13 @@ class SecuritySettings(BaseSettings):
 
 
 class ObservabilitySettings(BaseSettings):
-    """Langfuse / 可观测。"""
+    """Langfuse / 可观测（LANGFUSE_BASE_URL / PUBLIC_KEY / SECRET_KEY）。"""
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="LANGFUSE_")
 
-    langfuse_host: str = ""
-    langfuse_public_key: str = ""
-    langfuse_secret_key: str = ""
+    langfuse_base_url: str = ""  # LANGFUSE_BASE_URL，如 http://localhost:3100
+    langfuse_public_key: str = ""  # LANGFUSE_PUBLIC_KEY
+    langfuse_secret_key: str = ""  # LANGFUSE_SECRET_KEY
 
 
 class MinioSettings(BaseSettings):
@@ -318,8 +315,8 @@ class LoggingSettings(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON, env_prefix="LOG_")
 
     level: str = "INFO"
-    file: str = "logs/app.log"    # 相对路径以项目根目录为基准（见 common/logger.py）
-    size: int = 1024 ** 3
+    file: str = "logs/app.log"  # 相对路径以项目根目录为基准（见 common/logger.py）
+    size: int = 1024**3
     days: int = 7
 
 
@@ -332,10 +329,10 @@ class ApiLogSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="API_LOG_")
 
-    enabled: bool = True          # 是否启用 API 调用日志
-    db: bool = True               # 是否落库（关闭则仅打日志）
-    save_body: bool = False       # 是否采集请求/响应体（关闭后中间件不缓冲 body）
-    max_body: int = 8192          # 采集体时的上限（字节），超出截断；save_body=False 时不生效
+    enabled: bool = True  # 是否启用 API 调用日志
+    db: bool = True  # 是否落库（关闭则仅打日志）
+    save_body: bool = False  # 是否采集请求/响应体（关闭后中间件不缓冲 body）
+    max_body: int = 8192  # 采集体时的上限（字节），超出截断；save_body=False 时不生效
     # .env 用逗号分隔字符串（/docs,/redoc,...）；这里存原始串，由 exclude 属性解析为列表。
     # 健康检查在 /api/v1/health（免鉴权，探针高频调用），不落库；
     # API 调用日志查询端点自身不落库（自查询无意义，且污染日志表）。

@@ -28,6 +28,9 @@ class _FakeNacosAI:
     mcp_endpoint_path = "/mcp"
     mcp_capabilities = ["TOOL"]
     mcp_tools: list[dict] = []
+    # 远程资产 allow-list；当前 NacosAIManager.start 会读取这两个字段
+    load_agent_cards: list[str] = []
+    load_mcp_servers: list[str] = []
     strict = False
 
 

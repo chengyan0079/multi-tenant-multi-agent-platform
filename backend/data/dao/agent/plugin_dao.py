@@ -1,11 +1,19 @@
 """插件注册表 DAO（agent_plugin）。"""
+
 from __future__ import annotations
 
 from typing import Any
 
 from sqlalchemy import Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _BINDS = (
@@ -20,9 +28,7 @@ FROM agent_plugin
 WHERE (:name IS NULL OR name ILIKE '%' || :name || '%')
   AND (:status IS NULL OR status = :status)
 ORDER BY registered_at DESC, name LIMIT :limit OFFSET :offset
-""").bindparams(
-    *_BINDS, bindparam("limit", type_=Integer), bindparam("offset", type_=Integer)
-)
+""").bindparams(*_BINDS, bindparam("limit", type_=Integer), bindparam("offset", type_=Integer))
 _COUNT = text("""
 SELECT count(*) FROM agent_plugin
 WHERE (:name IS NULL OR name ILIKE '%' || :name || '%')
@@ -82,9 +88,7 @@ class PluginDao:
     ) -> tuple[list[dict[str, Any]], int]:
         params = {"name": name, "status": status}
         async with session_scope() as session:
-            return await fetch_page(
-                session, _LIST, _COUNT, params, page=page, page_size=page_size
-            )
+            return await fetch_page(session, _LIST, _COUNT, params, page=page, page_size=page_size)
 
     @staticmethod
     async def get(plugin_id: str) -> dict[str, Any] | None:

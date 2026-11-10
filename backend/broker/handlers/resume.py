@@ -1,12 +1,5 @@
-"""简历评审 handler：消费 resume.review 消息，跑 Orchestrator 评审工作流。
+"""简历评审 handler：消费 resume.review，幂等校验后跑评审工作流，异常交框架重试/死信。"""
 
-幂等与 ack 由消费框架统一负责（见 broker/consumer/strategies.py）：
-- 幂等：Outbox 已 done 的消息直接 ack 跳过（at-least-once 重投安全）；
-  此处再叠加业务级幂等——评审记录已非 processing 则跳过，避免重复跑图。
-- ack：成功返回后框架 mark_done + ack；异常由框架 inc_retry，超限落死信表。
-故 handler 只需：鉴权通过 → 幂等校验 → 跑图；失败直接 raise（交给框架重试/死信），
-不要自行吞掉异常，也不要在异常时静默标 failed（那会丢失重试机会）。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -24,11 +17,15 @@ async def _fetch_status(review_id: str) -> str | None:
     """取评审记录当前状态；不存在返回 None。"""
     async with session_scope() as session:
         row = (
-            await session.execute(
-                text("SELECT status FROM agent_resume_reviews WHERE id = :id"),
-                {"id": review_id},
+            (
+                await session.execute(
+                    text("SELECT status FROM agent_resume_reviews WHERE id = :id"),
+                    {"id": review_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
     return row["status"] if row else None
 
 
@@ -86,6 +83,6 @@ async def handle_resume_review(msg: TaskMessage) -> None:
         )
     except asyncio.TimeoutError:
         # 与定时任务阈值一致：取消仍在跑的图，避免继续消耗 LLM 调用
-        logger.error(f"[resume.review] 评审超时（>{timeout_s}s），取消 {review_id}")
+        logger.exception(f"[resume.review] 评审超时（>{timeout_s}s），取消 {review_id}")
         await _mark_failed(review_id, "评审超时")
         return

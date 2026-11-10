@@ -1,10 +1,5 @@
-"""全局异常处理器：将 HTTPException / 参数校验错误 / 业务异常 / 领域异常 / 未捕获异常
-统一包装为 {"code", "msg", "data"} 结构（全项目共用）。
+"""全局异常处理器：统一包装为 {code, msg, data} 响应结构。"""
 
-- HTTP 状态码保留（401/403/422/500…），body 内 code 为映射后的业务码；
-- 业务异常 BizException 可自定义 http_status（默认 200，前端读 code 判断）；
-- 领域异常 AgentError 统一按内部错误兜底，保持响应契约一致。
-"""
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
@@ -63,7 +58,9 @@ async def agent_err_handler(request: Request, exc: AgentError) -> JSONResponse:
 async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     """未捕获异常兜底处理器。"""
     logger.exception(f"未捕获异常: {exc}")
-    return JSONResponse(status_code=500, content=fail(ErrCode.INTERNAL, "服务内部错误").model_dump())
+    return JSONResponse(
+        status_code=500, content=fail(ErrCode.INTERNAL, "服务内部错误").model_dump()
+    )
 
 
 def register_exception_handlers(app: FastAPI) -> None:

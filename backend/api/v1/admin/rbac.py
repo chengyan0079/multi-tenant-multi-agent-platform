@@ -1,7 +1,5 @@
-"""超管 RBAC 端点（/api/v1/admin/**）。
+"""超管 RBAC 端点：用户/角色/权限点管理，由端点各自声明 scope。"""
 
-角色目录对超管 + 租户管理员开放，其余写操作仅超管，故整组不挂统一鉴权，由端点各自声明。
-"""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -37,6 +35,12 @@ async def list_users(
     _b: object = Depends(require_scope(Scope.USER_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """全量用户分页查询（超管/租管均可，密码字段已剥离）。
+
+    请求：query { tenant_id?, username?, created_from?, created_to?, page, page_size }
+    权限：user:page
+    返回：items(无 password) / total / page / page_size
+    """
     # /admin 为全局视角，tenant_id 指定租户过滤，不传看全平台
     rows, total = await UserDao.list_users(
         tenant_id=tenant_id,
@@ -58,6 +62,12 @@ async def list_roles(
     _b: object = Depends(require_scope(Scope.ROLE_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """角色目录与权限点分页查询。
+
+    请求：query { page, page_size }
+    权限：role:page
+    返回：items / total / page / page_size
+    """
     rows, total = await RbacDao.list_roles_paged(page=page, page_size=page_size)
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})
 
@@ -67,6 +77,12 @@ async def list_scopes(
     _: object = Depends(require_scope(Scope.ROLE_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ):
+    """全量权限点目录（按资源分组，供角色编辑多选）。
+
+    请求：无
+    权限：role:page
+    返回：groups[{ resource, scopes }] + items(扁平 scope 列表)
+    """
     # 单一权威来源是 security.rbac.Scope（VALID_SCOPES 由其派生）：
     # 分组与清单都直接由 scope 字符串拆出资源得到，接口层不硬编码任何中文。
     # 前端只用 items（扁平 scope 列表）自行分组展示。
@@ -76,22 +92,29 @@ async def list_scopes(
             continue
         res = scope.split(":", 1)[0]
         grouped.setdefault(res, []).append(scope)
-    return success({
-        "groups": [
-            {"resource": res, "scopes": sorted(scopes)}
-            for res, scopes in sorted(grouped.items())
-        ],
-        "items": sorted(VALID_SCOPES),
-    })
+    return success(
+        {
+            "groups": [
+                {"resource": res, "scopes": sorted(scopes)}
+                for res, scopes in sorted(grouped.items())
+            ],
+            "items": sorted(VALID_SCOPES),
+        }
+    )
 
 
 @router.get("/users/{user_id}", summary="用户详情（仅超管）")
 async def get_user(
     user_id: int,
-
     _b: object = Depends(require_scope(Scope.USER_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """用户详情（密码字段已剥离）。
+
+    请求：path { user_id }
+    权限：user:view
+    返回：用户记录（无 password）
+    """
     row = await UserDao.get(user_id)
     if row is None:
         raise BizException(ErrCode.NOT_FOUND, f"用户不存在: {user_id}")
@@ -105,10 +128,16 @@ async def get_user(
 async def set_role_perms(
     role_id: int,
     body: RolePermsIn,
-
     _b: object = Depends(require_scope(Scope.ROLE_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """覆盖角色权限点（admin 内置角色禁止覆盖）。
+
+    说明：写审计日志；admin 权限点由种子固化，避免误清空导致超管失权。
+    请求：path { role_id }, body { scopes: list[str] }
+    权限：role:update
+    返回：{ role_id, scopes }
+    """
     for s in body.scopes:
         if s not in VALID_SCOPES:
             raise BizException(ErrCode.PARAM_ERROR, f"非法权限点: {s}")
@@ -122,8 +151,10 @@ async def set_role_perms(
     old = role["scopes"]
     await RbacDao.set_role_permissions(role_id, body.scopes)
     await AuditDao.write(
-        action="rbac.role_permissions", target=str(role_id),
-        detail=f"改前={old} 改后={body.scopes}", **_operator(current),
+        action="rbac.role_permissions",
+        target=str(role_id),
+        detail=f"改前={old} 改后={body.scopes}",
+        **_operator(current),
     )
     return success({"role_id": role_id, "scopes": body.scopes})
 
@@ -132,30 +163,38 @@ async def set_role_perms(
 async def update_role(
     role_id: int,
     body: RoleUpdateIn,
-
     _b: object = Depends(require_scope(Scope.ROLE_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """改角色名称/说明（权限点走单独接口）。
+
+    请求：path { role_id }, body { name, description }
+    权限：role:update
+    返回：{ role_id, name, description }
+    """
     # 权限点不在此接口改（走 /permissions），避免一次请求同时动身份与授权
-    await RbacDao.update_role(
-        role_id, body.name, body.description, user_id=current.user_id
-    )
+    await RbacDao.update_role(role_id, body.name, body.description, user_id=current.user_id)
     await AuditDao.write(
-        action="rbac.role_update", target=str(role_id),
-        detail=f"name={body.name}", **_operator(current),
+        action="rbac.role_update",
+        target=str(role_id),
+        detail=f"name={body.name}",
+        **_operator(current),
     )
-    return success(
-        {"role_id": role_id, "name": body.name, "description": body.description}
-    )
+    return success({"role_id": role_id, "name": body.name, "description": body.description})
 
 
 @router.post("/roles", summary="新建角色（含权限点）")
 async def create_role(
     body: RoleCreateIn,
-
     _b: object = Depends(require_scope(Scope.ROLE_ADD)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """新建角色（含权限点），写审计日志。
+
+    请求：body { name, description?, scopes: list[str] }
+    权限：role:add
+    返回：{ role_id, name }
+    """
     for s in body.scopes:
         if s not in VALID_SCOPES:
             raise BizException(ErrCode.PARAM_ERROR, f"非法权限点: {s}")
@@ -163,8 +202,10 @@ async def create_role(
         body.name, body.description, body.scopes, user_id=current.user_id
     )
     await AuditDao.write(
-        action="rbac.role_create", target=str(role_id),
-        detail=f"name={body.name}", **_operator(current),
+        action="rbac.role_create",
+        target=str(role_id),
+        detail=f"name={body.name}",
+        **_operator(current),
     )
     return success({"role_id": role_id, "name": body.name})
 
@@ -172,26 +213,42 @@ async def create_role(
 @router.delete("/roles/{role_id}", summary="删除角色（内置角色除外）")
 async def delete_role(
     role_id: int,
-
     _b: object = Depends(require_scope(Scope.ROLE_DELETE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """删除角色（内置角色除外）。
+
+    请求：path { role_id }
+    权限：role:delete
+    返回：{ role_id }
+    """
     await RbacDao.delete_role(role_id)
     await AuditDao.write(
-        action="rbac.role_delete", target=str(role_id),
-        detail="删除角色", **_operator(current),
+        action="rbac.role_delete",
+        target=str(role_id),
+        detail="删除角色",
+        **_operator(current),
     )
     return success({"role_id": role_id})
 
 
-@router.put("/rbac/users/{user_id}/role", summary="改用户角色（超管跨租户；租户管理员仅本租户，且不能任命租户管理员）")
+@router.put(
+    "/rbac/users/{user_id}/role",
+    summary="改用户角色（超管跨租户；租户管理员仅本租户，且不能任命租户管理员）",
+)
 async def change_user_role(
     user_id: int,
     body: UserRoleIn,
-
     _b: object = Depends(require_scope(Scope.USER_UPDATE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
 ) -> Any:
+    """改用户在某租户的角色（超管跨租户；租管仅本租户，且不能任命租管/admin）。
+
+    说明：原子更换租户管理员以保持每租户恰 1 个；admin 仍不可经此授予；写审计。
+    请求：path { user_id }, body { tenant_id, role }
+    权限：user:update
+    返回：{ user_id, tenant_id, role, replaced_user_id? }
+    """
     # /admin 路由为全局视角（权限由 scope 决定），不按角色锁租户；
     # admin 角色仍不可通过此接口授予（见下方校验）。
     if body.role == RoleName.ADMIN.value:
@@ -216,12 +273,16 @@ async def change_user_role(
         await RbacDao.assign_role(user_id, body.tenant_id, role_id)
         replaced = None
     await AuditDao.write(
-        action="rbac.grant", target=f"{user_id}@{body.tenant_id}",
-        detail=f"角色={body.role}", **_operator(current),
+        action="rbac.grant",
+        target=f"{user_id}@{body.tenant_id}",
+        detail=f"角色={body.role}",
+        **_operator(current),
     )
-    return success({
-        "user_id": user_id,
-        "tenant_id": body.tenant_id,
-        "role": body.role,
-        "replaced_user_id": replaced,
-    })
+    return success(
+        {
+            "user_id": user_id,
+            "tenant_id": body.tenant_id,
+            "role": body.role,
+            "replaced_user_id": replaced,
+        }
+    )

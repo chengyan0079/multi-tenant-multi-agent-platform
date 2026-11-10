@@ -1,10 +1,5 @@
-"""Agent 目录与租户开通策略 DAO：`agent` / `agent_capability_policy` 两表。
+"""Agent 目录与租户开通策略 DAO：agent/agent_capability_policy 两表，只承载可持久化元数据。"""
 
-- `agent` 是全局目录（无 tenant 审计列），`agent_type` 为业务键；
-- `agent_capability_policy` 是租户级开通策略，(tenant_id, agent_type) 唯一，未配置视为开通。
-
-两表都只承载可持久化元数据，图构造器仍在 AgentRegistry 里由代码注册。
-"""
 from __future__ import annotations
 
 import json
@@ -12,7 +7,14 @@ from typing import Any, Optional, Sequence
 
 from sqlalchemy import ARRAY, Boolean, Integer, String, bindparam, text
 
-from backend.data.sql import execute_write, fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _LIST_AGENTS = text("""
@@ -45,9 +47,7 @@ _LIST_AGENTS_PAGED = text(
     bindparam("limit", type_=Integer),
     bindparam("offset", type_=Integer),
 )
-_COUNT_AGENTS_PAGED = text(
-    f"SELECT count(*) {_AGENTS_FROM}"
-).bindparams(*_AGENTS_BINDS)
+_COUNT_AGENTS_PAGED = text(f"SELECT count(*) {_AGENTS_FROM}").bindparams(*_AGENTS_BINDS)
 
 _GET_AGENT = text("""
 SELECT id, agent_type, name, description, input_schema, enabled, version, updated_at
@@ -158,8 +158,12 @@ class AgentDao:
         }
         async with session_scope() as session:
             rows, total = await fetch_page(
-                session, _LIST_AGENTS_PAGED, _COUNT_AGENTS_PAGED, params,
-                page=page, page_size=page_size,
+                session,
+                _LIST_AGENTS_PAGED,
+                _COUNT_AGENTS_PAGED,
+                params,
+                page=page,
+                page_size=page_size,
             )
         return [_decode_input_schema(r) for r in rows], total
 

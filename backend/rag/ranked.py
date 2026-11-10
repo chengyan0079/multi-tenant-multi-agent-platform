@@ -1,9 +1,5 @@
-"""RAG 数据结构：加载页、分块、召回结果。
+"""RAG 数据结构：加载页/分块/召回结果，字段对齐 qa/state.RankedChunk。"""
 
-参考 thy-edu-agent/core 的 Document / DocumentChunk / RankedDocument，按本项目裁剪：
-- 输入是 MinIO 字节而非本地路径，故用轻量 dataclass 不继承 langchain BaseLoader；
-- 检索结果直接对齐 qa/state.py 的 RankedChunk 字段，避免节点里再做字段映射。
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

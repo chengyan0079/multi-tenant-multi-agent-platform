@@ -1,11 +1,5 @@
-"""文档加载：从 MinIO 字节解析 PDF / Markdown / TXT，全内存不落盘。
+"""文档加载：MinIO 字节解析 PDF/Markdown/TXT，全内存不落盘，按扩展名分发。"""
 
-参照 thy-edu-agent/core/document_loaders.py 的解析策略（PDF 逐页、MD 去 front matter、
-编码候选集降级、file_hash/page_hash 元数据），按本项目改造：
-- 入参为 bytes + file_name，不用 Path.stat()/open()，与"下载不落盘"约定一致；
-- 元数据带 source_location，供生成节点标注来源；
-- 统一 load_document(data, file_name) 入口，按扩展名分发。
-"""
 from __future__ import annotations
 
 import hashlib
@@ -17,7 +11,12 @@ from backend.rag.ranked import LoadedPage
 
 # 编码候选集（参考项目 config.candidate_encodings，本项目不新增 settings 单例）
 CANDIDATE_ENCODINGS: tuple[str, ...] = (
-    "utf-8", "utf-8-sig", "gbk", "gb2312", "gb18030", "big5",
+    "utf-8",
+    "utf-8-sig",
+    "gbk",
+    "gb2312",
+    "gb18030",
+    "big5",
 )
 
 SUPPORTED_EXTS: tuple[str, ...] = (".pdf", ".md", ".txt")
@@ -57,19 +56,21 @@ def _load_pdf(data: bytes, *, file_name: str) -> list[LoadedPage]:
             text = doc[page_no].get_text()
             if not text.strip():
                 continue
-            pages.append(LoadedPage(
-                content=text,
-                metadata={
-                    "doc_type": "pdf",
-                    "file_name": file_name,
-                    "file_hash": file_hash,
-                    "page_hash": _content_hash(text),
-                    "page": page_no + 1,
-                    "total_page_cnt": total,
-                    "char_count": len(text),
-                    "source_location": f"{file_name} > 第 {page_no + 1} 页",
-                },
-            ))
+            pages.append(
+                LoadedPage(
+                    content=text,
+                    metadata={
+                        "doc_type": "pdf",
+                        "file_name": file_name,
+                        "file_hash": file_hash,
+                        "page_hash": _content_hash(text),
+                        "page": page_no + 1,
+                        "total_page_cnt": total,
+                        "char_count": len(text),
+                        "source_location": f"{file_name} > 第 {page_no + 1} 页",
+                    },
+                )
+            )
     finally:
         doc.close()
     return pages
@@ -79,32 +80,36 @@ def _load_markdown(data: bytes, *, file_name: str) -> list[LoadedPage]:
     text = _strip_front_matter(_decode(data, file_name=file_name)).strip()
     if not text:
         return []
-    return [LoadedPage(
-        content=text,
-        metadata={
-            "doc_type": "md",
-            "file_name": file_name,
-            "file_hash": _content_hash(text),
-            "char_count": len(text),
-            "source_location": file_name,
-        },
-    )]
+    return [
+        LoadedPage(
+            content=text,
+            metadata={
+                "doc_type": "md",
+                "file_name": file_name,
+                "file_hash": _content_hash(text),
+                "char_count": len(text),
+                "source_location": file_name,
+            },
+        )
+    ]
 
 
 def _load_text(data: bytes, *, file_name: str) -> list[LoadedPage]:
     text = _decode(data, file_name=file_name).strip()
     if not text:
         return []
-    return [LoadedPage(
-        content=text,
-        metadata={
-            "doc_type": "txt",
-            "file_name": file_name,
-            "file_hash": _content_hash(text),
-            "char_count": len(text),
-            "source_location": file_name,
-        },
-    )]
+    return [
+        LoadedPage(
+            content=text,
+            metadata={
+                "doc_type": "txt",
+                "file_name": file_name,
+                "file_hash": _content_hash(text),
+                "char_count": len(text),
+                "source_location": file_name,
+            },
+        )
+    ]
 
 
 _LOADERS: dict[str, Any] = {

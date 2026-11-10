@@ -160,6 +160,16 @@ INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope)
 ('考试结果', '/agent/exam/results', 'ProfileOutlined', (SELECT id FROM agent_menu WHERE path='/agent/exam'), 2, true, 'exam_result:page')
 ON CONFLICT (path) DO NOTHING;
 
+-- 面试助手：先插父节点，再插子菜单（同一条 INSERT 的子查询看不到刚插入的父行）
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('面试助手', '/agent/interview', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 4, true, 'interview:menu')
+ON CONFLICT (path) DO NOTHING;
+
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('面试结果', '/agent/interview/results', 'UnorderedListOutlined', (SELECT id FROM agent_menu WHERE path='/agent/interview'), 1, true, 'interview:page'),
+('开始面试', '/agent/interview/start', 'FormOutlined', (SELECT id FROM agent_menu WHERE path='/agent/interview'), 2, true, 'interview:ask')
+ON CONFLICT (path) DO NOTHING;
+
 -- 审计日志：业务审计 / 登录日志 / 调用日志
 INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
 ('业务审计', '/audit/operation', 'FileTextOutlined', (SELECT id FROM agent_menu WHERE path='/audit'), 1, true, 'audit:page'),

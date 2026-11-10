@@ -1,4 +1,5 @@
 """文件元数据 DAO：`agent_file`（单表版本化）。"""
+
 # todo 版本化判定与 pg_advisory_xact_lock 并发控制见 upload 方法，改动前先读其事务边界。
 from __future__ import annotations
 
@@ -113,8 +114,12 @@ class FileDao:
         )
         async with session_scope() as session:
             return await fetch_page(
-                session, text(list_sql), text(count_sql), params,
-                page=page, page_size=page_size,
+                session,
+                text(list_sql),
+                text(count_sql),
+                params,
+                page=page,
+                page_size=page_size,
             )
 
     @staticmethod
@@ -201,9 +206,7 @@ class FileDao:
         lock_key = _advisory_key(tenant_id, uploader_user_id, norm)
         async with session_scope() as session:
             # 同一 (租户, 用户, 归一化名) 串行，避免并发算出同一版本号
-            await session.execute(
-                text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key}
-            )
+            await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": lock_key})
 
             latest_stmt, latest_params = _latest_by_name_stmt(tenant_id)
             latest_params.update(uid=uploader_user_id, norm=norm)
@@ -229,9 +232,7 @@ class FileDao:
 
             # 上传 MinIO（在锁/事务内，保证串行；失败则整体回滚）
             storage = await get_storage()
-            await asyncio.to_thread(
-                storage.put_bytes, object_key, data, content_type=content_type
-            )
+            await asyncio.to_thread(storage.put_bytes, object_key, data, content_type=content_type)
 
             params: dict[str, Any] = {
                 "tenant_id": tenant_id,

@@ -35,6 +35,7 @@ import {
 } from '../../services/configCenter';
 import { hasScope } from '../../services/auth';
 import ReactDiffViewer from 'react-diff-viewer-continued';
+import { renderCodeLine } from '../../components/CodeEditor';
 
 const TIME_FMT = 'YYYY-MM-DD HH:mm:ss';
 const STATUS_COLOR: Record<number, string> = { 0: 'orange', 1: 'blue', 2: 'red', 3: 'green', 4: 'default' };
@@ -404,6 +405,8 @@ export default function ConfigAudit() {
                 splitView
                 leftTitle="当前内容（Nacos 实时）"
                 rightTitle="申请内容"
+                renderContent={(source) => renderCodeLine(source, detail.content_format ?? undefined)}
+                useDarkTheme
               />
 
               <Divider titlePlacement="left">审核历史</Divider>

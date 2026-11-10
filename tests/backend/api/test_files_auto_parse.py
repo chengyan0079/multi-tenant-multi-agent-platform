@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import UploadFile
 
-from backend.api.v1.admin import files as files_api
+from backend.api.v1.tenant.agent import files as files_api
 
 
 def _row(**overrides):
@@ -102,7 +102,7 @@ async def test_upload_triggers_auto_parse(monkeypatch) -> None:
     monkeypatch.setattr(files_api.FileDao, "set_parse_status", staticmethod(fake_status))
     monkeypatch.setattr(files_api, "enqueue_task", fake_enqueue)
     monkeypatch.setattr(
-        files_api, "config", SimpleNamespace(file=SimpleNamespace(auto_parse=True, max_upload_mb=200))
+        files_api, "config", SimpleNamespace(qa=SimpleNamespace(auto_parse=True, max_upload_mb=200))
     )
 
     upload = UploadFile(filename="LLM基础知识.pdf", file=BytesIO(b"%PDF-1.4 fake"))
@@ -143,7 +143,7 @@ async def test_upload_succeeds_when_parse_enqueue_fails(monkeypatch) -> None:
     monkeypatch.setattr(files_api.FileDao, "set_parse_status", staticmethod(boom_status))
     monkeypatch.setattr(files_api, "enqueue_task", none_enqueue)
     monkeypatch.setattr(
-        files_api, "config", SimpleNamespace(file=SimpleNamespace(auto_parse=True, max_upload_mb=200))
+        files_api, "config", SimpleNamespace(qa=SimpleNamespace(auto_parse=True, max_upload_mb=200))
     )
 
     upload = UploadFile(filename="a.pdf", file=BytesIO(b"%PDF-1.4 fake"))
@@ -207,7 +207,7 @@ async def test_upload_skips_parse_when_disabled(monkeypatch) -> None:
     monkeypatch.setattr(files_api.FileDao, "set_parse_status", staticmethod(fake_status))
     monkeypatch.setattr(files_api, "enqueue_task", fake_enqueue)
     monkeypatch.setattr(
-        files_api, "config", SimpleNamespace(file=SimpleNamespace(auto_parse=False, max_upload_mb=200))
+        files_api, "config", SimpleNamespace(qa=SimpleNamespace(auto_parse=False, max_upload_mb=200))
     )
 
     upload = UploadFile(filename="a.pdf", file=BytesIO(b"%PDF-1.4 fake"))

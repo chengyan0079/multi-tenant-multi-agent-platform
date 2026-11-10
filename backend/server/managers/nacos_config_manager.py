@@ -1,12 +1,5 @@
-"""NacosConfigManager（order 105）：配置中心启动。
+"""NacosConfigManager（order 105）：拉起配置中心订阅 + 提示词预热写入 Redis；失败只告警不阻断。"""
 
-与 NacosDiscoverManager（仅服务发现）独立。本启动项：
-  1. 拉起 ConfigCenterLoader（SDK gRPC 长连接订阅变更），注入 app_state 供健康检查读取；
-  2. 把 PROMPT 组提示词配置拉取并写入 Redis 预热（core.config_center.prompts_cache）。
-两者都是旁路能力：失败只告警，不阻断启动（运行时取配置会直连 Nacos 兜底）。
-
-配置中心两条链路（REST / SDK 订阅）由 `NacosClient` 统一挂载。
-"""
 from __future__ import annotations
 
 from backend.app_state import app_state
@@ -28,7 +21,7 @@ class NacosConfigManager(BaseManager):
         await loader.start()
 
         if not app_config.nacos_config.enabled:
-            logger.info("配置中心未启用（NACOS_CONFIG_ENABLED=False），跳过提示词预热")
+            logger.warning("配置中心未启用（NACOS_CONFIG_ENABLED=False），跳过提示词预热")
             return
         # 提示词预热失败同样 fail-fast（不再静默兜底）
         await warmup_prompts()
@@ -38,7 +31,7 @@ class NacosConfigManager(BaseManager):
             try:
                 await app_state.clients.get_as("nacos", NacosClient).loader.stop()
             except Exception as e:
-                logger.warning(f"配置中心热加载停止异常: {e}")
+                logger.exception(f"配置中心热加载停止异常: {e}")
         app_state.config_center = None
 
     async def health(self) -> HealthInfo:

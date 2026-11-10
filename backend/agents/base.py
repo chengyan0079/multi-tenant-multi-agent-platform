@@ -1,9 +1,5 @@
-"""
-base - Agent 基类（设计文档 §15.1）
+"""Agent 抽象基类：定义 State/节点/边/Checkpointer 装配套路，子类注册到 AgentRegistry。"""
 
-统一套路：定义 State(TypedDict) → 节点 → 条件边 → 绑 Checkpointer → build() → compile()。
-新增 Agent = 继承本类实现 build_graph()/input_schema()/metadata()，模块加载时注册到 AgentRegistry。
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

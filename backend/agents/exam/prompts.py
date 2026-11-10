@@ -1,35 +1,6 @@
-"""
-prompts - 试卷批阅提示词（支持 Nacos 配置中心）
+"""试卷批阅提示词：支持 Nacos 配置中心热更新，缺失回退内置默认值；评分前强制 CoT 对齐 rubric 并产出可解释依据。"""
 
-说明：前置思考的实质性收益
-1. 减少“形式重于内容”的误判。AI 评分容易受篇幅、词汇复杂度、句式华丽程度影响，出现“掐头去尾”的中心倾向偏差，
-对真正优秀或薄弱作品的识别能力较弱。前置思考可以强制模型先说明“学生到底答对了什么、漏了什么、哪里表述不严谨”，
-而不是直接凭表面语言特征给分。
-
-2. 让分数和评分规则（rubric）对齐。阅卷提示词如果直接要求输出分数，模型往往会跳过逐条核对。
-前置思考可以让它先把每个得分点拆开判断：命中、部分命中、未命中、偏离题意、表达不清。
-这样最终分数就不是“拍脑袋”，而是从得分点汇总出来。
-
-3. 提高可解释性和复核效率。教师复核时，最需要知道的是：为什么扣分？扣在哪里？有没有争议？
-前置思考天然能产出这些依据。即使最终只返回分数和简要评语，思考过程也可以作为内部日志，
-用于后续调试、申诉复核和模型迭代。
-
-4. 降低评分漂移
-同一份答卷，如果模型第一次看的是“整体印象”，第二次看的是“逐点核对”，分数可能不一致。
-前置思考相当于把评分流程标准化：先提取证据，再对照标准，再给分，比直接“凭感觉打分”更稳定。
-
-经验1：思维链和前置思考在大模型（参数更多）上收益更明显，小模型可能生成看似合理但实际跑偏的推理链。
-经验2：对于简单任务不要滥用 CoT，因为模型“想太多”，反而降低指令遵循准确率。
-
-Author: 骆昊
-Version: 0.0.1
-
-内置常量作为默认值；运行时通过 get_config_center_client().get_config(data_id, group=PROMPT)
-从 Nacos 加载，data_id 统一为 `exam_` 前缀的小写名称（见文件末尾 PROMPT_REGISTRY）。
-Nacos 未配置/不可达时自动回退内置默认值，保证离线可用。
-"""
-
-SYSTEM_PROMPT = '''
+SYSTEM_PROMPT = """
 你是一位严谨、公正的 IT 课程助教，负责协助教师批改学员试卷。
 
 【批改原则】
@@ -37,11 +8,11 @@ SYSTEM_PROMPT = '''
 - 给出明确的得分依据，指出学员答案中的具体内容
 - 评语简洁专业，指出核心问题，避免空泛表扬或批评
 - 对有争议的内容保持保守评分，宁可偏低并标记复核，不随意给高分
-'''
+"""
 
 # 主观题思考提示词
 # 先生成逐得分点核对的分析文字，再把分析结果拼到评分提示词后面
-SUBJECTIVE_THINK_PROMPT = '''
+SUBJECTIVE_THINK_PROMPT = """
 在批改这道简答题之前，请先进行深入分析。
 
 【题目】
@@ -60,10 +31,10 @@ SUBJECTIVE_THINK_PROMPT = '''
 4. 有没有明显的概念错误或理解偏差？
 
 直接输出分析内容，不加任何前缀标签。
-'''
+"""
 
 # 主观题评分提示词
-SUBJECTIVE_REVIEW_PROMPT = '''
+SUBJECTIVE_REVIEW_PROMPT = """
 请按照以下得分点批改学员的简答题作答。
 
 【题目】
@@ -94,11 +65,11 @@ SUBJECTIVE_REVIEW_PROMPT = '''
   ],
   "overall_comment": "<1-2句整体评语，指出最核心的问题或亮点>"
 }}
-'''
+"""
 
 # 代码题评分提示词
 # 先判断功能是否正确，再评估代码质量，综合给分
-CODE_REVIEW_PROMPT = '''
+CODE_REVIEW_PROMPT = """
 请评估以下代码题的学员提交代码：先判断是否正确实现了题目要求的功能，再评估代码质量，综合给分。
 
 【题目要求】
@@ -129,11 +100,11 @@ CODE_REVIEW_PROMPT = '''
     "<可读性与注释>"
   ]
 }}
-'''
+"""
 
 # 薄弱点分析提示词
 # 把失分题清单交给大模型，归纳知识点并生成复习建议
-WEAK_POINTS_ANALYSIS_PROMPT = '''
+WEAK_POINTS_ANALYSIS_PROMPT = """
 你是一位经验丰富的 IT 课程教师，请根据学员本次试卷的答题情况，分析其知识薄弱点并给出复习建议。
 
 【错题/扣分题清单】
@@ -156,7 +127,7 @@ WEAK_POINTS_ANALYSIS_PROMPT = '''
   ],
   "overall_summary": "<对学员本次考试整体表现的简短评价，指出最核心的1-2个薄弱方向，不超过50字>"
 }}
-'''
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +160,7 @@ async def resolve_prompt(key: str) -> str:
         raise KeyError(f"未知提示词 key: {key}")
     data_id, const_name = PROMPT_REGISTRY[key]
     try:
-        content = await get_config_center_client().get_config(
-            data_id, ConfigGroup.PROMPT.value
-        )
+        content = await get_config_center_client().get_config(data_id, ConfigGroup.PROMPT.value)
         if content:
             return content
     except ConfigCenterError as e:

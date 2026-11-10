@@ -1,15 +1,5 @@
-"""
-app_server - 按阶段分组 gather 启动 Manager，逆序停机（设计文档 §10）
+"""按阶段分组 gather 启动 Manager、逆序停机；启动失败整体 fail-fast 并回滚。"""
 
-与既有启动范式同：任一启动项失败整体 fail-fast 并回滚已启动项。
-entrypoint 在 main.py：装配 AppServer().run()。
-
-优化：
-- 同 order（阶段）内的 manager 用 asyncio.gather 并行启动，缩短总启动时间
-- 阶段间仍串行，保证依赖顺序（如 Redis → PostgreSQL → Checkpointer）
-- BaseManager 内置 status 追踪，启动/停机日志自动带状态
-- 启动耗时分层统计：单项 manager、单个阶段、整体启动，并输出耗时 Top 榜
-"""
 from __future__ import annotations
 
 import asyncio
@@ -69,7 +59,7 @@ class AppServer:
         except Exception:
             elapsed = time.perf_counter() - t0
             mgr._set_status(ManagerStatus.FAILED)
-            logger.error(f"[{self.name}] {name} 启动失败，耗时 {_fmt(elapsed)}")
+            logger.exception(f"[{self.name}] {name} 启动失败，耗时 {_fmt(elapsed)}")
             raise
         elapsed = time.perf_counter() - t0
         mgr._set_status(ManagerStatus.RUNNING)
@@ -115,13 +105,10 @@ class AppServer:
 
             if failed:
                 logger.error(
-                    f"[{self.name}] 阶段 {idx}/{len(phases)} 失败，"
-                    f"已耗时 {_fmt(phase_elapsed)}"
+                    f"[{self.name}] 阶段 {idx}/{len(phases)} 失败，已耗时 {_fmt(phase_elapsed)}"
                 )
                 for name, exc in failed:
-                    logger.opt(exception=exc).error(
-                        f"[{self.name}] 启动失败：{name} - {exc}"
-                    )
+                    logger.opt(exception=exc).error(f"[{self.name}] 启动失败：{name} - {exc}")
                 # 记录失败前的统计，便于定位问题
                 self.startup_timings = timings
                 self.startup_total_s = time.perf_counter() - t_total
@@ -166,10 +153,17 @@ class AppServer:
             except Exception as exc:  # 探活自身抛错也记为不可用
                 info = HealthInfo(status="down", detail=f"{type(exc).__name__}: {exc}")
             components.append({"name": name, "status": info.status, "detail": info.detail})
-            if info.detail:
-                logger.info(f"[{self.name}] 组件状态 {name}: {info.status} ({info.detail})")
+            # 按状态分级：running/starting -> info；degraded -> warning；down/failed/stopping -> error
+            if info.status in ("down", "failed", "stopping"):
+                _log = logger.error
+            elif info.status == "degraded":
+                _log = logger.warning
             else:
-                logger.info(f"[{self.name}] 组件状态 {name}: {info.status}")
+                _log = logger.info
+            if info.detail:
+                _log(f"[{self.name}] 组件状态 {name}: {info.status} ({info.detail})")
+            else:
+                _log(f"[{self.name}] 组件状态 {name}: {info.status}")
 
         overall = "up"
         if any(c["status"] in ("failed", "down", "stopping") for c in components):
@@ -179,7 +173,9 @@ class AppServer:
 
         return {
             "status": overall,
-            "started_at": app_state.started_at.strftime("%Y-%m-%d %H:%M:%S") if app_state.started_at else None,
+            "started_at": app_state.started_at.strftime("%Y-%m-%d %H:%M:%S")
+            if app_state.started_at
+            else None,
             "components": components,
         }
 
@@ -198,12 +194,9 @@ class AppServer:
                 logger.info(f"[{self.name}] stopping {name} ...")
                 await mgr.stop()
                 mgr._set_status(ManagerStatus.STOPPED)
-                logger.info(
-                    f"[{self.name}] {name} 已停止，耗时 {_fmt(time.perf_counter() - t0)}"
-                )
+                logger.info(f"[{self.name}] {name} 已停止，耗时 {_fmt(time.perf_counter() - t0)}")
             except Exception:
                 mgr._set_status(ManagerStatus.STOPPED)  # 停机失败也标记为已停止
                 logger.exception(
-                    f"[{self.name}] stop failed: {name}"
-                    f"（耗时 {_fmt(time.perf_counter() - t0)}）"
+                    f"[{self.name}] stop failed: {name}（耗时 {_fmt(time.perf_counter() - t0)}）"
                 )

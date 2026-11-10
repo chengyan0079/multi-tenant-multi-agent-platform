@@ -1,9 +1,5 @@
-"""PostgreSQL 客户端对象（engine + sessionmaker，实例内缓存）。
+"""PostgreSQL 客户端：engine+sessionmaker 实例内缓存，url 显式传入支持多实例。"""
 
-与旧实现的关键差异：
-- url 由调用方显式传入（旧版隐式读 app_state.settings）→ 可同时持有多个实例（多库 / 灰度）；
-- engine 与 sessionmaker 缓存于实例内（旧版是模块级全局），close 后不会静默重建。
-"""
 from __future__ import annotations
 
 import re
@@ -103,15 +99,23 @@ def _row_count(cursor: Any, is_select: bool) -> int:
 
 
 def _on_cursor_execute_before(
-    conn: Any, cursor: Any, statement: Any, parameters: Any,
-    context: Any, executemany: bool,
+    conn: Any,
+    cursor: Any,
+    statement: Any,
+    parameters: Any,
+    context: Any,
+    executemany: bool,
 ) -> None:
     _START_TIMES[id(context)] = time.perf_counter()
 
 
 def _on_cursor_execute_after(
-    conn: Any, cursor: Any, statement: Any, parameters: Any,
-    context: Any, executemany: bool,
+    conn: Any,
+    cursor: Any,
+    statement: Any,
+    parameters: Any,
+    context: Any,
+    executemany: bool,
 ) -> None:
     """SQLAlchemy after_cursor_execute 事件：补耗时与返回值数量，打到 DEBUG 日志。
 
@@ -136,7 +140,11 @@ class PostgresClient(BaseClient):
     name = "postgres"
 
     def __init__(
-        self, url: str, *, echo: bool = False, search_path: str | None = None,
+        self,
+        url: str,
+        *,
+        echo: bool = False,
+        search_path: str | None = None,
         sql_debug: bool = False,
     ) -> None:
         self._url = url
@@ -153,7 +161,10 @@ class PostgresClient(BaseClient):
         sql_debug 直接取配置（POSTGRES_SQL_DEBUG），所有 PG 实例统一受控。
         """
         return cls(
-            cfg.async_url, echo=echo, search_path=cfg.search_path, sql_debug=cfg.sql_debug,
+            cfg.async_url,
+            echo=echo,
+            search_path=cfg.search_path,
+            sql_debug=cfg.sql_debug,
         )
 
     # ---------- 生命周期 ----------
@@ -175,8 +186,12 @@ class PostgresClient(BaseClient):
             self._sessionmaker = async_sessionmaker(self._engine, expire_on_commit=False)
             # SQL 调试：仅在开启时挂事件（默认关，零开销）；事件走本项目 DEBUG 日志
             if self._sql_debug:
-                event.listen(self._engine.sync_engine, "before_cursor_execute", _on_cursor_execute_before)
-                event.listen(self._engine.sync_engine, "after_cursor_execute", _on_cursor_execute_after)
+                event.listen(
+                    self._engine.sync_engine, "before_cursor_execute", _on_cursor_execute_before
+                )
+                event.listen(
+                    self._engine.sync_engine, "after_cursor_execute", _on_cursor_execute_after
+                )
 
     async def close(self) -> None:
         """释放 engine（幂等）。"""

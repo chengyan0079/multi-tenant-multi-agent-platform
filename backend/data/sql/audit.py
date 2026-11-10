@@ -1,14 +1,5 @@
-"""审计列参数注入：INSERT / UPDATE 前统一取当前操作者。
+"""审计列参数注入：INSERT/UPDATE 前统一取当前操作者，非请求期用 SYSTEM_USER_ID 占位。"""
 
-表按审计列分三类：
-- 带用户 + 租户审计列（原 AuditMixin）：`with_tenant=True`；
-- 只带用户审计列（全局表，如 agent_role）：`with_tenant=False`；
-- 只有 create_at / updated_at：不需要本模块。
-
-DDL 不给审计列建 DEFAULT：漏填要在写库前报错，而不是静默落到占位值让审计失真。
-- 请求期：从 app_state 的上下文取当前操作者；
-- 非请求期（启动期种子、修数脚本）：调用方显式传 SYSTEM_USER_ID 作为审计操作者占位。
-"""
 from __future__ import annotations
 
 from backend.app_state import get_tenant_id, get_user_id
@@ -24,8 +15,7 @@ def _pick(explicit: int | None, from_ctx: int | None, field: str) -> int:
     if from_ctx is not None:
         return from_ctx
     raise RuntimeError(
-        f"{field} 未赋值，且当前没有请求上下文；"
-        f"非请求期写入请显式传值（如 {field}=SYSTEM_USER_ID）"
+        f"{field} 未赋值，且当前没有请求上下文；非请求期写入请显式传值（如 {field}=SYSTEM_USER_ID）"
     )
 
 

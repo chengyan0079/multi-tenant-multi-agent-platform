@@ -1,15 +1,5 @@
-"""
-agent_registry - Agent 与能力的注册/发现（设计文档 §3.2 / §15.1）
+"""Agent 注册/发现：启动注册 build_graph，元数据与开通策略入内存，运行期可 refresh。"""
 
-各 Agent 模块启动时 register(agent_type, build_graph, schema)；运行时按 agent_type 取图。
-
-持久化元数据（`agent` 表）与租户级开通策略（`agent_capability_policy` 表）在
-`start()` 时一次性加载进内存，之后 `get()` / `is_enabled_for_tenant()` 仍为同步读内存，
-不改动既有调用方式（Orchestrator 为同步取图）。运行期变更可调用 `await refresh()` 重新加载。
-
-注意：`build_graph` 是函数、不可序列化，仍必须由代码注册；`agent` 表只承载可持久化的
-元数据（展示名 / 描述 / 输入 schema / 全局开关 / 版本）。
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,11 +21,11 @@ class AgentMeta:
     agent_type: str
     build_graph: Callable[..., object]  # 返回编译后的 LangGraph (CompiledGraph)
     input_schema: Optional[dict] = None  # JSON Schema，供校验与文档
-    enabled: bool = True                 # 代码侧默认开关（库加载后以库为准）
+    enabled: bool = True  # 代码侧默认开关（库加载后以库为准）
     # —— 以下由 agent 表加载（未登记为 None）——
     name: Optional[str] = None
     description: Optional[str] = None
-    db_enabled: Optional[bool] = None    # 库中全局开关；None 表示库未登记
+    db_enabled: Optional[bool] = None  # 库中全局开关；None 表示库未登记
     version: Optional[str] = None
 
 
@@ -77,14 +67,18 @@ class AgentRegistry:
                 f"已从库加载 Agent 元数据 {loaded}/{len(rows)} 条、租户策略 {len(policies)} 条"
             )
         except Exception as e:  # 库不可用/未建表时降级为「只用代码注册值」
-            logger.warning(f"从库加载 Agent 元数据失败，使用代码注册默认值: {e}")
+            logger.exception(f"从库加载 Agent 元数据失败，使用代码注册默认值: {e}")
 
     async def refresh(self) -> None:
         """运行期重新加载（如库里改了开关/策略后调用）。"""
         await self.load_from_db()
 
-    def register(self, agent_type: str, build_graph: Callable[..., object],
-                 input_schema: Optional[dict] = None) -> None:
+    def register(
+        self,
+        agent_type: str,
+        build_graph: Callable[..., object],
+        input_schema: Optional[dict] = None,
+    ) -> None:
         """注册一个 Agent 图构造器；重复注册覆盖并告警。"""
         if agent_type in self._agents:
             logger.warning(f"Agent 重复注册，覆盖: {agent_type}")
@@ -117,12 +111,12 @@ class AgentRegistry:
             return True
         return self._tenant_policy.get((tenant_id, agent_type), True)
 
-    def list_types(self, only_enabled: bool = True,
-                   tenant_id: Optional[int] = None) -> List[str]:
+    def list_types(self, only_enabled: bool = True, tenant_id: Optional[int] = None) -> List[str]:
         """列出 Agent 类型；传 tenant_id 时按租户开通策略过滤。"""
         if tenant_id is not None:
             return [
-                t for t in self._agents
+                t
+                for t in self._agents
                 if (self.is_enabled_for_tenant(t, tenant_id) or not only_enabled)
             ]
         return [t for t, m in self._agents.items() if (m.enabled or not only_enabled)]

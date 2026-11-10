@@ -3,6 +3,7 @@
 业务消息与广播消息的区分只在这里做，投递端（outbox）与消费端都读同一份结果，
 避免同一条规则散落在声明、投递、消费各处。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

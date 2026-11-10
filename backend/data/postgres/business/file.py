@@ -1,12 +1,5 @@
-"""文件元数据表（MinIO 对象引用）。
+"""文件元数据表（agent_file）：一行一版本，tenant_id 隔离，文件本体在 MinIO。"""
 
-设计说明：
-- 一行 = 一个上传文件版本；同名文件重复上传时 `file_version` 递增，`object_key` 唯一；
-- `tenant_id` 是隔离边界：普通用户/租户管理员只能看到本租户文件，超管（tenant_id=NULL）
-  可看全部；超管自己上传的文件 tenant_id 为 NULL（平台级）；
-- `uploader_user_id` 显式记录上传用户；审计列（create_user_id 等）由写库时统一注入；
-- 只存元数据，文件本体在 MinIO（bucket + object_key 可定位）。
-"""
 from __future__ import annotations
 
 from sqlalchemy import BigInteger, Index, Integer, String, text
@@ -65,8 +58,10 @@ class AgentFile(AuditMixin, Base):
     checksum: Mapped[str | None] = mapped_column(String(64), comment="内容校验（sha256 十六进制）")
     remark: Mapped[str | None] = mapped_column(String(512), comment="备注")
     parse_status: Mapped[str] = mapped_column(
-        String(16), nullable=False,
-        default="pending", server_default=text("'pending'"),
+        String(16),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
         # server_default 必须保留：FileDao 用裸 SQL INSERT 且不传该列，依赖库默认值
         comment="解析状态：pending 未解析 / parsing 解析中 / parsed 已解析 / failed 解析失败",
     )

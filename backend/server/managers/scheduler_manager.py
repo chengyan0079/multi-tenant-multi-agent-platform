@@ -1,14 +1,5 @@
-"""定时任务（通用定时器，见 docs/消息队列对接设计 §10）。
+"""定时任务管理器：注册多 job 独立调度，异常互不影响；支持 config_refresh 与 resume 超时扫描。"""
 
-支持注册多个扫描任务（job），每个 job 按各自间隔独立调度；job 协程异常被捕获并记录，
-不影响其它 job。各 job 是否使用 MQ 由自身实现决定（当前 resume 超时仅本地 UPDATE，无需 MQ）。
-
-现有 job：
-- resume_review_timeout：resume 评审 processing 超时未完成的记录批量标 failed；
-- config_refresh_poll：拉取 Redis 配置刷新版本号，变更时刷新本副本内存注册表。
-
-新增扫描任务：在 _register_default_jobs 里 register(name, interval, coro) 即可。
-"""
 from __future__ import annotations
 
 import asyncio

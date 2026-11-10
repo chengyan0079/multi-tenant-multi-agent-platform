@@ -1,9 +1,5 @@
-"""长记忆 DAO：agent_long_term_memory（走 text()，ORM 不参与运行期访问）。
+"""长记忆 DAO：agent_long_term_memory，走 text()，按租户+用户+智能体+block 检索。"""
 
-列对齐 backend/data/postgres/agent/memory.py::AgentLongTermMemory（id 为 UUID，由库生成；
-tenant_id / user_id 为 NOT NULL BigInteger，故写入前调用方需已校验身份，否则会撞 NOT NULL）。
-按 租户 + 用户 + 智能体 + block 归属检索。
-"""
 from __future__ import annotations
 
 from typing import Any

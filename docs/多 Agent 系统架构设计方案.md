@@ -36,7 +36,7 @@
 
 ## 2. 业务 Agent 实况
 
-四个业务 Agent 的节点函数均已写；**QA、Resume、Exam 三张图已装配并可执行，Interview 图仍未接线**。Exam 已把三轨批改、汇总、薄弱点和 `interrupt()` 教师复核串成可达图。
+四个业务 Agent 的图均已装配并可执行：QA（条件路由）、Resume（线性）、Exam（三轨 + HITL）、Interview（多阶段状态机 + SSE + 报告回写）。Exam 已把三轨批改、汇总、薄弱点和 `interrupt()` 教师复核串成可达图；Interview 用 `checkpointer` 保存多轮状态。
 
 ### 2.1 qa —— 已落地（LangGraph 受控图）
 
@@ -67,9 +67,14 @@
 - 图绑定统一 `app_state.checkpointer`，thread_id 为 `submission_id`；
 - 后端提交/复核/确认接口已接；**前端考试页仍是 mock**。
 
-### 2.4 interview —— 半完成（节点齐、图未装配）
+### 2.4 interview —— 已落地（多阶段状态机 + SSE + 报告）
 
-`backend/agents/interview/nodes.py` 含 `init_session` / `ask` / `evaluate` / `respond` / `make_report` / `route_stage`；但 `backend/agents/interview/graph.py` 的 `add_node` / `add_edge` 仍全部注释，编译的是空图。设计里的「状态机 init→question↔evaluate→report→done + SSE 多轮」**未接线**；`/tenant/interview/start` 只回显入参。
+`backend/agents/interview/graph.py` 已装配 `load_context / check_stage / evaluate_answer / generate_response / generate_report / save_report / save_memory` 七个节点，并绑定统一 `app_state.checkpointer`。阶段流转为 `warmup → tech_base → project → closing → finished`，回答质量驱动追问，结束轮写回五维报告。
+
+- API：`POST /tenant/interview/sessions`、`POST /sessions/{id}/chat`、`POST /sessions/{id}/chat/stream`、`GET /sessions`、`GET /sessions/{id}/report`；
+- 流式输出只转发 `generate_response` 节点 token，结束轮直接 `done`；
+- Prompt 已接 Nacos `interview_*`；
+- 前端「开始面试 / 面试结果 / 面试报告」已接真实接口；历史消息回放、服务端停止生成、删除会话均已闭环。删除采用软删归档，checkpointer 保留可恢复。
 
 ---
 
@@ -148,7 +153,7 @@
 
 ## 9. 明确未实现清单
 
-1. **interview 图未装配** — `backend/agents/interview/graph.py` 的 `add_node/add_edge` 仍注释，状态机 / SSE 多轮不可达。
+1. **面试会话物理清理缺失** — 删除为软删归档，checkpointer 状态保留可恢复；暂无物理清理 checkpoint / 业务行接口。
 2. **考试前端未接** — 后端考试图与接口已就绪，但 `dashboard/src/pages/agent/exam/*` 仍是 mock。
 3. **通知渠道未实现** — `backend/services/notification.py` `CHANNELS: dict = {}`，`send_notification` 仅记告警。
 4. **统一入口已下线** — `backend/api/v1/tenant/chat/unified.py` 已删除，后续整合全部智能体时再实现统一入口与模型路由。
@@ -168,7 +173,7 @@
 | `core/` 编排核心包 | 实为 `orchestration/` |
 | `rag/` 自研检索包 | 实为 `mcp/retrieval/` + `data/milvus/` + 外部 RAG 服务委派 |
 | `plugins/` 插件包 | 实为 `mcp/` 模块（协议/注册/发现） |
-| 四 Agent 均按 LangGraph 受控图实现 | qa(条件路由)、resume(线性)、exam(三轨+HITL) 已落地；interview 图未装配 |
+| 四 Agent 均按 LangGraph 受控图实现 | qa(条件路由)、resume(线性)、exam(三轨+HITL)、interview(多阶段状态机) 均已落地 |
 | 多 Agent 串联 Pipeline 由统一入口调度 | `run_pipeline` 存在但统一入口已下线，当前各 Agent 独立入口 |
 | 自研 RAG 全链路召回/重排 | `backend/rag` + Milvus 闭环已接 QA 热路径；embedding/rerank 均在本仓库调用 |
 | broker 承载长任务/重索引/通知 | 框架完备；QA parse、resume、exam、RAGAS、通知有生产端，`agent.run`/`audit.flush` 暂无生产端 |

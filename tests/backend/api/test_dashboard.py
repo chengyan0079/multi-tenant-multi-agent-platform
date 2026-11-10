@@ -22,6 +22,7 @@ from backend.app_state import app_state
 from backend.data.clients.base import BaseClient
 from backend.data.clients.bundle import ClientBundle
 from backend.data.dao.business import dashboard_dao
+from backend.security.rbac import Scope
 
 _SECRET = "test-secret-0123456789abcdefghijkl"  # ≥32 字节，避免 PyJWT 密钥长度告警
 
@@ -145,7 +146,9 @@ def _dashboard_env(
 ):
     """构造已登录环境：tenant_id=None 走超管分支，否则走租户分支。"""
     user = {"id": 2001, "username": "u", "name": "u", "tenant_id": tenant_id or 1, "enabled": True}
-    identity = {"role_name": role_name, "scopes": []}
+    # 当前实现用 require_scope(dashboard:view) 准入，普通用户不应带该 scope
+    scopes = [Scope.DASHBOARD_VIEW] if role_name in ("admin", "tenant_admin") else []
+    identity = {"role_name": role_name, "scopes": scopes}
     rbac_target = (
         "backend.data.dao.auth.rbac_dao.RbacDao.get_super_admin_identity"
         if tenant_id is None
@@ -171,6 +174,9 @@ def _dashboard_env(
         "backend.data.dao.business.dashboard_dao.DashboardDao.agent_distribution",
         new=AsyncMock(return_value=[{"name": "QA 问答", "value": 6}]),
     ), patch(
+        "backend.data.dao.business.dashboard_dao.DashboardDao.agent_distribution_from_api",
+        new=AsyncMock(return_value=[]),
+    ), patch(
         "backend.data.dao.business.dashboard_dao.DashboardDao.latency_by_hour",
         new=AsyncMock(return_value=[{"hour": "00", "avg": 120}]),
     ), patch(
@@ -182,6 +188,9 @@ def _dashboard_env(
             "target": "-",
             "result": "成功",
         }]),
+    ), patch(
+        "backend.data.dao.business.dashboard_dao.DashboardDao.recent_activities_from_api",
+        new=AsyncMock(return_value=[]),
     ), patch(
         "backend.data.dao.business.dashboard_dao.DashboardDao.global_overview",
         new=AsyncMock(return_value={"tenants": 2, "agents": 4}),
@@ -197,10 +206,12 @@ def test_dashboard_requires_token():
 
 
 def test_dashboard_rejects_normal_user():
-    """普通租户用户（student）不在准入范围。"""
+    """普通租户用户（student）缺少 dashboard:view，按统一信封返回业务错误。"""
     with _dashboard_env(role_name="student", tenant_id=2) as client:
         resp = client.get("/api/v1/dashboard", headers=_token(2001, 1))
-    assert resp.status_code == 403
+    # require_scope 抛 TenantError（AgentError 子类），异常处理器返回 200 + 非 0 code
+    assert resp.status_code == 200
+    assert resp.json()["code"] != 0
 
 
 def test_dashboard_any_tenant_admin_sees_own_tenant():

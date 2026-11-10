@@ -1,12 +1,5 @@
-"""向量检索 + 精排：qa Agent 的唯一检索入口。
+"""向量检索+精排：混合召回 → BGE-Reranker 精排（降级粗排分数），返回 Chunk。"""
 
-参照 thy-edu-agent/core/reranker.py 的 "混合召回 → BGE-Reranker 精排 → confidence"
-流水线，按本项目改造：
-- 粗排用 DocumentMilvusStore.hybrid_search（本项目 Milvus，tenant_id 分区键隔离）；
-- 精排复用已预热的 LLMFactory.rerank，不另加载 torch 模型；
-- 精排不可用时降级为粗排分数（不阻断生成链路）；
-- 返回 backend.rag.ranked.Chunk，字段与 qa/state.py 的 RankedChunk 对齐。
-"""
 from __future__ import annotations
 
 from backend.app_state import app_state
@@ -76,8 +69,7 @@ def _apply_highlights(chunks: list[Chunk]) -> None:
         key = c.parent_id or c.chunk_id
         siblings = grouped.get(key, [c.content])
         c.highlighted_content = (
-            highlight_parent(c.parent_content, siblings)
-            if c.parent_content else ""
+            highlight_parent(c.parent_content, siblings) if c.parent_content else ""
         )
 
 
@@ -115,14 +107,11 @@ async def _rerank(query: str, candidates: list[dict]) -> list[float] | None:
     factory = app_state.llm_factory
     if factory is None or not candidates:
         return None
-    docs = [
-        str(c.get("content") or "")[: config.qa.rerank_max_input_chars]
-        for c in candidates
-    ]
+    docs = [str(c.get("content") or "")[: config.qa.rerank_max_input_chars] for c in candidates]
     try:
         return await factory.rerank(query, docs, top_n=len(docs))
     except Exception as exc:  # noqa: BLE001 - 精排失败降级为粗排，不阻断生成链路
-        logger.warning(f"rag.retrieve: 精排不可用，降级粗排 | {exc}")
+        logger.exception(f"rag.retrieve: 精排不可用，降级粗排 | {exc}")
         return None
 
 
@@ -147,7 +136,10 @@ async def retrieve(
     final_k = top_k or config.qa.rerank_top_k
     recall_k = max(final_k, config.qa.recall_top_k)
     candidates = await store.hybrid_search(
-        query=query, tenant_id=tenant_id, file_id=file_id, top_k=recall_k,
+        query=query,
+        tenant_id=tenant_id,
+        file_id=file_id,
+        top_k=recall_k,
     )
     if not candidates:
         logger.debug(f"rag.retrieve: 召回为空 query={query[:50]!r} tenant={tenant_id}")

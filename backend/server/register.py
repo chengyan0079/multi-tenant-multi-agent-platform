@@ -1,19 +1,5 @@
-"""
-register - 集中注册启动项（设计文档 §10）
+"""集中注册启动项：按 order 分阶段并行/串行启动，失败 fail-fast 并回滚。"""
 
-按 order 划分启动阶段：同 order 的 Manager 由 AppServer 用 asyncio.gather 并行启动，
-不同 order 之间串行，保证依赖先后。任一失败 fail-fast 并回滚已启动项。
-多副本由反向代理/LB 前置，应用本身无状态。
-
-阶段划分（依据实际依赖）：
-  10  日志          —— 其余模块依赖日志 sink 先就绪
-  20  基础设施      —— Redis / PostgreSQL / Model / 可观测 / 安全，互相独立
-  30  强依赖项      —— Milvus / Checkpointer / Memory / Scheduler / Plugin(需 PG 就绪)
-  40  编排器        —— 需 Checkpointer + Model + 库
-  50  HTTP 装配     —— FastAPI 挂载全部路由
-  60  配置中心      —— 提示词预热需 Redis
-  70  服务发现      —— 确保已监听后再对外暴露
-"""
 from __future__ import annotations
 
 from backend.server.app_server import AppServer
@@ -48,7 +34,7 @@ def build_server() -> AppServer:
     server.register(RedisManager(), 20)
     server.register(PostgreSQLManager(), 20)
     server.register(ModelManager(), 20)
-    # server.register(ObservabilityManager(), 20)   // todo
+    server.register(ObservabilityManager(), 20)
     server.register(SecurityManager(), 20)
 
     # 消息队列：默认不启用（RABBITMQ_ENABLED=false），启用才注册，避免无 broker 阻断启动

@@ -1,4 +1,5 @@
 """code_exec 插件入口：导出 plugin 实例供 loader 发现。"""
+
 from backend.mcp.builtin.code_exec.tool import CodeExecTool
 from backend.mcp.protocol import BasePlugin, PluginManifest
 

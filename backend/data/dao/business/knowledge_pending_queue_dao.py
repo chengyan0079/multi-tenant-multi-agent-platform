@@ -2,6 +2,7 @@
 
 低置信度问答入队，教师复核后补充知识库。状态生命周期：pending -> resolved / dismissed。
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -66,7 +67,9 @@ class KnowledgePendingQueueDao:
                 LIMIT :limit OFFSET :offset
                 """
             )
-            return await fetch_all(session, stmt, {"tenant_id": tenant_id, "limit": limit, "offset": offset})
+            return await fetch_all(
+                session, stmt, {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+            )
 
     @staticmethod
     async def count_pending(tenant_id: int) -> int:

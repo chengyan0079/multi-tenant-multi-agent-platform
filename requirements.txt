@@ -38,7 +38,8 @@ pydantic-settings==2.15.0              # 读取 .env
 PyYAML==6.0.3                          # YAML 解析（MCP 插件清单 / 配置加载）
 
 httpx==0.28.1                          # 异步 HTTP 客户端
-requests==2.34.2                       # 同步 HTTP 客户端（Nacos 3.x 配置中心 REST 直连）
+requests==2.34.2
+langfuse==5.2.0                        # Langfuse 可观测（SDK 5.x 对应服务端 4.x，OTEL 采集；软降级，缺失不阻断启动）
 pyjwt==2.15.1                          # JWT
 cryptography==50.0.2
 

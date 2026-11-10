@@ -1,9 +1,5 @@
-"""
-base_manager - Manager 抽象基类
+"""Manager 抽象基类：子类实现 start()/stop()（stop 幂等），内置 name/status 状态追踪。"""
 
-各启动项继承并实现 start()/stop()；约定 stop() 幂等且吞掉自身异常，由 AppServer 统一兜底记录。
-内置 name / status 状态追踪，便于启动日志与运维排查。
-"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

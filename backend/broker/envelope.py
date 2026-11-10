@@ -1,12 +1,5 @@
-"""任务消息信封：key / type / header / data 四段结构。
+"""任务消息信封：key/type/header/data 四段结构，消息携带身份、消费端零信任校验。"""
 
-- key：消息幂等键，等于 Outbox 主键；重投时消费端据此跳过已处理的消息；
-- type：TaskType 枚举，决定投递路由与 handler 分发；
-- header：身份与追踪元数据，消费端零信任地重做鉴权，并据此判断信封版本；
-- data：业务数据，handler 唯一读取的内容。
-
-消息体携带身份（而非只靠 topic），是因为 broker 本身不做鉴权，消费端必须自己校验。
-"""
 from __future__ import annotations
 
 import json

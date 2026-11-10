@@ -2,6 +2,7 @@
 
 handler 只做鉴权与消息结构，解析 / 分块 / 向量化见 services/indexing.py。
 """
+
 from __future__ import annotations
 
 from backend.broker.envelope import TaskMessage

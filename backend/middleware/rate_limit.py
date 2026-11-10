@@ -1,8 +1,5 @@
-"""
-rate_limit - 租户级限流（设计文档 §9.1 ② 配套）
+"""租户级限流：基于 slowapi，按 tenant_id 维度限流（回退 IP）。"""
 
-基于 slowapi 的 Limiter，按 tenant_id 维度限流；key 取自认证后 request.state.tenant_id。
-"""
 from __future__ import annotations
 
 from slowapi import Limiter

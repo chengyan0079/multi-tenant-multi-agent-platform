@@ -1,13 +1,5 @@
-"""智能问答直连接口（standalone，挂在 /api/v1/tenant/qa）。
+"""智能问答接口：非流式 / SSE 流式问答，按租户隔离。"""
 
-提供两类接口，对齐参考项目 backend/api/v1/qa.py 的形态：
-- POST /chat         非流式问答，统一信封 success() 返回
-- POST /chat/stream  SSE 流式问答（token 逐字推送）
-（会话列表 / 详情 / 删除见 qa_sessions.py）
-
-鉴权与本项目一致：require_scope(Scope.QA_ASK) + get_current_user；数据按租户隔离。
-SSE 事件格式（data 内 JSON）：progress / token / meta / done / error。
-"""
 from __future__ import annotations
 
 import json
@@ -24,6 +16,8 @@ from sse_starlette.sse import EventSourceResponse
 from backend.agents.qa.graph import build_qa_graph
 from backend.app_state import app_state
 from backend.common.logger import get_logger, trace_id_ctx
+from backend.observability.tracing import tracing
+from backend.common.llm.token_usage import TokenUsageCallback
 from backend.data.dao.business.qa_result_dao import QaResultDao
 from backend.data.sql.audit import audit_on_insert
 from backend.common.response import success
@@ -78,7 +72,7 @@ async def _update_title_if_default(
             thread_id=thread_id, tenant_id=tenant_id, user_id=user_id, title=title
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"qa_session.title_update_failed | thread={thread_id} | {exc}")
+        logger.exception(f"qa_session.title_update_failed | thread={thread_id} | {exc}")
 
 
 def _contexts_from_state(state: Any) -> list[dict[str, Any]]:
@@ -108,6 +102,33 @@ def _contexts_from_state(state: Any) -> list[dict[str, Any]]:
     return out
 
 
+NO_EXTERNAL_SOURCE = "模型内置知识（无外部引用）"
+
+
+def _normalize_sources(sources: list[str], contexts: list[dict[str, Any]]) -> list[str]:
+    """保证 sources 永远是可展示的非空字符串数组。"""
+    out: list[str] = []
+    for item in sources or []:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= 10:
+            return out
+
+    # 图没有回传来源时，用检索上下文兜底；标注为低相关候选，避免误当成已引用
+    for context in contexts or []:
+        source = str(context.get("source") or "").strip()
+        if not source:
+            continue
+        label = f"低相关候选：{source}"
+        if label not in out:
+            out.append(label)
+        if len(out) >= 10:
+            break
+
+    return out or [NO_EXTERNAL_SOURCE]
+
+
 async def _persist_qa_result(
     *,
     tenant_id: int,
@@ -123,8 +144,51 @@ async def _persist_qa_result(
     contexts: list[dict[str, Any]],
     enable_web_search: bool,
     latency_ms: int,
+    token_usage: dict[str, Any] | None = None,
+    state_values: dict[str, Any] | None = None,
+    stream: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> None:
-    """问答结果落库；失败只告警，不影响问答返回。"""
+    """问答结果落库；失败只告警，不影响问答返回。
+
+    - sources：图/上下文兜底为非空字符串数组；
+    - token_usage：由 TokenUsageCallback 汇总，一次图执行写一行；
+    - extra：记录运行画像，便于排查低置信度、检索命中、Web 兜底和 usage 缺失。
+    """
+    state = state_values or {}
+    usage = token_usage or {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "llm_calls": 0,
+        "models": [],
+        "usage_available": False,
+        "errors": 0,
+    }
+    normalized_sources = _normalize_sources(sources, contexts)
+    extra_data: dict[str, Any] = {
+        "trace_id": trace_id_ctx.get(),
+        "graph_name": "qa",
+        "stream": stream,
+        "answer_mode": answer_mode,
+        "query_type": query_type,
+        "confidence": float(confidence or 0),
+        "fallback_used": bool(
+            state.get("fallback_used", answer_mode in ("llm_direct", "web_augmented", "general"))
+        ),
+        "source_count": len(normalized_sources),
+        "context_count": len(contexts or []),
+        "ranked_chunk_count": len(state.get("ranked_chunks") or []),
+        "web_search_result_count": len(state.get("web_search_results") or []),
+        "enable_web_search": enable_web_search,
+        "latency_ms": latency_ms,
+        "token_usage": usage,
+        "models": usage.get("models") or [],
+        "usage_available": bool(usage.get("usage_available")),
+    }
+    if extra:
+        extra_data.update(extra)
+
     try:
         await QaResultDao.insert(
             record={
@@ -141,33 +205,29 @@ async def _persist_qa_result(
                 "query_type": query_type,
                 "confidence": float(confidence or 0),
                 "retrieved_contexts": contexts,
-                "sources": sources,
+                "sources": normalized_sources,
                 "reference_answer": None,
                 "latency_ms": latency_ms,
-                # TODO(qa_result): 图暂未回传 token 用量，先留空；接入 LLM usage 后写
-                #  {prompt, completion, total}，用于成本/质量分析。
-                "token_usage": None,
+                "token_usage": usage,
                 "enable_web_search": enable_web_search,
-                # TODO(qa_result): 目前只在成功路径落库；图异常/流式中断未写 failed 行，
+                # TODO(qa_result): 图异常/流式中断未写 failed 行，
                 #  后续在异常分支补 status='failed' + error_msg。
                 "status": "success",
                 "error_msg": None,
-                "extra": None,
+                "extra": extra_data,
             },
             audit=audit_on_insert(tenant_id=tenant_id),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"qa_result.persist_failed | session={session_id} | {exc}")
+        logger.exception(f"qa_result.persist_failed | session={session_id} | {exc}")
 
     # 每条消息成功后刷新会话 updated_at，保证「会话列表」按最近活跃排序
     try:
         from backend.data.dao.agent.thread_dao import ThreadDao
 
-        await ThreadDao.touch_qa_session(
-            thread_id=thread_id, tenant_id=tenant_id, user_id=user_id
-        )
+        await ThreadDao.touch_qa_session(thread_id=thread_id, tenant_id=tenant_id, user_id=user_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"qa_result.touch_failed | session={session_id} | {exc}")
+        logger.exception(f"qa_result.touch_failed | session={session_id} | {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +254,13 @@ async def chat(
     _: object = Depends(require_scope(Scope.QA_ASK)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """智能问答（非流式）：发送用户消息，等待完整回答后返回。"""
+    """非流式智能问答：发送消息，返回完整回答。
+
+    说明：解析会话线程、跑 QA 状态机，结果落库（RAGAS 样本源）；失败不阻断问答。
+    请求：body { session_id: str, message: str, enable_web_search?: bool }
+    权限：qa:ask
+    返回：answer / answer_mode / confidence / sources / fallback_used
+    """
     tenant_id = tenant_of(current)
     user_id = current.user_id
     thread_id = await _resolve_thread_id(tenant_id, user_id, req.session_id)
@@ -211,15 +277,23 @@ async def chat(
         "enable_web_search": req.enable_web_search,
         "web_search_results": [],  # 每轮重置，防止上轮搜索结果污染本轮 sources
     }
-    config = {"configurable": {"thread_id": thread_id}}
+    usage_cb = TokenUsageCallback()
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": [usage_cb],
+    }
 
     started = time.perf_counter()
     try:
-        result = await _get_graph().ainvoke(initial_state, config=config)
+        result = await _get_graph().ainvoke(initial_state, config=tracing.with_callbacks(config))
     except Exception as e:  # noqa: BLE001 - 交由全局异常处理器统一包装
-        logger.error(f"chat.invoke_error | session={req.session_id} | {e}", exc_info=True)
+        logger.exception(f"chat.invoke_error | session={req.session_id} | {e}")
         raise
     latency_ms = int((time.perf_counter() - started) * 1000)
+
+    contexts = _contexts_from_state(result)
+    sources = _normalize_sources(result.get("sources", []), contexts)
+    token_usage = usage_cb.as_dict()
 
     # 落库（RAGAS 样本源）；失败不阻断问答
     await _persist_qa_result(
@@ -232,20 +306,25 @@ async def chat(
         answer_mode=result.get("answer_mode", "llm_direct"),
         query_type=result.get("query_type"),
         confidence=result.get("confidence", 0.0),
-        sources=result.get("sources", []),
-        contexts=_contexts_from_state(result),
+        sources=sources,
+        contexts=contexts,
         enable_web_search=req.enable_web_search,
         latency_ms=latency_ms,
+        token_usage=token_usage,
+        state_values=result,
+        stream=False,
     )
 
-    return success({
-        "session_id": req.session_id,
-        "answer": result.get("answer", ""),
-        "answer_mode": result.get("answer_mode", "llm_direct"),
-        "confidence": result.get("confidence", 0.0),
-        "sources": result.get("sources", []),
-        "fallback_used": result.get("fallback_used", False),
-    })
+    return success(
+        {
+            "session_id": req.session_id,
+            "answer": result.get("answer", ""),
+            "answer_mode": result.get("answer_mode", "llm_direct"),
+            "confidence": result.get("confidence", 0.0),
+            "sources": sources,
+            "fallback_used": result.get("fallback_used", False),
+        }
+    )
 
 
 @router.post("/chat/stream")
@@ -254,9 +333,12 @@ async def chat_stream(
     _: object = Depends(require_scope(Scope.QA_ASK)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """流式智能问答（SSE）：与 /chat 相同入参，但以 Server-Sent Events 流式返回。
+    """SSE 流式智能问答，逐 token 返回。
 
-    事件类型：progress（节点进度）/ token（LLM 逐字）/ meta（结束元数据）/ done（结束）/ error（异常）。
+    说明：事件类型 progress / token / meta / stopped / done / error；支持服务端停止标记中断。
+    请求：body { session_id: str, message: str, enable_web_search?: bool }
+    权限：qa:ask
+    返回：text/event-stream
     """
     tenant_id = tenant_of(current)
     user_id = current.user_id
@@ -274,7 +356,9 @@ async def chat_stream(
         "enable_web_search": req.enable_web_search,
         "web_search_results": [],
     }
-    config = {"configurable": {"thread_id": thread_id}}
+    state_config = {"configurable": {"thread_id": thread_id}}
+    usage_cb = TokenUsageCallback()
+    config = {**state_config, "callbacks": [usage_cb]}
 
     # 仅对这些生成节点产生的 LLM token 做流式输出
     _GENERATE_NODES = {"generate_rag", "generate_direct", "generate_general"}
@@ -298,13 +382,13 @@ async def chat_stream(
         try:
             # 先发一帧，确保 SSE 响应头尽快建立（避免长耗时节点导致客户端/代理超时）
             yield {
-                "data": json.dumps(
-                    {"type": "progress", "stage": "准备中..."}, ensure_ascii=False
-                )
+                "data": json.dumps({"type": "progress", "stage": "准备中..."}, ensure_ascii=False)
             }
             # 进入前清掉可能残留的停止标记，避免误停本次生成
             await clear_chat_stop(tenant_id, user_id, req.session_id)
-            async for event in _get_graph().astream_events(initial_state, config=config, version="v2"):
+            async for event in _get_graph().astream_events(
+                initial_state, config=config, version="v2"
+            ):
                 # 每个事件产出前检查停止标记（Redis，跨 worker 生效）
                 if await is_chat_stopped(tenant_id, user_id, req.session_id):
                     stopped = True
@@ -316,7 +400,8 @@ async def chat_stream(
                 if evt == "on_chain_start" and node in _PROGRESS_LABELS:
                     yield {
                         "data": json.dumps(
-                            {"type": "progress", "stage": _PROGRESS_LABELS[node]}, ensure_ascii=False
+                            {"type": "progress", "stage": _PROGRESS_LABELS[node]},
+                            ensure_ascii=False,
                         )
                     }
                 # ② LLM 流式 token（仅三个生成节点）
@@ -341,10 +426,11 @@ async def chat_stream(
                         if conf is not None:
                             confidence = conf
         except Exception as e:  # noqa: BLE001
-            logger.error(f"chat_stream.error | session={req.session_id} | {e}", exc_info=True)
+            logger.exception(f"chat_stream.error | session={req.session_id} | {e}")
             yield {
                 "data": json.dumps(
-                    {"type": "error", "message": "流式输出异常，请使用普通接口重试"}, ensure_ascii=False
+                    {"type": "error", "message": "流式输出异常，请使用普通接口重试"},
+                    ensure_ascii=False,
                 )
             }
             return
@@ -360,11 +446,15 @@ async def chat_stream(
         # ④ 落库（从图状态取检索上下文；失败不影响流式输出）
         latency_ms = int((time.perf_counter() - started) * 1000)
         try:
-            snapshot = await _get_graph().aget_state(config)
+            snapshot = await _get_graph().aget_state(state_config)
             state_values = snapshot.values if snapshot and snapshot.values else {}
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"chat_stream.state_error | session={req.session_id} | {exc}")
+            logger.exception(f"chat_stream.state_error | session={req.session_id} | {exc}")
             state_values = {}
+
+        contexts = _contexts_from_state(state_values)
+        sources = _normalize_sources(sources or state_values.get("sources", []), contexts)
+        token_usage = usage_cb.as_dict()
 
         await _persist_qa_result(
             tenant_id=tenant_id,
@@ -377,9 +467,12 @@ async def chat_stream(
             query_type=state_values.get("query_type"),
             confidence=confidence,
             sources=sources,
-            contexts=_contexts_from_state(state_values),
+            contexts=contexts,
             enable_web_search=req.enable_web_search,
             latency_ms=latency_ms,
+            token_usage=token_usage,
+            state_values=state_values,
+            stream=True,
         )
 
         # ⑤ 推送完整元数据帧
@@ -407,9 +500,12 @@ async def chat_stop(
     _: object = Depends(require_scope(Scope.QA_ASK)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
-    """写 Redis 停止标记；流式生成器在下一个事件前停止（跨 worker 生效）。"""
+    """请求停止指定会话的流式生成。
+
+    说明：写 Redis 停止标记，流式生成器在下一个事件前中断（跨 worker 生效）。
+    请求：body { session_id: str 必填 }
+    权限：qa:ask
+    返回：{ session_id, stopped }
+    """
     await set_chat_stop(tenant_of(current), current.user_id, req.session_id)
     return success({"session_id": req.session_id, "stopped": True})
-
-
-

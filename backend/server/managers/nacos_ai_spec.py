@@ -1,9 +1,5 @@
-"""构造 Nacos AI release_mcp_server 所需的 SDK 强类型参数。
+"""构造 Nacos AI release_mcp_server 的 SDK 强类型参数；缺失时装配阶段捕获 ImportError 降级。"""
 
-仅负责“发布本平台 MCP Server”的参数装配；从 Nacos 加载远程资产
-（Agent Card / MCP Server）的逻辑在 ``nacos_ai_manager.py`` 中。SDK 为软依赖：
-缺失时由调用方在装配阶段捕获 ImportError 并降级。
-"""
 from __future__ import annotations
 
 from typing import Any

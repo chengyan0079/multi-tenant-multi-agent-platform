@@ -1,9 +1,5 @@
-"""
-registry - 运行时插件注册表（设计文档 §8 / §15.2）
+"""运行时插件注册表：name→plugin、capability→tool 映射，单能力异常不扩散。"""
 
-持有所有已注册插件；按能力名查工具并带错误边界（单能力异常不扩散）。
-与 AgentRegistry 联动：Agent 通过能力名取工具，不直接依赖具体插件实现。
-"""
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +24,7 @@ class PluginRegistry:
             try:
                 await plugin.register()
             except Exception as exc:
-                logger.warning(f"插件注册失败(已跳过): {plugin.manifest.name} - {exc}")
+                logger.exception(f"插件注册失败(已跳过): {plugin.manifest.name} - {exc}")
 
     def register_plugin(self, plugin: AgentPlugin) -> None:
         """注册一个插件并把它的工具按 name 编入能力表。"""
@@ -60,7 +56,7 @@ class PluginRegistry:
         except asyncio.TimeoutError as exc:
             raise CapabilityError(f"能力超时: {name}", degradable=True, cause=exc)
         except Exception as exc:
-            logger.warning(f"能力执行异常: {name} - {exc}")
+            logger.exception(f"能力执行异常: {name} - {exc}")
             raise CapabilityError(f"能力失败: {name}", degradable=True, cause=exc)
 
     async def stop(self) -> None:

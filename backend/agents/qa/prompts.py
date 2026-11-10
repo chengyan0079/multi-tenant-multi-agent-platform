@@ -1,9 +1,5 @@
-"""知识问答相关提示词（支持 Nacos 配置中心）。
+"""知识问答提示词：支持 Nacos 配置中心热更新，缺失回退内置默认值。"""
 
-内置常量作为默认值；运行时通过 get_config_center_client().get_config(data_id, group=PROMPT)
-从 Nacos 加载。data_id 统一为 `qa_` 前缀的小写名称，见文件末尾 PROMPT_REGISTRY；
-Nacos 未配置/不可达时自动回退内置默认值，保证离线可用。
-"""
 # 系统提示词（所有节点共用）
 SYSTEM_PROMPT = """
 你是平台的知识库智能问答助手，帮助用户在知识范围内解决技术、产品与流程类问题。
@@ -204,9 +200,7 @@ async def resolve_prompt(key: str) -> str:
         raise KeyError(f"未知提示词 key: {key}")
     data_id, const_name = PROMPT_REGISTRY[key]
     try:
-        content = await get_config_center_client().get_config(
-            data_id, ConfigGroup.PROMPT.value
-        )
+        content = await get_config_center_client().get_config(data_id, ConfigGroup.PROMPT.value)
         if content:
             return content
     except ConfigCenterError as e:
