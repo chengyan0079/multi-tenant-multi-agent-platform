@@ -3,8 +3,9 @@
 覆盖点：角色判定只按角色名，不看 role_id 数字；超管标记只由 is_super_admin 注入，
 与租户无关（没有主租户概念）。
 
-角色目录种子（原 DEFAULT_ROLES）已从代码移除，改由 scripts/schema.sql 静态注入，
-相关校验统一放在 tests/scripts/test_schema_sql.py，这里只测代码内的判定逻辑。
+角色目录种子（原 DEFAULT_ROLES）已从代码移除，改由 scripts/seed_data.sql 静态注入
+（2 个内置角色：admin / tenant_admin），相关校验在 tests/scripts/test_schema_sql.py，
+这里只测代码内的判定逻辑。
 """
 import re
 from pathlib import Path

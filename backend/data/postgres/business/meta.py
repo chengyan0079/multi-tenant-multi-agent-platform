@@ -38,7 +38,7 @@ class KnowledgePendingQueue(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
@@ -69,7 +69,7 @@ class Exam(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
@@ -99,7 +99,7 @@ class Question(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
@@ -130,7 +130,7 @@ class ScoringPoint(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     question_id: Mapped[str] = mapped_column(UUID(as_uuid=False), comment="题目ID")
@@ -160,7 +160,7 @@ class ExamSubmission(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
@@ -168,6 +168,10 @@ class ExamSubmission(AuditMixin, Base):
     )
     exam_id: Mapped[str] = mapped_column(UUID(as_uuid=False), comment="试卷ID")
     user_id: Mapped[int] = mapped_column(BigInteger, comment="用户ID（user_id，BigInteger）")
+    # 归属会话：统一历史源 agent_unified_turn.id
+    turn_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), nullable=True, index=True, comment="关联 agent_unified_turn.id（唯一历史源）"
+    )
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="word", comment="来源（word/online/miniapp）"
     )
@@ -197,7 +201,7 @@ class ExamReview(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     submission_id: Mapped[str] = mapped_column(UUID(as_uuid=False), comment="提交记录ID")
@@ -235,13 +239,17 @@ class ResumeReview(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
         BigInteger, nullable=False, comment="租户ID（隔离边界，BigInteger）"
     )
     user_id: Mapped[int] = mapped_column(BigInteger, comment="用户ID（user_id，BigInteger）")
+    # 归属会话：统一历史源 agent_unified_turn.id
+    turn_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), nullable=True, index=True, comment="关联 agent_unified_turn.id（唯一历史源）"
+    )
     pdf_minio_path: Mapped[str] = mapped_column(
         String(512), nullable=False, comment="PDF 文件 MinIO 路径"
     )
@@ -278,7 +286,7 @@ class InterviewQuestion(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
@@ -305,7 +313,6 @@ class InterviewSession(AuditMixin, Base):
 
     __tablename__ = "agent_interview_sessions"
     __table_args__ = (
-        UniqueConstraint("thread_id", name="uq_interview_sessions_thread"),
         Index("idx_interview_sessions_tenant_id", "tenant_id"),
         Index("idx_interview_sessions_user_id", "user_id"),
         {"comment": "模拟面试会话"},
@@ -314,16 +321,16 @@ class InterviewSession(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
         BigInteger, nullable=False, comment="租户ID（隔离边界，BigInteger）"
     )
     user_id: Mapped[int] = mapped_column(BigInteger, comment="用户ID（user_id，BigInteger）")
-    session_id: Mapped[str] = mapped_column(String(128), nullable=False, comment="会话标识")
-    thread_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), nullable=False, comment="关联 agent_thread.id（会话）"
+    # 归属会话：统一历史源 agent_unified_turn.id；一个会话内可有多轮面试
+    turn_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), nullable=True, index=True, comment="关联 agent_unified_turn.id（唯一历史源、归属会话）"
     )
     target_position: Mapped[str] = mapped_column(
         String(128), nullable=False, default="", comment="目标岗位"
@@ -331,7 +338,6 @@ class InterviewSession(AuditMixin, Base):
     resume_review_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), nullable=True, comment="关联简历审查ID（可选）"
     )
-    summary: Mapped[str | None] = mapped_column(Text, nullable=True, comment="摘要")
     report: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="面试报告（JSON）")
     overall_score: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="综合得分")
     status: Mapped[str] = mapped_column(
@@ -353,8 +359,6 @@ class QaResult(AuditMixin, Base):
     __table_args__ = (
         Index("idx_qa_results_tenant_time", "tenant_id", "create_at"),
         Index("idx_qa_results_user_time", "user_id", "create_at"),
-        Index("idx_qa_results_session", "session_id"),
-        Index("idx_qa_results_thread", "thread_id"),
         Index("idx_qa_results_trace", "trace_id"),
         Index("idx_qa_results_status", "status"),
         {"comment": "问答结果（一次问答一行，供 RAGAS 质量验证）"},
@@ -363,7 +367,7 @@ class QaResult(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     trace_id: Mapped[str | None] = mapped_column(
@@ -377,13 +381,9 @@ class QaResult(AuditMixin, Base):
     user_id: Mapped[int] = mapped_column(
         BigInteger, nullable=False, comment="提问用户ID（user_id，BigInteger）"
     )
-    session_id: Mapped[str] = mapped_column(
-        String(128),
-        nullable=False,
-        comment="会话标识（qa 的 session_id / agent_thread.session_key）",
-    )
-    thread_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False), nullable=True, comment="关联 agent_thread.id（会话）"
+    # 归属会话：统一历史源 agent_unified_turn.id；一个会话内的多轮问答共享同一 turn_id
+    turn_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), nullable=True, index=True, comment="关联 agent_unified_turn.id（唯一历史源、归属会话）"
     )
     agent_type: Mapped[str] = mapped_column(
         String(32), nullable=False, default="qa", comment="智能体类型（默认 qa）"
@@ -448,7 +448,7 @@ class QaRagasEval(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     qa_result_id: Mapped[str] = mapped_column(

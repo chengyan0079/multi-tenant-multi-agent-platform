@@ -81,6 +81,18 @@ async def handle_resume_review(msg: TaskMessage) -> None:
         await asyncio.wait_for(
             orch.run_agent("resume", review_id, initial_state), timeout=timeout_s
         )
+        # 回流：把异步结果写回统一会话（task_result turn），便于会话内回放
+        from backend.services.unified_task_backfill import backfill_task_result
+
+        await backfill_task_result(
+            agent_type="resume",
+            artifact_id=review_id,
+            tenant_id=msg.header.tenant_id,
+            user_id=msg.header.user_id,
+            turn_id=data.get("turn_id"),
+            thread_id=data.get("thread_id"),
+            trace_id=data.get("trace_id"),
+        )
     except asyncio.TimeoutError:
         # 与定时任务阈值一致：取消仍在跑的图，避免继续消耗 LLM 调用
         logger.exception(f"[resume.review] 评审超时（>{timeout_s}s），取消 {review_id}")

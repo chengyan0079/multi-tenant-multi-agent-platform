@@ -30,7 +30,9 @@ def _current() -> CurrentUser:
 
 
 def _session_row() -> dict:
+    # 与 _load_session 生产 SELECT 对齐：返回主键 id（_session_item 读 row["id"]）
     return {
+        "id": "session-1",
         "session_id": "session-1",
         "thread_id": "11111111-1111-1111-1111-111111111111",
         "target_position": "AI 应用开发工程师",
@@ -109,62 +111,9 @@ async def test_delete_session_soft_deletes_and_clears_stop_flag() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_chat_sets_redis_flag() -> None:
-    with patch.object(
-        interview_api, "set_interview_stop", AsyncMock()
-    ) as set_mock:
-        response = await interview_api.stop_chat(
-            interview_api.StopChatRequest(session_id="session-1"),
-            object(),
-            _current(),
-        )
-
-    assert response.data == {"session_id": "session-1", "stopped": True}
-    set_mock.assert_awaited_once_with(6, 9, "session-1")
+    pytest.skip("stop_chat 端点已在 D2 收口中移除（统一入口改走 /unified/chat/stop）")
 
 
 @pytest.mark.asyncio
 async def test_stream_stops_on_server_flag() -> None:
-    class FakeGraph:
-        async def astream_events(self, *args, **kwargs):  # noqa: ANN002, ANN003
-            yield {
-                "event": "on_chat_model_stream",
-                "metadata": {"langgraph_node": "generate_response"},
-                "data": {"chunk": AIMessage(content="你好")},
-            }
-            yield {
-                "event": "on_chat_model_stream",
-                "metadata": {"langgraph_node": "generate_response"},
-                "data": {"chunk": AIMessage(content="不应输出")},
-            }
-
-        async def aget_state(self, config):  # noqa: ANN001
-            raise AssertionError("停止后不应再读取最终状态")
-
-    with patch.object(
-        interview_api, "_load_session", AsyncMock(return_value=_session_row())
-    ), patch.object(
-        interview_api, "_get_graph", Mock(return_value=FakeGraph())
-    ), patch.object(
-        interview_api, "clear_interview_stop", AsyncMock()
-    ) as clear_mock, patch.object(
-        interview_api,
-        "is_interview_stopped",
-        AsyncMock(side_effect=[False, True]),
-    ) as stopped_mock, patch.object(
-        interview_api,
-        "EventSourceResponse",
-        lambda generator, **kwargs: generator,
-    ):
-        generator = await interview_api.chat_stream(
-            "session-1",
-            interview_api.ChatRequest(message="我的回答"),
-            object(),
-            _current(),
-        )
-        events = [event async for event in generator]
-
-    payloads = [json.loads(event["data"]) for event in events]
-    assert [payload["type"] for payload in payloads] == ["token", "stopped", "done"]
-    assert payloads[0]["content"] == "你好"
-    assert stopped_mock.await_count == 2
-    assert clear_mock.await_count == 2  # 进入 + finally
+    pytest.skip("chat_stream 端点已在 D2 收口中移除（统一入口改走 /unified/chat/stream）")

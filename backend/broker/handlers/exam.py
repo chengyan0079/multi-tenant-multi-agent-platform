@@ -65,4 +65,17 @@ async def handle_exam_review(msg: TaskMessage) -> None:
     # 跑图：parse → 三轨 → 汇总 → 薄弱点 → notify → teacher_review 暂停（状态落 checkpointer）
     await orch.run_agent("exam", submission_id, initial_state)
 
+    # 回流：把异步结果写回统一会话（task_result turn），便于会话内回放
+    from backend.services.unified_task_backfill import backfill_task_result
+
+    await backfill_task_result(
+        agent_type="exam",
+        artifact_id=submission_id,
+        tenant_id=msg.header.tenant_id,
+        user_id=msg.header.user_id,
+        turn_id=data.get("turn_id"),
+        thread_id=data.get("thread_id"),
+        trace_id=data.get("trace_id"),
+    )
+
     # 文件已持久化于 MinIO（key 在 state.word_minio_path），无需清理本地临时文件

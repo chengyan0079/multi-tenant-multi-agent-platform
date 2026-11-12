@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any
 
 from backend.orchestration.agent_registry import AgentRegistry
+from backend.orchestration.agent_spec import AgentSpec
 
 
 class Agent(ABC):
@@ -24,10 +25,15 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def metadata(self) -> Dict[str, Any]:
-        """Agent 元信息（描述、能力、流程形状等）。"""
+    def metadata(self) -> AgentSpec:
+        """Agent 元信息（统一入口规格，返回 AgentSpec）。"""
         raise NotImplementedError
 
     def register_into(self, registry: AgentRegistry) -> None:
         """模块加载时调用，把本 Agent 注册进 AgentRegistry。"""
-        registry.register(self.agent_type, self.build_graph, self.input_schema())
+        registry.register(
+            self.agent_type,
+            self.build_graph,
+            self.input_schema(),
+            spec=self.metadata(),
+        )

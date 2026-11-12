@@ -118,6 +118,10 @@ async def set_enabled(
     请求：path { agent_type }, body { enabled: bool }
     权限：agent:status
     返回：{ agent_type, enabled }
+
+    影响：停用后，用户显式点该卡片/模板问题会直接收到 FORBIDDEN，而非静默切到其它 Agent
+    （区别于完全未知的 agent_type，后者才走默认 Agent）；隐式分类命中停用 Agent 仍由运行期
+    _authorize 拦截为 FORBIDDEN。
     """
     row = await AgentDao.get_by_type(agent_type)
     if row is None:

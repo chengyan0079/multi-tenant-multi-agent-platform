@@ -7,10 +7,15 @@ from fastapi import APIRouter, Depends
 from backend.api.v1.tenant.agent.exam import router as exam_router
 from backend.api.v1.tenant.agent.files import router as files_router
 from backend.api.v1.tenant.agent.interview import router as interview_router
-from backend.api.v1.tenant.agent.qa import router as qa_router
 from backend.api.v1.tenant.agent.qa_results import router as qa_results_router
-from backend.api.v1.tenant.agent.qa_sessions import router as qa_sessions_router
 from backend.api.v1.tenant.agent.resume import router as resume_router
+from backend.api.v1.tenant.agent.unified_chat import router as unified_chat_router
+from backend.api.v1.tenant.agent.unified_sessions import (
+    router as unified_sessions_router,
+)
+from backend.api.v1.tenant.agent.unified_session_admin import (
+    router as unified_session_admin_router,
+)
 from backend.api.v1 import dashboard as dashboard_api
 from backend.api.v1 import health as health_api
 from backend.api.v1.admin import agents as admin_agents
@@ -23,7 +28,6 @@ from backend.api.v1.admin import messages as admin_messages
 from backend.api.v1.admin import rbac as admin_rbac
 from backend.api.v1.admin import tenant as admin_tenant
 from backend.api.v1.auth import router as auth_router
-from backend.api.v1.tenant.agent import orchestrator
 from backend.api.v1.tenant import audit as tenant_audit
 from backend.api.v1.tenant import messages as tenant_messages
 from backend.api.v1.tenant import roles as tenant_roles
@@ -49,10 +53,10 @@ _ADMIN = (
 # 业务域：会话、编排执行，外加各业务 Agent 的直连入口，以及租户管理员自管的用户/角色/审计，
 # 统一收进 /api/v1/tenant/（按 token 鉴权，超管无租户一律 403）。
 _BUSINESS = (
-    orchestrator.router,
-    qa_router,
+    unified_chat_router,
+    unified_sessions_router,
+    unified_session_admin_router,
     qa_results_router,
-    qa_sessions_router,
     files_router,
     resume_router,
     exam_router,

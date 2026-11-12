@@ -37,16 +37,8 @@ SELECT
      WHERE {_scope("th")} AND th.status = 'active'
        AND th.updated_at >= :prev_since AND th.updated_at < :since)
      AS active_threads_prev,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :since) AS runs,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :since AND r.status = 'error') AS error_runs,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :prev_since AND r.create_at < :since) AS runs_prev,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :prev_since AND r.create_at < :since
-       AND r.status = 'error') AS error_runs_prev,
-  -- agent_run 尚未接入时，用 API 日志兜底成功率，避免永远显示 100%
+  -- agent_run 运行台账已下线（设计合并入统一会话历史 agent_unified_turn），
+  -- 看板成功率统一由 API 日志口径兜底，避免永远显示 100%
   (SELECT COUNT(*) FROM agent_api_call_log l
      WHERE {_scope("l")} AND l.req_time >= :since) AS api_requests,
   (SELECT COUNT(*) FROM agent_api_call_log l
@@ -85,20 +77,7 @@ GROUP BY date_trunc('day', l.req_time)
 ORDER BY date_trunc('day', l.req_time)
 """)
 
-# 各智能体调用占比：graph_name 可能不等于 agent_type，取不到展示名时回落图名
-_AGENT_DISTRIBUTION = text(f"""
-SELECT
-  COALESCE(a.name, r.graph_name) AS name,
-  COUNT(*) AS value
-FROM agent_run r
-LEFT JOIN agent a ON a.agent_type = r.graph_name
-WHERE {_scope("r")} AND r.create_at >= :since
-GROUP BY COALESCE(a.name, r.graph_name)
-ORDER BY value DESC, name ASC
-LIMIT :limit
-""")
-
-# agent_run 尚未接入时，按业务 API 路径归类出调用占比
+# 各智能体调用占比：agent_run 运行台账已下线，统一按业务 API 路径归类
 _AGENT_DISTRIBUTION_API = text(f"""
 SELECT COALESCE(a.name, x.agent_type) AS name, COUNT(*) AS value
 FROM (
@@ -185,10 +164,8 @@ SELECT
   t.name,
   t.enabled,
   (SELECT COUNT(*) FROM agent_thread th WHERE th.tenant_id = t.id) AS threads,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE r.tenant_id = t.id AND r.create_at >= :since) AS runs,
-  (SELECT CAST(COALESCE(SUM(r.prompt_tokens + r.completion_tokens), 0) AS BIGINT)
-     FROM agent_run r WHERE r.tenant_id = t.id AND r.create_at >= :since) AS tokens
+  (SELECT COUNT(*) FROM agent_api_call_log l
+     WHERE l.tenant_id = t.id AND l.req_time >= :since) AS runs
 FROM agent_tenant t
 ORDER BY runs DESC, t.id ASC
 LIMIT :limit
@@ -234,11 +211,11 @@ class DashboardDao:
     async def agent_distribution(
         *, tenant_id: Optional[int], since: datetime, limit: int = 10
     ) -> list[dict[str, Any]]:
-        """各智能体运行量占比（按运行条数倒序）。"""
+        """各智能体调用占比（按 API 路径归类；agent_run 台账已下线）。"""
         async with session_scope() as session:
             return await fetch_all(
                 session,
-                _AGENT_DISTRIBUTION,
+                _AGENT_DISTRIBUTION_API,
                 {"tenant_id": tenant_id, "since": since, "limit": limit},
             )
 

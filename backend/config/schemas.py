@@ -35,8 +35,8 @@ class PostgresSettings(BaseSettings):
     db: str = "agent_platform"
     # 专属 schema：schema.sql 把所有表建在此 schema 下，连接时通过 asyncpg
     # server_settings 设置 search_path，否则 ORM/DAO 裸 SQL 找不到表。
-    # 可用环境变量 POSTGRES_SEARCH_PATH 覆盖。
-    search_path: str = "agent_platform"
+    # 可用环境变量 POSTGRES_SEARCH_PATH 覆盖（存量库可指回旧 schema）。
+    search_path: str = "unified_schemas"
     # SQL 调试日志（POSTGRES_SQL_DEBUG）：开启后把实际执行的 SQL（参数内联成可执行语句）
     # 打到 DEBUG 日志；仅排查用，默认关，避免生产泄露参数与性能开销。
     sql_debug: bool = False

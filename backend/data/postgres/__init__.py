@@ -18,9 +18,9 @@ from backend.data.postgres.agent import (
     AgentModel,
     AgentModelRel,
     AgentPluginModel,
-    AgentRun,
     AgentThread,
     AgentTool,
+    AgentUnifiedTurn,
     ModelRegistry,
 )
 from backend.data.postgres.business import (
@@ -61,10 +61,10 @@ __all__ = [
     "AgentModelRel",
     "ModelRegistry",
     "AgentThread",
-    "AgentRun",
     "AgentTool",
     "AgentPluginModel",
     "AgentLongTermMemory",
+    "AgentUnifiedTurn",
     # business
     "KnowledgePendingQueue",
     "Exam",

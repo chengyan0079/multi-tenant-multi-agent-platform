@@ -19,7 +19,7 @@ class AgentPluginModel(AuditMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     name: Mapped[str] = mapped_column(String(64), unique=True, comment="插件名")

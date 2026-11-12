@@ -26,7 +26,7 @@ class AgentAuditLog(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[Optional[int]] = mapped_column(

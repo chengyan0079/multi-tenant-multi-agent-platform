@@ -98,9 +98,10 @@ def _iso(value: Any) -> str | None:
 
 
 def _session_item(row: dict[str, Any]) -> dict[str, Any]:
+    # session_id 现为业务主键 id；thread_id 由 session_key=id 派生（不落库）
     return {
-        "session_id": row["session_id"],
-        "thread_id": str(row["thread_id"]),
+        "session_id": str(row["id"]),
+        "thread_id": str(row["thread_id"]) if row.get("thread_id") is not None else None,
         "target_position": row["target_position"],
         "status": row["status"],
         "overall_score": row.get("overall_score"),
@@ -111,14 +112,14 @@ def _session_item(row: dict[str, Any]) -> dict[str, Any]:
 
 async def _load_session(session_id: str, tenant_id: int, user_id: int) -> dict[str, Any] | None:
     async with session_scope() as session:
-        return await fetch_one(
+        row = await fetch_one(
             session,
             text(
                 """
-                SELECT session_id, thread_id, target_position, status,
-                       overall_score, report, finished_at, create_at
+                SELECT id, target_position, status, overall_score, report,
+                       finished_at, create_at
                 FROM agent_interview_sessions
-                WHERE session_id = :session_id
+                WHERE id = CAST(:session_id AS uuid)
                   AND tenant_id = :tenant_id
                   AND user_id = :user_id
                   AND status <> 'deleted'
@@ -130,6 +131,14 @@ async def _load_session(session_id: str, tenant_id: int, user_id: int) -> dict[s
                 "user_id": user_id,
             },
         )
+    if row is None:
+        return None
+    # thread_id 与创建时一致（session_key=业务主键），供 LangGraph checkpointer 续跑
+    row = dict(row)
+    row["thread_id"] = await ThreadDao.get_or_create(
+        tenant_id=tenant_id, user_id=user_id, session_key=str(row["id"])
+    )
+    return row
 
 
 def _config(thread_id: str) -> dict[str, Any]:
@@ -172,7 +181,7 @@ async def _archive_session(*, session_id: str, thread_id: str, tenant_id: int, u
                 """
                 UPDATE agent_interview_sessions
                    SET status = 'deleted', updated_at = now()
-                 WHERE session_id = :session_id
+                 WHERE id = CAST(:session_id AS uuid)
                    AND tenant_id = :tenant_id
                    AND user_id = :user_id
                    AND status <> 'deleted'
@@ -190,7 +199,6 @@ async def _archive_session(*, session_id: str, thread_id: str, tenant_id: int, u
                      WHERE id = CAST(:thread_id AS uuid)
                        AND tenant_id = :tenant_id
                        AND user_id = :user_id
-                       AND graph_name = 'interview'
                        AND session_key = :session_id
                     """
                 ),
@@ -204,7 +212,6 @@ async def _create_session(
     tenant_id: int,
     user_id: int,
     session_id: str,
-    thread_id: str,
     target_position: str,
     resume_review_id: str | None,
 ) -> None:
@@ -213,23 +220,19 @@ async def _create_session(
             text(
                 """
                 INSERT INTO agent_interview_sessions
-                    (id, tenant_id, user_id, session_id, thread_id,
-                     target_position, resume_review_id, summary, report,
-                     overall_score, status, create_user_id, update_user_id,
+                    (id, tenant_id, user_id, target_position, resume_review_id,
+                     report, overall_score, status, create_user_id, update_user_id,
                      create_tenant_id, update_tenant_id)
                 VALUES
-                    (CAST(:id AS uuid), :tenant_id, :user_id, :session_id,
-                     CAST(:thread_id AS uuid), :target_position,
-                     CAST(:resume_review_id AS uuid), '', '{}'::json,
-                     0, 'in_progress', :user_id, :user_id, :tenant_id, :tenant_id)
+                    (CAST(:session_id AS uuid), :tenant_id, :user_id, :target_position,
+                     CAST(:resume_review_id AS uuid), '{}'::json, 0, 'in_progress',
+                     :user_id, :user_id, :tenant_id, :tenant_id)
                 """
             ),
             {
-                "id": str(uuid6.uuid7()),
+                "session_id": session_id,
                 "tenant_id": tenant_id,
                 "user_id": user_id,
-                "session_id": session_id,
-                "thread_id": thread_id,
                 "target_position": target_position,
                 "resume_review_id": resume_review_id,
             },
@@ -243,7 +246,7 @@ async def _mark_session_failed(session_id: str, tenant_id: int, user_id: int) ->
             await session.execute(
                 text(
                     "UPDATE agent_interview_sessions SET status = 'failed' "
-                    "WHERE session_id = :session_id AND tenant_id = :tenant_id "
+                    "WHERE id = CAST(:session_id AS uuid) AND tenant_id = :tenant_id "
                     "AND user_id = :user_id AND status <> 'deleted'"
                 ),
                 {
@@ -254,256 +257,6 @@ async def _mark_session_failed(session_id: str, tenant_id: int, user_id: int) ->
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception(f"interview.mark_failed_error | {exc}")
-
-
-@router.post("/sessions", status_code=status.HTTP_201_CREATED)
-async def start_session(
-    req: StartSessionRequest,
-    _: object = Depends(require_scope(Scope.INTERVIEW_ASK)),  # noqa: B008
-    current: CurrentUser = Depends(get_current_user),
-) -> Any:
-    """创建面试会话并生成开场白。
-
-    说明：按目标岗位初始化多阶段面试状态机，注入开场白后返回首轮提问。
-    请求：body { target_position: str 必填, resume_review_id: str? 可选(关联简历评审) }
-    权限：interview:ask
-    返回：session_id / thread_id / target_position / status / current_stage / message(开场白)
-    """
-    tenant_id, user_id = _identity(current)
-    target_position = req.target_position.strip()
-    if not target_position:
-        raise HTTPException(status_code=400, detail="target_position 不能为空")
-
-    resume_review_id = (
-        _uuid_or_400(req.resume_review_id, "resume_review_id") if req.resume_review_id else None
-    )
-    if resume_review_id:
-        async with session_scope() as session:
-            resume = await fetch_one(
-                session,
-                text(
-                    "SELECT 1 AS ok FROM agent_resume_reviews "
-                    "WHERE id = CAST(:id AS uuid) AND tenant_id = :tenant_id"
-                ),
-                {"id": resume_review_id, "tenant_id": tenant_id},
-            )
-        if not resume:
-            raise HTTPException(status_code=400, detail="简历评审不存在或不属于本租户")
-
-    session_id = str(uuid6.uuid7())
-    thread_id = await ThreadDao.get_or_create(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        graph_name="interview",
-        session_key=session_id,
-    )
-    await _create_session(
-        tenant_id=tenant_id,
-        user_id=user_id,
-        session_id=session_id,
-        thread_id=thread_id,
-        target_position=target_position,
-        resume_review_id=resume_review_id,
-    )
-
-    initial_state = {
-        "messages": [HumanMessage(content="[开始面试]")],
-        "user_id": user_id,
-        "tenant_id": tenant_id,
-        "thread_id": thread_id,
-        "session_id": session_id,
-        "target_position": target_position,
-        "resume_review_id": resume_review_id,
-        "resume_projects": [],
-        "resume_skills": [],
-        "current_stage": "warmup",
-        "stage_turn_count": 0,
-        "total_turn_count": 0,
-        "max_turns": 40,
-        "question_bank": [],
-        "current_question": None,
-        "projects_asked": [],
-        "last_answer_quality": "adequate",
-        "followup_count": 0,
-        "existing_summary": None,
-        "should_summarize": False,
-        "report": None,
-        "fallback_used": False,
-        "structured_output": None,
-    }
-    try:
-        result = await _get_graph().ainvoke(
-            initial_state, config=tracing.with_callbacks(_config(thread_id))
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(f"interview.start_failed | session={session_id} | {exc}")
-        await _mark_session_failed(session_id, tenant_id, user_id)
-        raise HTTPException(status_code=502, detail="面试初始化失败，请稍后重试") from exc
-
-    messages = result.get("messages", [])
-    opening = _last_ai_text(messages)
-    logger.info(f"interview.session_started | session={session_id} | target={target_position}")
-    return success(
-        {
-            "session_id": session_id,
-            "thread_id": thread_id,
-            "target_position": target_position,
-            "status": "in_progress",
-            "current_stage": result.get("current_stage", "warmup"),
-            "message": opening,
-        }
-    )
-
-
-@router.post("/sessions/{session_id}/chat")
-async def chat(
-    session_id: str,
-    req: ChatRequest,
-    _: object = Depends(require_scope(Scope.INTERVIEW_ASK)),  # noqa: B008
-    current: CurrentUser = Depends(get_current_user),
-) -> Any:
-    """学员回答一轮，返回面试官回应。
-
-    说明：追加学员消息并推进状态机；结束轮附五维报告摘要。
-    请求：path { session_id }, body { message: str 必填 }
-    权限：interview:ask
-    返回：reply / current_stage / total_turns / is_finished / report_summary?
-    """
-    tenant_id, user_id = _identity(current)
-    row = await _load_session(session_id, tenant_id, user_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="面试会话不存在")
-    if row["status"] != "in_progress":
-        raise HTTPException(status_code=409, detail="面试已结束，不能继续回答")
-
-    thread_id = str(row["thread_id"])
-    state_update = {
-        "messages": [HumanMessage(content=_message_text(req.message))],
-        "user_id": user_id,
-        "tenant_id": tenant_id,
-        "thread_id": thread_id,
-        "session_id": session_id,
-    }
-    try:
-        result = await _get_graph().ainvoke(
-            state_update, config=tracing.with_callbacks(_config(thread_id))
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(f"interview.chat_failed | session={session_id} | {exc}")
-        raise HTTPException(status_code=502, detail="面试官暂时无法回应，请重试") from exc
-
-    current_stage = result.get("current_stage", "warmup")
-    is_finished = current_stage == "finished"
-    response = {
-        "session_id": session_id,
-        "reply": _last_ai_text(result.get("messages", [])),
-        "current_stage": current_stage,
-        "total_turns": result.get("total_turn_count", 0),
-        "is_finished": is_finished,
-    }
-    if is_finished:
-        report = result.get("report") or {}
-        response["report_summary"] = {
-            "overall_score": report.get("overall_score", 0),
-            "strengths": report.get("strengths", []),
-            "improvements": report.get("improvements", []),
-        }
-    return success(response)
-
-
-@router.post("/sessions/{session_id}/chat/stream")
-async def chat_stream(
-    session_id: str,
-    req: ChatRequest,
-    _: object = Depends(require_scope(Scope.INTERVIEW_ASK)),  # noqa: B008
-    current: CurrentUser = Depends(get_current_user),
-) -> EventSourceResponse:
-    """SSE 流式面试，逐 token 返回面试官回应。
-
-    说明：事件类型 token / stopped / done / error；支持服务端停止标记中断生成。
-    请求：path { session_id }, body { message: str 必填 }
-    权限：interview:ask
-    返回：text/event-stream
-    """
-    tenant_id, user_id = _identity(current)
-    row = await _load_session(session_id, tenant_id, user_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="面试会话不存在")
-    if row["status"] != "in_progress":
-        raise HTTPException(status_code=409, detail="面试已结束，不能继续回答")
-
-    thread_id = str(row["thread_id"])
-    state_update = {
-        "messages": [HumanMessage(content=_message_text(req.message))],
-        "user_id": user_id,
-        "tenant_id": tenant_id,
-        "thread_id": thread_id,
-        "session_id": session_id,
-    }
-
-    async def event_generator():
-        stopped = False
-        try:
-            # 进入前清掉可能残留的停止标记，避免误停本次生成
-            await clear_interview_stop(tenant_id, user_id, session_id)
-            graph = _get_graph()
-            async for event in graph.astream_events(
-                state_update, config=_config(thread_id), version="v2"
-            ):
-                # 每个事件产出前检查 Redis 停止标记（跨 worker 生效）
-                if await is_interview_stopped(tenant_id, user_id, session_id):
-                    stopped = True
-                    break
-                if event["event"] != "on_chat_model_stream":
-                    continue
-                if event.get("metadata", {}).get("langgraph_node") != "generate_response":
-                    continue
-                chunk = event["data"].get("chunk")
-                chunk_text = _msg_text(chunk) if chunk is not None else ""
-                if chunk_text:
-                    yield {
-                        "data": json.dumps(
-                            {"type": "token", "content": chunk_text},
-                            ensure_ascii=False,
-                        )
-                    }
-
-            if stopped:
-                yield {"data": json.dumps({"type": "stopped"}, ensure_ascii=False)}
-                yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
-                return
-
-            final = await graph.aget_state(_config(thread_id))
-            state = final.values if final else {}
-            current_stage = state.get("current_stage", "warmup")
-            is_finished = current_stage == "finished"
-            done: dict[str, Any] = {
-                "type": "done",
-                "reply": _last_ai_text(state.get("messages", [])),
-                "current_stage": current_stage,
-                "total_turns": state.get("total_turn_count", 0),
-                "is_finished": is_finished,
-            }
-            if is_finished:
-                report = state.get("report") or {}
-                done["report_summary"] = {
-                    "overall_score": report.get("overall_score", 0),
-                    "strengths": report.get("strengths", []),
-                    "improvements": report.get("improvements", []),
-                }
-            yield {"data": json.dumps(done, ensure_ascii=False)}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(f"interview.stream_failed | session={session_id} | {exc}")
-            yield {
-                "data": json.dumps(
-                    {"type": "error", "message": "流式输出异常，请重试"},
-                    ensure_ascii=False,
-                )
-            }
-        finally:
-            await clear_interview_stop(tenant_id, user_id, session_id)
-
-    return EventSourceResponse(event_generator(), ping=15)
 
 
 @router.get("/sessions")
@@ -535,8 +288,7 @@ async def list_sessions(
 
     list_sql = text(
         f"""
-        SELECT session_id, thread_id, target_position, status, overall_score,
-               finished_at, create_at
+        SELECT id, target_position, status, overall_score, finished_at, create_at
         FROM agent_interview_sessions
         WHERE {where}
         ORDER BY create_at DESC
@@ -556,24 +308,6 @@ async def list_sessions(
             "page_size": page_size,
         }
     )
-
-
-@router.post("/chat/stop", summary="停止当前会话的流式生成")
-async def stop_chat(
-    req: StopChatRequest,
-    _: object = Depends(require_scope(Scope.INTERVIEW_ASK)),  # noqa: B008
-    current: CurrentUser = Depends(get_current_user),
-) -> Any:
-    """请求停止指定会话的流式生成。
-
-    说明：写 Redis 停止标记，流式生成器在下一个事件前中断（跨 worker 生效）。
-    请求：body { session_id: str 必填 }
-    权限：interview:ask
-    返回：{ session_id, stopped }
-    """
-    tenant_id, user_id = _identity(current)
-    await set_interview_stop(tenant_id, user_id, req.session_id)
-    return success({"session_id": req.session_id, "stopped": True})
 
 
 @router.get("/sessions/{session_id}", summary="会话详情（含历史消息）")

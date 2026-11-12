@@ -12,13 +12,13 @@ from backend.data.sql import fetch_all, fetch_one, fetch_page, fetch_value, sess
 
 _INSERT = text("""
 INSERT INTO agent_qa_results (
-    id, trace_id, tenant_id, user_id, session_id, thread_id, agent_type,
+    id, trace_id, tenant_id, user_id, turn_id, agent_type,
     question, answer, answer_mode, query_type, confidence,
     retrieved_contexts, sources, reference_answer, latency_ms, token_usage,
     enable_web_search, status, error_msg, extra,
     create_user_id, update_user_id, create_tenant_id, update_tenant_id
 ) VALUES (
-    :id, :trace_id, :tenant_id, :user_id, :session_id, :thread_id, :agent_type,
+    :id, :trace_id, :tenant_id, :user_id, :turn_id, :agent_type,
     :question, :answer, :answer_mode, :query_type, :confidence,
     CAST(:retrieved_contexts AS JSON), CAST(:sources AS JSON), :reference_answer, :latency_ms,
     CAST(:token_usage AS JSON), :enable_web_search, :status, :error_msg, CAST(:extra AS JSON),
@@ -27,31 +27,38 @@ INSERT INTO agent_qa_results (
 RETURNING id
 """)
 
+# 会话归属统一收口到 agent_unified_turn：session_id 由 turn.thread_id（=U）回表得出，
+# LEFT JOIN 保证未关联 turn（过渡期）的结果行仍可被按 id 取出。
 _SELECT = text("""
-SELECT id, trace_id, tenant_id, user_id, session_id, thread_id, agent_type,
-       question, answer, answer_mode, query_type, confidence,
-       retrieved_contexts, sources, reference_answer, latency_ms, token_usage,
-       enable_web_search, status, error_msg, extra, create_at, updated_at
-FROM agent_qa_results
-WHERE id = :id AND tenant_id = :tenant_id
+SELECT qr.id, qr.trace_id, qr.tenant_id, qr.user_id, qr.agent_type,
+       qr.question, qr.answer, qr.answer_mode, qr.query_type, qr.confidence,
+       qr.retrieved_contexts, qr.sources, qr.reference_answer, qr.latency_ms, qr.token_usage,
+       qr.enable_web_search, qr.status, qr.error_msg, qr.extra, qr.create_at, qr.updated_at,
+       t.thread_id AS session_id
+FROM agent_qa_results qr
+LEFT JOIN agent_unified_turn t ON t.id = qr.turn_id
+WHERE qr.id = :id AND qr.tenant_id = :tenant_id
 """)
 
 _LIST = text("""
-SELECT id, trace_id, tenant_id, user_id, session_id, question, answer_mode,
-       query_type, confidence, status, latency_ms, create_at
-FROM agent_qa_results
-WHERE tenant_id = :tenant_id
-  AND (CAST(:session_id AS VARCHAR) IS NULL OR session_id = :session_id)
-  AND (CAST(:status AS VARCHAR) IS NULL OR status = :status)
-ORDER BY create_at DESC
+SELECT qr.id, qr.trace_id, qr.tenant_id, qr.user_id, qr.agent_type, qr.question,
+       qr.answer_mode, qr.query_type, qr.confidence, qr.status, qr.latency_ms, qr.create_at,
+       t.thread_id AS session_id
+FROM agent_qa_results qr
+LEFT JOIN agent_unified_turn t ON t.id = qr.turn_id
+WHERE qr.tenant_id = :tenant_id
+  AND (CAST(:session_id AS VARCHAR) IS NULL OR t.thread_id = :session_id)
+  AND (CAST(:status AS VARCHAR) IS NULL OR qr.status = :status)
+ORDER BY qr.create_at DESC
 LIMIT :limit OFFSET :offset
 """)
 
 _COUNT = text("""
-SELECT count(*) FROM agent_qa_results
-WHERE tenant_id = :tenant_id
-  AND (CAST(:session_id AS VARCHAR) IS NULL OR session_id = :session_id)
-  AND (CAST(:status AS VARCHAR) IS NULL OR status = :status)
+SELECT count(*) FROM agent_qa_results qr
+LEFT JOIN agent_unified_turn t ON t.id = qr.turn_id
+WHERE qr.tenant_id = :tenant_id
+  AND (CAST(:session_id AS VARCHAR) IS NULL OR t.thread_id = :session_id)
+  AND (CAST(:status AS VARCHAR) IS NULL OR qr.status = :status)
 """)
 
 _UPDATE_REFERENCE = text("""

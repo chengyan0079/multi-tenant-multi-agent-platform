@@ -20,7 +20,10 @@ def test_openapi_schema_generates() -> None:
     schema = app.openapi()
 
     paths = schema["paths"]
-    assert "/api/v1/tenant/qa/sessions" in paths
-    assert "/api/v1/tenant/orchestrator/resume" in paths
-    assert "/api/v1/tenant/interview/chat/stop" in paths
+    # D2 收口后，4 个 Agent 的发起入口统一为 /unified/*，旧执行端点（qa/chat、interview/chat/stop、orchestrator/run|resume 等）已移除
+    assert "/api/v1/tenant/unified/chat/stream" in paths
+    assert "/api/v1/tenant/unified/chat/stop" in paths
+    # 旧编排执行端点随统一咨询收口删除，不应再出现
+    assert "/api/v1/tenant/orchestrator/run" not in paths
+    assert "/api/v1/tenant/orchestrator/resume" not in paths
     assert "/api/v1/tenant/interview/sessions/{session_id}" in paths

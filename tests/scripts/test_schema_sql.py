@@ -21,6 +21,21 @@ def test_tenant_has_flag_columns() -> None:
     assert "uk_tenant_primary" not in SCHEMA_SQL
 
 
+def test_user_has_identity_flag_columns() -> None:
+    """登录链路查 is_super_admin / enabled，两列必须在 DDL 里，否则新库登录 500。"""
+    block = re.search(r'CREATE TABLE IF NOT EXISTS "agent_user" \((.*?)\n\);', SCHEMA_SQL, re.S)
+    assert block is not None
+    assert "is_super_admin BOOLEAN" in block.group(1)
+    assert "enabled BOOLEAN" in block.group(1)
+
+
+def test_uuid_default_uses_builtin() -> None:
+    """PG13+ 内置 gen_random_uuid()：不再依赖 uuid-ossp 扩展所在 schema。"""
+    assert "DEFAULT gen_random_uuid()" in SCHEMA_SQL
+    assert "uuid_generate_v4()" not in SCHEMA_SQL
+    assert "CREATE EXTENSION" not in SCHEMA_SQL
+
+
 def test_audit_tenant_id_nullable_for_super_admin() -> None:
     """超管不挂租户，审计的 tenant_id 必须允许为空，否则超管写操作会 500。"""
     block = re.search(
@@ -50,31 +65,70 @@ def test_identity_uniqueness_indexes() -> None:
     assert "uk_aut_tenant_admin" in SCHEMA_SQL
 
 
-def test_admin_role_seeded_only() -> None:
-    """角色目录只预置超管 admin；其余角色（tenant_admin 等）由前端创建，不在此落库。"""
+def test_two_builtin_roles_seeded() -> None:
+    """预置 2 个内置角色：admin(1) 与 tenant_admin(5)；其余角色由前端创建。
+
+    tenant_admin 必须预置：admin/tenant.py 建租户时按 name 取该角色，缺则建租户失败。
+    """
     assert "(1, 'admin'" in SEED_SQL
-    assert "(5, 'tenant_admin'" not in SEED_SQL
+    assert "(5, 'tenant_admin'" in SEED_SQL
     assert "(2, 'teacher'" not in SEED_SQL
     assert "(1, 'user:page')" in SEED_SQL
     assert "(1, 'rbac:menu')" in SEED_SQL
 
 
 def test_audit_scope_is_read_only() -> None:
-    """种子里不写入 audit:update，审计只读。"""
+    """审计只读：种子里不写入 audit:update / audit:add。"""
     assert "'audit:update'" not in SEED_SQL
+    assert "'audit:add'" not in SEED_SQL
 
 
-def test_config_center_only_for_super_admin() -> None:
-    """配置中心只归超管：teacher / tenant_admin 不得有 config:read。"""
-    assert "(2, 'config:read')" not in SEED_SQL
-    assert "(5, 'config:read')" not in SEED_SQL
+def test_super_admin_has_no_business_scope() -> None:
+    """超管只做基建：基建域 + 平台域，业务域 scope 一个都不给。"""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from backend.security.rbac import Business, VALID_SCOPES
+
+    business = {v for v in VALID_SCOPES if v.split(":")[0] in {e.value for e in Business}}
+    assert business, "业务域 scope 不应为空"
+    for scope in business:
+        assert f"(1, '{scope}')" not in SEED_SQL, f"超管不应持有业务域 {scope}"
 
 
-def test_audit_only_for_admin() -> None:
-    """审计只读权限只给超管 admin；tenant_admin 不在此预置（由前端创建后再配）。"""
-    assert "(1, 'audit:page')" in SEED_SQL
-    assert "(2, 'audit:read')" not in SEED_SQL
-    assert "(5, 'audit:page')" not in SEED_SQL
+def test_tenant_admin_has_full_business_scope() -> None:
+    """租户管理员持有全部业务域 scope + 租户自管平台域（含 config/audit/dashboard）。"""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from backend.security.rbac import Business, VALID_SCOPES
+
+    business = {v for v in VALID_SCOPES if v.split(":")[0] in {e.value for e in Business}}
+    for scope in business:
+        assert f"(5, '{scope}')" in SEED_SQL, f"租户管理员缺少业务域 {scope}"
+    for scope in (
+        "user:page", "role:page", "message:page", "rbac:menu",
+        "config:page", "config:rollback", "audit:page", "dashboard:view",
+    ):
+        assert f"(5, '{scope}')" in SEED_SQL, f"租户管理员缺少自管平台域 {scope}"
+
+
+def test_tenant_admin_has_no_platform_admin_scope() -> None:
+    """平台级管理（agent/model/tool/menu/tenant）仍只归超管。"""
+    for scope in ("agent:page", "model:page", "tool:page", "menu:page", "tenant:page"):
+        assert f"(5, '{scope}')" not in SEED_SQL
+        assert f"(1, '{scope}')" in SEED_SQL
+
+
+def test_unified_menu_seeded() -> None:
+    """/consultation 父子菜单与前端 RequireScope 的 scope 对齐。"""
+    assert "'统一咨询', '/consultation'" in SEED_SQL
+    assert "'/consultation/chat'" in SEED_SQL
+    assert "'/consultation/sessions'" in SEED_SQL
+    assert "'unified:menu'" in SEED_SQL
+    assert "'unified_session:page'" in SEED_SQL
 
 
 def test_analyst_role_removed() -> None:
@@ -113,8 +167,12 @@ def test_redundant_tables_removed() -> None:
 
 
 def test_agent_tables_are_user_scoped() -> None:
-    """会话/运行/消息都要带 user_id，否则同租户内无法按用户隔离。"""
-    for table in ("agent_thread", "agent_run"):
+    """会话/运行/消息都要带 user_id，否则同租户内无法按用户隔离。
+
+    agent_run 台账已按设计下线（写入链路归并到 agent_unified_turn，看板改由 API 日志兜底），
+    故用统一会话历史表 agent_unified_turn 替代校验。
+    """
+    for table in ("agent_thread", "agent_unified_turn"):
         block = re.search(
             rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", SCHEMA_SQL, re.S
         )
@@ -123,6 +181,7 @@ def test_agent_tables_are_user_scoped() -> None:
             f"{table} 缺少 user_id"
         )
     assert "ix_agent_thread_tenant_user" in SCHEMA_SQL
+    assert "ix_agent_unified_turn_user_id" in SCHEMA_SQL
 
 
 def test_business_owner_columns_use_user_id_suffix() -> None:

@@ -1,19 +1,24 @@
 -- ============================================================
--- agent-platform 种子数据（平台基础 + 超管）
+-- agent-platform 种子数据（平台基础 + 2 个内置角色）
 -- 依据当前数据库导出，仅含：
 --   · 平台超管租户（agent_tenant id=0）
 --   · 超管账号 admin（agent_user + agent_user_tenant）
---   · 超管角色 admin 及其 67 个权限点（agent_role / agent_role_permission）
+--   · 2 个内置角色：admin(role_id=1)、tenant_admin(role_id=5)
+--   · 角色权限点（agent_role_permission）
 --   · 菜单（agent_menu）
 --   · Agent 目录（agent）
 --   · 模型注册表（agent_model_registry，含当前环境 api_key）
--- 不含其他租户、账号、角色（tenant_admin/student/teacher 等由超管在前端创建）。
+-- 权限域划分（以 backend/security/rbac.py 的 Business / Agent / System 为准）：
+--   · 超管 admin：基建域 + 平台域 64 个，不含任何业务域权限
+--   · 租户管理员 tenant_admin：业务域 36 个 + 租户自管平台域 30 个（user/role/message/rbac
+--     /config/audit/dashboard），不含 agent/model/tool/menu/tenant 等平台级管理权限
+-- 不含其他租户、账号、角色（student/teacher 等由超管在前端创建）。
 -- 执行： psql -U <用户> -h <host> -d agent_platform -f scripts/seed_data.sql
 -- 幂等：全部 ON CONFLICT DO NOTHING，可重复执行。
 -- 注意：模型 api_key 为当前环境配置，请勿外泄或提交到公开仓库。
 -- ============================================================
 
-SET search_path TO agent_platform;
+SET search_path TO unified_schemas;
 
 -- ------------------------------------------------------------
 -- 1) 平台超管租户（id=0）
@@ -30,16 +35,20 @@ INSERT INTO "agent_user" (username, name, password, tenant_id, is_super_admin) V
 ON CONFLICT (username) DO NOTHING;
 
 -- ------------------------------------------------------------
--- 3) 超管角色（业务键 role_id=1）
+-- 3) 2 个内置角色（业务键 role_id=1 超管 / role_id=5 租户管理员）
+--    tenant_admin 必须预置：admin/tenant.py 建租户时要按 name 取该角色，缺则建租户失败。
 -- ------------------------------------------------------------
 INSERT INTO agent_role (role_id, name, description, create_user_id, update_user_id) VALUES
 (1, 'admin', '平台超管（全局唯一，以 agent_user.is_super_admin 为准）',
+ (SELECT id FROM "agent_user" WHERE username='admin'),
+ (SELECT id FROM "agent_user" WHERE username='admin')),
+(5, 'tenant_admin', '租户管理员（业务域 + 租户自管平台域）',
  (SELECT id FROM "agent_user" WHERE username='admin'),
  (SELECT id FROM "agent_user" WHERE username='admin'))
 ON CONFLICT (role_id) DO NOTHING;
 
 -- ------------------------------------------------------------
--- 4) 超管权限点（67 个，与当前库一致）
+-- 4) 超管权限点（64 个：基建域 + 平台域，不含任何业务域）
 -- ------------------------------------------------------------
 INSERT INTO agent_role_permission (role_id, scope) VALUES
 (1, 'agent:add'),
@@ -58,6 +67,7 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (1, 'config:execute'),
 (1, 'config:menu'),
 (1, 'config:page'),
+(1, 'config:rollback'),
 (1, 'config:update'),
 (1, 'config:view'),
 (1, 'dashboard:menu'),
@@ -90,7 +100,6 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (1, 'tenant:menu'),
 (1, 'tenant:page'),
 (1, 'tenant:status'),
-(1, 'tenant:update'),
 (1, 'tenant:view'),
 (1, 'tool:add'),
 (1, 'tool:delete'),
@@ -98,6 +107,7 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (1, 'tool:page'),
 (1, 'tool:status'),
 (1, 'tool:update'),
+(1, 'tool:view'),
 (1, 'user:add'),
 (1, 'user:delete'),
 (1, 'user:menu'),
@@ -105,6 +115,86 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (1, 'user:status'),
 (1, 'user:update'),
 (1, 'user:view')
+ON CONFLICT (role_id, scope) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- 4.1) 租户管理员权限点（66 个：业务域 36 + 租户自管平台域 30）
+--      不含 agent/model/tool/menu/tenant 等平台级管理权限（仅超管）。
+-- ------------------------------------------------------------
+INSERT INTO agent_role_permission (role_id, scope) VALUES
+-- 业务域分组菜单 / 统一咨询入口 / 会话管理
+(5, 'business:menu'),
+(5, 'unified:menu'),
+(5, 'unified:ask'),
+(5, 'unified_session:page'),
+(5, 'unified_session:view'),
+(5, 'unified_session:delete'),
+-- 问答业务域
+(5, 'qa:menu'),
+(5, 'qa:ask'),
+(5, 'qa_file:page'),
+(5, 'qa_file:view'),
+(5, 'qa_file:upload'),
+(5, 'qa_file:download'),
+(5, 'qa_result:page'),
+(5, 'qa_result:view'),
+(5, 'qa_result:review'),
+(5, 'qa_session:page'),
+(5, 'qa_session:add'),
+(5, 'qa_session:view'),
+(5, 'qa_session:delete'),
+-- 面试业务域
+(5, 'interview:menu'),
+(5, 'interview:ask'),
+(5, 'interview:page'),
+(5, 'interview:view'),
+(5, 'interview:delete'),
+-- 简历业务域
+(5, 'resume:menu'),
+(5, 'resume:upload'),
+(5, 'resume:page'),
+(5, 'resume:view'),
+(5, 'resume:delete'),
+-- 考试业务域
+(5, 'exam:menu'),
+(5, 'exam:page'),
+(5, 'exam:upload'),
+(5, 'exam:view'),
+(5, 'exam:review'),
+(5, 'exam_result:page'),
+(5, 'exam_result:view'),
+-- 租户自管平台域：用户 / 角色 / 消息 / 权限中心入口
+(5, 'user:menu'),
+(5, 'user:page'),
+(5, 'user:view'),
+(5, 'user:add'),
+(5, 'user:update'),
+(5, 'user:delete'),
+(5, 'user:status'),
+(5, 'role:menu'),
+(5, 'role:page'),
+(5, 'role:add'),
+(5, 'role:update'),
+(5, 'role:delete'),
+(5, 'message:menu'),
+(5, 'message:page'),
+(5, 'message:view'),
+(5, 'message:status'),
+(5, 'rbac:menu'),
+-- 配置中心 / 审计 / 仪表盘
+(5, 'config:menu'),
+(5, 'config:page'),
+(5, 'config:view'),
+(5, 'config:add'),
+(5, 'config:update'),
+(5, 'config:execute'),
+(5, 'config:delete'),
+(5, 'config:rollback'),
+(5, 'audit:menu'),
+(5, 'audit:page'),
+(5, 'audit:view'),
+(5, 'dashboard:menu'),
+(5, 'dashboard:view')
 ON CONFLICT (role_id, scope) DO NOTHING;
 
 -- ------------------------------------------------------------
@@ -126,7 +216,14 @@ INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope)
 ('配置中心', '/config', 'SettingOutlined', 0, 6, true, 'config:menu'),
 ('审计日志', '/audit', 'FileSearchOutlined', 0, 7, true, 'audit:menu'),
 ('权限中心', '/rbac', 'SafetyCertificateOutlined', 0, 8, true, 'rbac:menu'),
-('消息管理', '/messages', 'MailOutlined', 0, 10, true, 'message:menu')
+('消息管理', '/messages', 'MailOutlined', 0, 10, true, 'message:menu'),
+('统一咨询', '/consultation', 'CommentOutlined', 0, 9, true, 'unified:menu')
+ON CONFLICT (path) DO NOTHING;
+
+-- 统一咨询：父节点先单独提交，子菜单子查询才能取到其 id
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('业务咨询', '/consultation/chat', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/consultation'), 1, true, 'unified:ask'),
+('会话管理', '/consultation/sessions', 'UnorderedListOutlined', (SELECT id FROM agent_menu WHERE path='/consultation'), 2, true, 'unified_session:page')
 ON CONFLICT (path) DO NOTHING;
 
 -- 智能体管理：智能体列表

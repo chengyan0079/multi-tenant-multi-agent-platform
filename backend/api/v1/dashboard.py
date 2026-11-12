@@ -120,7 +120,7 @@ async def dashboard(
     api_requests_prev = int(raw.get("api_requests_prev") or 0)
     api_errors_prev = int(raw.get("api_errors_prev") or 0)
 
-    # 优先用 agent_run 的业务成功率；尚未接入运行台账时用 API HTTP 成功率兜底，
+    # agent_run 运行台账已下线，看板成功率统一由 API HTTP 成功率兜底，
     # 没有任何请求时显示 0 而不是误导性的 100%。
     if runs:
         success_rate = round((runs - error_runs) / runs * 100, 1)
@@ -178,7 +178,7 @@ async def dashboard(
         },
     ]
 
-    # agent_run 尚未写入时，用 API 日志兜底调用占比；审计为空时用 API 调用兜底最近活动
+    # agent_run 已下线，调用占比直接由 API 日志归类；审计为空时用 API 调用兜底最近活动
     distribution = await DashboardDao.agent_distribution(tenant_id=scope_tenant, since=since)
     if not distribution:
         distribution = await DashboardDao.agent_distribution_from_api(

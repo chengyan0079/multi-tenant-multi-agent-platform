@@ -228,30 +228,9 @@ async def load_context_node(state: InterviewState) -> dict:
             return []
 
     async def _fetch_summary() -> str | None:
-        try:
-            async with session_scope() as session:
-                row = (
-                    (
-                        await session.execute(
-                            text(
-                                "SELECT summary FROM agent_interview_sessions "
-                                "WHERE thread_id = CAST(:thread_id AS uuid) "
-                                "  AND tenant_id = :tenant_id AND user_id = :user_id"
-                            ),
-                            {
-                                "thread_id": thread_id,
-                                "tenant_id": tenant_id,
-                                "user_id": user_id,
-                            },
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-            return row["summary"] if row else None
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(f"load_context.summary_load_failed | {exc}")
-            return None
+        # 摘要改为只存 U checkpoint（existing_summary），由统一层维护（§5.4）；
+        # 统一层未接入前从 state 注入的 existing_summary 读取，不再查业务表 summary 列。
+        return state.get("existing_summary")
 
     if is_first_turn:
         updates.update(
@@ -917,9 +896,9 @@ async def generate_report_node(state: InterviewState) -> dict:
 async def save_report_node(state: InterviewState) -> dict:
     """把报告写回 agent_interview_sessions，并标记 finished。
 
-    WHERE 带 tenant_id + user_id，避免只凭 thread_id 误写他人会话。
+    按业务主键 id（= 会话标识）定位；tenant_id + user_id 避免误写他人会话。
     """
-    thread_id = state["thread_id"]
+    session_id = state["session_id"]
     tenant_id = state["tenant_id"]
     user_id = state["user_id"]
     report = state.get("report") or {}
@@ -934,7 +913,7 @@ async def save_report_node(state: InterviewState) -> dict:
                        status = 'finished',
                        finished_at = now(),
                        updated_at = now()
-                 WHERE thread_id = CAST(:thread_id AS uuid)
+                 WHERE id = CAST(:session_id AS uuid)
                    AND tenant_id = :tenant_id
                    AND user_id = :user_id
                    AND status <> 'deleted'
@@ -943,25 +922,26 @@ async def save_report_node(state: InterviewState) -> dict:
             {
                 "report": json.dumps(report, ensure_ascii=False),
                 "overall_score": int(report.get("overall_score", 0) or 0),
-                "thread_id": thread_id,
+                "session_id": session_id,
                 "tenant_id": tenant_id,
                 "user_id": user_id,
             },
         )
         if (result.rowcount or 0) == 0:
-            logger.warning(f"save_report.not_found | thread_id={thread_id}")
+            logger.warning(f"save_report.not_found | session_id={session_id}")
         else:
-            logger.info(f"save_report.done | thread_id={thread_id}")
+            logger.info(f"save_report.done | session_id={session_id}")
 
     return {}
 
 
 async def save_memory_node(state: InterviewState) -> dict:
-    """按需压缩历史对话，并更新 agent_interview_sessions.summary。"""
+    """按需压缩历史对话，摘要写入 state（U checkpoint 持久化）。
+
+    业务表无 summary 列（§5.4）；统一层接入前由本节点将 existing_summary 维护进
+    checkpoint，避免查/写已删除的 agent_interview_sessions.summary。
+    """
     messages = state.get("messages", [])
-    thread_id = state["thread_id"]
-    tenant_id = state["tenant_id"]
-    user_id = state["user_id"]
     summary = state.get("existing_summary")
 
     if state.get("should_summarize", False):
@@ -972,25 +952,4 @@ async def save_memory_node(state: InterviewState) -> dict:
 
     if not summary:
         return {}
-
-    async with session_scope() as session:
-        await session.execute(
-            text(
-                """
-                UPDATE agent_interview_sessions
-                   SET summary = :summary,
-                       updated_at = now()
-                 WHERE thread_id = CAST(:thread_id AS uuid)
-                   AND tenant_id = :tenant_id
-                   AND user_id = :user_id
-                   AND status <> 'deleted'
-                """
-            ),
-            {
-                "summary": summary,
-                "thread_id": thread_id,
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-            },
-        )
-    return {}
+    return {"existing_summary": summary}

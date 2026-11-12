@@ -34,4 +34,10 @@ class OrchestratorManager(BaseManager):
     async def health(self) -> HealthInfo:
         if app_state.orchestrator is None or app_state.agent_registry is None:
             return HealthInfo(status="down", detail="orchestrator/registry 未初始化")
+        # 注册表对象存在但库规格加载失败：核心可用、能力降级，按 R15/Q6 报 degraded
+        if not app_state.agent_registry.db_loaded:
+            return HealthInfo(
+                status="degraded",
+                detail="agent_registry 库加载失败，仅代码注册 Agent 可用",
+            )
         return HealthInfo(status="running")

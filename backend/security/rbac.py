@@ -25,6 +25,9 @@ class Business(str, Enum):
     RESUME = "resume"
     EXAM = "exam"
     EXAM_RESULT = "exam_result"
+    # 统一咨询入口（单聊天框收口 4 个 Agent 的发起动作）
+    UNIFIED = "unified"
+    UNIFIED_SESSION = "unified_session"
     # 业务域分组菜单（/agent 父节点，仅用于菜单可见性）
     BUSINESS = "business"
 
@@ -91,6 +94,16 @@ class Scope:
     # ===== Dashboard 仪表盘：菜单可见性用 dashboard:menu，接口访问用 dashboard:view =====
     DASHBOARD_MENU = f"{System.DASHBOARD.value}:{Action.MENU.value}"
     DASHBOARD_VIEW = f"{System.DASHBOARD.value}:{Action.VIEW.value}"
+
+    # ===== Unified 统一咨询入口 =====
+    # 菜单可见性用 unified:menu（资源在前，见 scope 命名规范）；
+    # 接口统一用 unified:ask 作为发起门槛（运行期再按 spec 做 agent 级启用校验）。
+    UNIFIED_MENU = f"{Business.UNIFIED.value}:{Action.MENU.value}"
+    UNIFIED_ASK = f"{Business.UNIFIED.value}:{Action.ASK.value}"
+    # 会话管理（双入口：聊天框内列表用 unified:ask；管理页用以下三个）
+    UNIFIED_SESSION_PAGE = f"{Business.UNIFIED_SESSION.value}:{Action.PAGE.value}"
+    UNIFIED_SESSION_VIEW = f"{Business.UNIFIED_SESSION.value}:{Action.VIEW.value}"
+    UNIFIED_SESSION_DELETE = f"{Business.UNIFIED_SESSION.value}:{Action.DELETE.value}"
 
     # ===== Agent 基建域（config / agent / model，仅超管） =====
     # Config 配置中心：分页列表/历史列表(page)、详情/历史详情/对比(view)、发起申请(add)、编辑/撤回(update)

@@ -135,9 +135,14 @@ cp .env.example .env        # 至少填 JWT_SECRET、POSTGRES_*、NACOS_*
 # 3) 中间件（PostgreSQL / Redis / Milvus + etcd / MinIO / RabbitMQ）
 docker compose up -d
 
-# 4) 建库与种子
+# 4) 建库、建表与种子（两个脚本都要执行，缺 seed_data.sql 会没有角色/菜单）
 psql -h localhost -U agent -d agent_platform -f scripts/schema.sql
-# schema.sql 由 python scripts/gen_schema.py 从模型生成，改表结构后重新生成
+psql -h localhost -U agent -d agent_platform -f scripts/seed_data.sql
+# 表与数据落在 unified_schemas schema；库名仍是 agent_platform。
+# schema.sql 由 python scripts/gen_schema.py 从模型生成，改表结构后重新生成（请勿手改）。
+# 应用连接的 search_path 默认 unified_schemas，存量库可用 POSTGRES_SEARCH_PATH 指回旧 schema。
+# UUID 主键用 PG13+ 内置 gen_random_uuid()，不依赖 uuid-ossp 扩展，新旧 schema 互不干扰。
+# 两个脚本都要跑：只跑 schema.sql 会没有角色/菜单，登录与菜单不可用。
 
 # 5) 启动后端（端口取 .env 的 PORT）
 python backend/main.py
@@ -271,7 +276,7 @@ Prompt 支持 Nacos：`group=PROMPT`，`data_id` 为 `qa_*` / `resume_*` / `exam
 | 审计与知识 | `agent_audit_log`、`agent_knowledge_pending_queue` |
 
 - DAO 按域放在 `backend/data/dao/{auth,agent,business,ops}`，全部手写 SQL。
-- `schema.sql` 末尾带种子：主租户、admin 账号、角色与权限点、菜单树、Agent 登记、模型登记。
+- `schema.sql` 只含 DDL；种子在 `scripts/seed_data.sql`：平台超管租户、admin 账号、2 个内置角色（admin / tenant_admin）及权限点、菜单树、Agent 登记、模型登记。
 - `updated_at` 由 `set_updated_at()` / `update_updated_at_column()` 触发器刷新；不再使用 `WHEN (OLD IS DISTINCT FROM NEW)`（json 列没有 `=`，会导致任何 UPDATE 失败）。
 - 改表结构流程：改 `data/postgres` 模型 → `python scripts/gen_schema.py` → 重新导入 `schema.sql`。
 

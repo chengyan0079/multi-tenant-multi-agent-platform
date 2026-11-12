@@ -35,6 +35,28 @@ class Orchestrator:
         result = await graph.ainvoke(inputs, config=cfg)
         return dict(result)
 
+    async def run_agent_stream(
+        self,
+        agent_type: str,
+        thread_id: str,
+        inputs: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None,
+    ):
+        """单 Agent 真流式：按 LangGraph v2 事件流产出，由 adapter 过滤映射为统一事件。
+
+        仅产出原始事件（on_chat_model_stream / on_chain_start / on_chain_end ...），
+        不在此做业务翻译，保持编排内核与协议解耦。
+        """
+        meta = self._registry.get(agent_type)
+        if not meta.enabled:
+            raise TenantError(f"Agent 未开通: {agent_type}")
+        graph = meta.build_graph()
+        cfg = tracing.with_callbacks(
+            config or {"configurable": {"thread_id": thread_id}}
+        )
+        async for event in graph.astream_events(inputs, config=cfg, version="v2"):
+            yield event
+
     async def run_pipeline(
         self, pipeline_plan: List[str], thread_id: str, inputs: Dict[str, Any]
     ) -> Dict[str, Any]:

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import text
 
 from backend.data.sql import fetch_all, fetch_one, session_scope
+from backend.orchestration.unified_schemas import LongTermMemoryBlock
 
 
 class LongTermMemoryDao:
@@ -52,8 +53,8 @@ class LongTermMemoryDao:
         agent_id: str,
         block: str | None = None,
         limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """按 (租户, 用户, 智能体[, block]) 读取最近 limit 条长记忆。"""
+    ) -> list[LongTermMemoryBlock]:
+        """按 (租户, 用户, 智能体[, block]) 读取最近 limit 条长记忆，返回 Pydantic 具体对象（D17）。"""
         where = (
             "tenant_id IS NOT DISTINCT FROM :tenant_id "
             "AND user_id IS NOT DISTINCT FROM :user_id "
@@ -80,4 +81,9 @@ class LongTermMemoryDao:
                 ),
                 params,
             )
-            return rows
+            return [
+                LongTermMemoryBlock(
+                    **{k: r[k] for k in LongTermMemoryBlock.model_fields if k in r}
+                )
+                for r in rows
+            ]

@@ -5,9 +5,9 @@ from backend.data.postgres.agent.agent_model import AgentModelRel
 from backend.data.postgres.agent.memory import AgentLongTermMemory
 from backend.data.postgres.agent.model_registry import ModelRegistry
 from backend.data.postgres.agent.plugins import AgentPluginModel
-from backend.data.postgres.agent.runs import AgentRun
 from backend.data.postgres.agent.threads import AgentThread
 from backend.data.postgres.agent.tools import AgentTool
+from backend.data.postgres.agent.unified_turn import AgentUnifiedTurn
 
 __all__ = [
     "AgentModel",
@@ -15,8 +15,8 @@ __all__ = [
     "AgentModelRel",
     "ModelRegistry",
     "AgentThread",
-    "AgentRun",
     "AgentTool",
     "AgentPluginModel",
     "AgentLongTermMemory",
+    "AgentUnifiedTurn",
 ]
