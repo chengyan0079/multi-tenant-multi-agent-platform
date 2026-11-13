@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from backend.api.v1.tenant.agent.exam import router as exam_router
 from backend.api.v1.tenant.agent.files import router as files_router
-from backend.api.v1.tenant.agent.interview import router as interview_router
 from backend.api.v1.tenant.agent.qa_results import router as qa_results_router
-from backend.api.v1.tenant.agent.resume import router as resume_router
 from backend.api.v1.tenant.agent.unified_chat import router as unified_chat_router
 from backend.api.v1.tenant.agent.unified_sessions import (
     router as unified_sessions_router,
@@ -23,6 +20,7 @@ from backend.api.v1.admin import audit as admin_audit
 from backend.api.v1.admin import config_center as admin_config
 from backend.api.v1.admin import models as admin_models
 from backend.api.v1.admin import plugins as admin_plugins
+from backend.api.v1.admin import tools as admin_tools
 from backend.api.v1.admin import menu as admin_menu
 from backend.api.v1.admin import messages as admin_messages
 from backend.api.v1.admin import rbac as admin_rbac
@@ -44,6 +42,7 @@ TENANT_PREFIX = f"{API_PREFIX}/tenant"
 _ADMIN = (
     admin_agents.router,
     admin_plugins.router,
+    admin_tools.router,
     admin_models.router,
     admin_tenant.router,
     admin_menu.router,
@@ -58,9 +57,6 @@ _BUSINESS = (
     unified_session_admin_router,
     qa_results_router,
     files_router,
-    resume_router,
-    exam_router,
-    interview_router,
     tenant_users.router,
     tenant_roles.router,
     tenant_audit.router,

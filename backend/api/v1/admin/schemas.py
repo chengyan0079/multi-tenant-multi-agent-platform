@@ -134,28 +134,19 @@ class RollbackRequestIn(BaseModel):
 
 
 class EnabledIn(BaseModel):
-    """全局启停。"""
+    """启停通用请求体。"""
 
     enabled: bool  # 是否启用
 
 
-class CapabilityIn(BaseModel):
-    """单条租户开通策略。"""
-
-    agent_type: str = Field(..., max_length=64)  # Agent 类型
-    enabled: bool  # 是否为该租户开通
-
-
 class AgentIn(BaseModel):
-    """新增/更新智能体元数据的请求体（两类共用全字段结构）。"""
+    """新增/更新智能体元数据的请求体。"""
 
-    agent_type: str = Field(
-        ..., max_length=64, description="Agent 类型（业务键，建议与代码注册一致）"
-    )  # 业务唯一键
+    tenant_id: int  # 所属租户
+    agent_type: str = Field(..., max_length=64, description="Agent 类型")
     name: str = Field(..., max_length=128)  # 名称
     description: Optional[str] = None  # 说明
     version: str = Field("1.0.0", max_length=32)  # 版本
-    enabled: bool = True  # 是否全局启用
     input_schema: Optional[str] = Field(
         None, description="输入 JSON Schema（JSON 文本）；留空表示无"
     )  # 输入 Schema

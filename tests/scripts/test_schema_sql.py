@@ -184,17 +184,6 @@ def test_agent_tables_are_user_scoped() -> None:
     assert "ix_agent_unified_turn_user_id" in SCHEMA_SQL
 
 
-def test_business_owner_columns_use_user_id_suffix() -> None:
-    """业务表的操作者列都带 _user_id 后缀。"""
-    for column in (
-        "created_user_id",
-        "reviewed_user_id",
-        "confirmed_user_id",
-        "resolved_user_id",
-    ):
-        assert re.search(rf"^\s+{column} BIGINT", SCHEMA_SQL, re.M), f"缺少 {column}"
-
-
 def test_insert_column_counts_match() -> None:
     """每条 INSERT 的列数与每行值数一致。"""
     cleaned = SEED_SQL.replace("now()", "NOW")

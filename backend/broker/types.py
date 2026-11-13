@@ -10,8 +10,6 @@ class TaskType(str, Enum):
 
     QA_PARSE = "qa.parse"
     QA_RAGAS_REVIEW = "qa.ragas_review"
-    RESUME_REVIEW = "resume.review"
-    EXAM_REVIEW = "exam.review"
     NOTIFY_SEND = "notify.send"
     AUDIT_FLUSH = "audit.flush"
 

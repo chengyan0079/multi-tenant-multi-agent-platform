@@ -5,9 +5,6 @@ import type { UnifiedEvent } from '../../services/unified';
 /** route_key → 结果页路径，与后端 ROUTE_KEYS 对齐；新增 Agent 只在此加一行。 */
 export const ROUTE_MAP: Record<string, string> = {
   qa_results: '/agent/qa/results',
-  interview_report: '/agent/interview/results/:id',
-  exam_results: '/agent/exam/results',
-  resume_reviews: '/agent/resume/analysis',
 };
 
 export interface CardProps {

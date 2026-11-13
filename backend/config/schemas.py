@@ -115,7 +115,6 @@ class SchedulerSettings(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON, env_prefix="SCHEDULER_")
 
     escalation_timeout_min: int = 30  # HITL 转人工超时阈值（分钟），可调
-    resume_timeout_min: int = 10  # resume 评审 processing 超时阈值（分钟，=600s），可调
     scan_interval: int = 60  # 默认扫描间隔（秒），各 job 可独立覆盖
     config_refresh_interval: int = 5  # 跨副本配置刷新信号轮询间隔（秒）
 

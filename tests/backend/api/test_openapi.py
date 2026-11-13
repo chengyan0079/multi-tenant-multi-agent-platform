@@ -26,4 +26,3 @@ def test_openapi_schema_generates() -> None:
     # 旧编排执行端点随统一咨询收口删除，不应再出现
     assert "/api/v1/tenant/orchestrator/run" not in paths
     assert "/api/v1/tenant/orchestrator/resume" not in paths
-    assert "/api/v1/tenant/interview/sessions/{session_id}" in paths

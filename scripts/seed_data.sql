@@ -118,7 +118,7 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 ON CONFLICT (role_id, scope) DO NOTHING;
 
 -- ------------------------------------------------------------
--- 4.1) 租户管理员权限点（66 个：业务域 36 + 租户自管平台域 30）
+-- 4.1) 租户管理员权限点（47 个：业务域 17 + 租户自管平台域 30）
 --      不含 agent/model/tool/menu/tenant 等平台级管理权限（仅超管）。
 -- ------------------------------------------------------------
 INSERT INTO agent_role_permission (role_id, scope) VALUES
@@ -143,26 +143,6 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (5, 'qa_session:add'),
 (5, 'qa_session:view'),
 (5, 'qa_session:delete'),
--- 面试业务域
-(5, 'interview:menu'),
-(5, 'interview:ask'),
-(5, 'interview:page'),
-(5, 'interview:view'),
-(5, 'interview:delete'),
--- 简历业务域
-(5, 'resume:menu'),
-(5, 'resume:upload'),
-(5, 'resume:page'),
-(5, 'resume:view'),
-(5, 'resume:delete'),
--- 考试业务域
-(5, 'exam:menu'),
-(5, 'exam:page'),
-(5, 'exam:upload'),
-(5, 'exam:view'),
-(5, 'exam:review'),
-(5, 'exam_result:page'),
-(5, 'exam_result:view'),
 -- 租户自管平台域：用户 / 角色 / 消息 / 权限中心入口
 (5, 'user:menu'),
 (5, 'user:page'),
@@ -231,36 +211,15 @@ INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope)
 ('智能体列表', '/agents/list', 'UnorderedListOutlined', (SELECT id FROM agent_menu WHERE path='/agents'), 1, true, 'agent:page')
 ON CONFLICT (path) DO NOTHING;
 
--- 助手智能体：问答 / 简历 / 考试
+-- 助手智能体：问答
 INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('问答助手', '/agent/qa', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 1, true, 'qa:menu'),
-('简历助手', '/agent/resume', 'ProfileOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 2, true, 'resume:menu'),
-('考试助手', '/agent/exam', 'FileTextOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 3, true, 'exam:menu')
+('问答助手', '/agent/qa', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 1, true, 'qa:menu')
 ON CONFLICT (path) DO NOTHING;
 
 -- 问答助手：文件上传 / 问答结果（发起入口 QA问答/会话列表 已由统一咨询收口，菜单移除）
 INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
 ('文件列表', '/agent/qa/files', 'UploadOutlined', (SELECT id FROM agent_menu WHERE path='/agent/qa'), 1, true, 'qa_file:page'),
 ('问答结果', '/agent/qa/results', 'UnorderedListOutlined', (SELECT id FROM agent_menu WHERE path='/agent/qa'), 2, true, 'qa_result:page')
-ON CONFLICT (path) DO NOTHING;
-
--- 简历助手：简历分析
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('简历分析', '/agent/resume/analysis', 'ProfileOutlined', (SELECT id FROM agent_menu WHERE path='/agent/resume'), 1, true, 'resume:page')
-ON CONFLICT (path) DO NOTHING;
-
--- 考试助手：考试结果（开始考试入口 已由统一咨询收口，菜单移除）
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('考试结果', '/agent/exam/results', 'ProfileOutlined', (SELECT id FROM agent_menu WHERE path='/agent/exam'), 2, true, 'exam_result:page')
-ON CONFLICT (path) DO NOTHING;
-
--- 面试助手：先插父节点，再插子菜单（同一条 INSERT 的子查询看不到刚插入的父行）
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('面试助手', '/agent/interview', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 4, true, 'interview:menu')
-ON CONFLICT (path) DO NOTHING;
-
-INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('面试结果', '/agent/interview/results', 'UnorderedListOutlined', (SELECT id FROM agent_menu WHERE path='/agent/interview'), 1, true, 'interview:page')
 ON CONFLICT (path) DO NOTHING;
 
 -- 审计日志：业务审计 / 登录日志 / 调用日志
@@ -295,17 +254,11 @@ ON CONFLICT (path) DO NOTHING;
 -- 7) Agent 目录（agent_type 与代码 AgentRegistry 一致）
 -- ------------------------------------------------------------
 INSERT INTO agent (
-    agent_type, name, description, input_schema,
-    enabled, version, create_user_id, update_user_id) VALUES
-('qa', '问答助手', '智能问答与多轮对话', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('exam', '考试助手', '组卷、答题与评测', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('resume', '简历助手', '简历解析与优化建议', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin')),
-('interview', '面试助手', '模拟面试与反馈', NULL,
-    true, '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
-ON CONFLICT (agent_type) DO NOTHING;
+    tenant_id, agent_type, name, description, input_schema, enabled,
+    version, create_user_id, update_user_id) VALUES
+(0, 'qa', '问答助手', '智能问答与多轮对话', NULL, true,
+    '1.0.0', (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
+ON CONFLICT (tenant_id, agent_type) DO NOTHING;
 
 -- ------------------------------------------------------------
 -- 8) 模型注册表（按当前库真实值；api_key 为当前环境配置）
@@ -333,7 +286,7 @@ ON CONFLICT (model_type, name) DO NOTHING;
 -- 工具目录种子（web_search / code_exec）
 -- config 存运行期凭据（api_key / endpoint / provider 等），由运营在 agent_tool 表维护；默认空 {} 走降级。
 -- ------------------------------------------------------------
-INSERT INTO agent_tool (id, name, plugin, description, "schema", config) VALUES
-('11111111-1111-1111-1111-111111111111', 'web_search', 'web_search', '联网检索兜底', '{}', '{}'),
-('22222222-2222-2222-2222-222222222222', 'code_exec', 'code_exec', '代码沙箱执行', '{}', '{}')
-ON CONFLICT (name) DO NOTHING;
+INSERT INTO agent_tool (id, tenant_id, name, plugin, description, "schema", config, enabled) VALUES
+('11111111-1111-1111-1111-111111111111', 0, 'web_search', 'web_search', '联网检索兜底', '{}', '{}', true),
+('22222222-2222-2222-2222-222222222222', 0, 'code_exec', 'code_exec', '代码沙箱执行', '{}', '{}', true)
+ON CONFLICT (tenant_id, name) DO NOTHING;

@@ -11,13 +11,12 @@ from backend.data.dao.agent.thread_dao import ThreadDao
 from backend.orchestration.unified_dispatch import DefaultAgentAdapter
 from backend.orchestration.unified_graph import UnifiedGraph
 from backend.services.unified_conversation import UnifiedConversationService
-from backend.services.unified_task_service import start_unified_task
 
 
 def build_unified_graph(app_state) -> UnifiedGraph:
     """按当前 app_state 装配统一编排图（每次请求轻量构建，依赖均为单例/无状态）。"""
     adapter = DefaultAgentAdapter(
-        orchestrator=app_state.orchestrator, task_starter=start_unified_task
+        orchestrator=app_state.orchestrator, task_starter=None
     )
     return UnifiedGraph(
         thread_dao=ThreadDao,

@@ -42,9 +42,7 @@ class QueueSpec:
 
 TASK_QUEUES: tuple[QueueSpec, ...] = (
     QueueSpec(TaskType.QA_PARSE, prefetch=2),  # qa 知识库文档解析 + 向量化，吃 CPU
-    QueueSpec(TaskType.RESUME_REVIEW, prefetch=1),  # 简历评审跑 LangGraph
     QueueSpec(TaskType.QA_RAGAS_REVIEW, prefetch=1),  # 问答 RAGAS 质量测评（LLM 打分）
-    QueueSpec(TaskType.EXAM_REVIEW, prefetch=1),  # 试卷批改跑 LangGraph（含 HITL 暂停）
     QueueSpec(TaskType.NOTIFY_SEND, prefetch=10),  # 通知外发，IO 等待为主
     QueueSpec(TaskType.AUDIT_FLUSH, prefetch=20),  # 审计批量落库，单条很快
 )

@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from backend.data.postgres import Base  # noqa: E402
-from backend.data.postgres.agent.agent import AgentCapabilityPolicy, AgentModel  # noqa: E402
+from backend.data.postgres.agent.agent import AgentModel  # noqa: E402
 from backend.data.postgres.agent.agent_model import AgentModelRel  # noqa: E402
 from backend.data.postgres.agent.model_registry import ModelRegistry  # noqa: E402
 from backend.data.postgres.auth.menu import Menu  # noqa: E402

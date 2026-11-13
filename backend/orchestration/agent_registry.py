@@ -47,8 +47,8 @@ class AgentRegistry:
 
     def __init__(self) -> None:
         self._agents: Dict[str, AgentMeta] = {}
-        # 租户级能力策略缓存：(tenant_id, agent_type) -> enabled
-        self._tenant_policy: Dict[tuple, bool] = {}
+        # 租户级注册缓存：tenant_id -> 已注册 agent_type 集合（来自 agent 表）
+        self._tenant_agents: Dict[int, set] = {}
         # 派生物缓存（_rebuild_derived 重建）
         self._label_to_agent: Dict[str, str] = {}
         self._scope_by_agent: Dict[str, str] = {}
@@ -77,7 +77,6 @@ class AgentRegistry:
                 meta.description = r["description"]
                 if r["input_schema"]:
                     meta.input_schema = r["input_schema"]
-                meta.db_enabled = r["enabled"]
                 meta.version = r["version"]
                 if meta.spec is not None:
                     meta.spec = merge_db_overrides(
@@ -87,12 +86,14 @@ class AgentRegistry:
                         version=r["version"],
                     )
                 loaded += 1
-            policies = await AgentDao.list_policies()
-            self._tenant_policy = {
-                (p["tenant_id"], p["agent_type"]): p["enabled"] for p in policies
-            }
+            self._tenant_agents = {}
+            for r in rows:
+                if r.get("enabled"):
+                    self._tenant_agents.setdefault(r["tenant_id"], set()).add(
+                        r["agent_type"]
+                    )
             logger.info(
-                f"已从库加载 Agent 元数据 {loaded}/{len(rows)} 条、租户策略 {len(policies)} 条"
+                f"已从库加载 Agent 元数据 {loaded}/{len(rows)} 条、租户注册 {len(self._tenant_agents)} 个租户"
             )
             self._db_loaded = True
         except Exception as e:  # 库不可用/未建表时降级为「只用代码注册值」
@@ -131,20 +132,21 @@ class AgentRegistry:
         meta.enabled = enabled
 
     def is_enabled_for_tenant(self, agent_type: str, tenant_id: Optional[int] = None) -> bool:
-        """该租户是否可用此 Agent = 全局开关 AND 租户策略。
+        """该租户是否可用此 Agent：内存开关 AND 该租户已注册（agent 表存在记录）。
 
-        全局开关优先取库值（agent.enabled），库未登记时回退代码注册的 enabled；
-        租户策略未配置视为开通（不限制未配置的租户）。
+        tenant_id 为空时不按租户过滤（仅看内存开关，供启动期/无租户上下文使用）。
         """
         meta = self._agents.get(agent_type)
         if meta is None:
             return False
-        global_on = meta.db_enabled if meta.db_enabled is not None else meta.enabled
-        if not global_on:
+        if not meta.enabled:
             return False
         if tenant_id is None:
             return True
-        return self._tenant_policy.get((tenant_id, agent_type), True)
+        if not self._tenant_agents:
+            # 未经库加载（离线/测试/降级）：不按租户限制，保持代码注册即可用
+            return True
+        return agent_type in self._tenant_agents.get(tenant_id, set())
 
     def list_types(self, only_enabled: bool = True, tenant_id: Optional[int] = None) -> List[str]:
         """列出 Agent 类型；传 tenant_id 时按租户开通策略过滤。"""
@@ -347,7 +349,7 @@ class AgentRegistry:
 
     async def stop(self) -> None:
         self._agents.clear()
-        self._tenant_policy.clear()
+        self._tenant_agents.clear()
 
 
 def _sample_value(ef: EntryField) -> object:
