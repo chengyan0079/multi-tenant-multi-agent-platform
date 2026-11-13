@@ -75,29 +75,27 @@ class MenuDao:
         page: int = 1,
         page_size: int = 50,
         *,
+        menu_id: int | None = None,
+        parent_id: int | None = None,
         name: str | None = None,
-        path: str | None = None,
-        scope: str | None = None,
         visible: bool | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
-        """菜单分页；名称/路径/权限点均为 ILIKE 模糊匹配。"""
+        """菜单分页；id/parent_id 精确匹配，名称模糊匹配，启动状态(visible)精确匹配。"""
         conds: list[str] = []
         params: dict[str, Any] = {}
+
+        if menu_id is not None:
+            conds.append("id = :menu_id")
+            params["menu_id"] = menu_id
+
+        if parent_id is not None:
+            conds.append("parent_id = :parent_id")
+            params["parent_id"] = parent_id
 
         keyword = (name or "").strip()
         if keyword:
             conds.append("name ILIKE :name")
             params["name"] = f"%{keyword}%"
-
-        path_keyword = (path or "").strip()
-        if path_keyword:
-            conds.append("path ILIKE :path")
-            params["path"] = f"%{path_keyword}%"
-
-        scope_keyword = (scope or "").strip()
-        if scope_keyword:
-            conds.append("COALESCE(scope, '') ILIKE :scope")
-            params["scope"] = f"%{scope_keyword}%"
 
         if visible is not None:
             conds.append("visible = :visible")

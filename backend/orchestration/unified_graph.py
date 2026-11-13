@@ -1,9 +1,4 @@
-"""统一编排层引擎（§4.1 / §2.2）：薄图 UnifiedGraph + UnifiedState。
-
-单一持有会话级上下文；负责：会话 get_or_create → 双通道路由 → 运行期鉴权 → 入口字段校验
-→ 按 execution_mode dispatch / pipeline → 一次写回 turn。所有依赖注入，可 DB-free 单测。
-真实 LLM / SSE 流式在 Step 7 接入；本模块聚焦决策与编排核心。
-"""
+"""统一编排层引擎：薄图 UnifiedGraph + UnifiedState（会话级上下文与请求编排）。"""
 from __future__ import annotations
 
 import asyncio

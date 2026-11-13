@@ -1,8 +1,4 @@
-"""双通道路由（D13）：显式通道跳过分类；隐式通道规则前置 + LLM 结构化分类。
-
-纯逻辑、可注入分类函数，便于 DB-free 单测；真实 LLM 分类走 get_structured_llm 默认实现（Step 7 接线）。
-规则前置命中（问候/感谢/道别/身份/能力）直接模板回复、零 Token（§4.3）。
-"""
+"""双通道路由：显式通道跳过分类；隐式通道规则前置 + LLM 结构化分类。"""
 from __future__ import annotations
 
 from typing import Awaitable, Callable, Optional

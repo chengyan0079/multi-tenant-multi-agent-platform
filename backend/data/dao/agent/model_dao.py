@@ -24,7 +24,7 @@ FROM agent_model_registry
 WHERE (:model_type IS NULL OR model_type = :model_type)
 ORDER BY model_type, sort_order, id LIMIT :limit OFFSET :offset
 """).bindparams(
-    # todo asyncpg 扩展协议下 "IS NULL" 参数无法推断类型，需显式声明
+    # asyncpg 扩展协议下 "IS NULL" 参数无法推断类型，需显式声明
     _TYPE_BIND,
     bindparam("limit", type_=Integer),
     bindparam("offset", type_=Integer),

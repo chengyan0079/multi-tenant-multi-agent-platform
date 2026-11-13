@@ -59,3 +59,9 @@ def build_interview_graph():
     builder.add_edge("save_memory", END)
 
     return builder.compile(checkpointer=app_state.checkpointer)
+
+
+if __name__ == "__main__":
+    graph = build_interview_graph()
+    # print(graph.get_graph().draw_mermaid())
+    graph.get_graph().draw_png("interview_graph.png")

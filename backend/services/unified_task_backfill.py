@@ -1,8 +1,4 @@
-"""Broker 任务结果回流：handler 跑完子图后，回写一条 task_result 统一会话 turn（§4.6）。
-
-统一入口的会话历史是唯一 source of truth；exam/resume 的异步结果通过本函数补写，
-用户回到会话即可从 turn 完整回放任务卡片，无需 SSE 在线。
-"""
+"""Broker 任务结果回流：handler 跑完子图后回写一条 task_result 统一会话 turn。"""
 from __future__ import annotations
 
 from typing import Optional

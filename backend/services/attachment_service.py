@@ -1,8 +1,4 @@
-"""统一附件服务：两阶段上传的第一步（§4.5）。
-
-仅负责「存文件 + 记引用」，不建业务行、不入会话；业务行（exam/resume）由任务型 adapter
-在 chat/stream 第二步建。校验与存储复用既有 FileDao（MinIO + 版本化 + 去重）。
-"""
+"""统一附件服务：两阶段上传第一步（存文件 + 记引用，不建业务行、不入会话）。"""
 from __future__ import annotations
 
 import hashlib
@@ -85,6 +81,7 @@ async def get_attachment_object_key(file_ref: str) -> str | None:
 
 
 def _normalize_exts(exts: list[str]) -> set[str]:
+    """归一化扩展名集合（统一小写并补前导点）。"""
     out: set[str] = set()
     for e in exts:
         e = e.strip().lower()

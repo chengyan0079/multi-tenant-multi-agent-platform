@@ -1,8 +1,4 @@
-"""消息路由：消息类型 → 投递目标的唯一判定处。
-
-业务消息与广播消息的区分只在这里做，投递端（outbox）与消费端都读同一份结果，
-避免同一条规则散落在声明、投递、消费各处。
-"""
+"""消息路由：消息类型 → 投递目标的唯一判定处。"""
 
 from __future__ import annotations
 
@@ -24,9 +20,9 @@ class Kind(str, Enum):
 class Route:
     """一条消息的投递目标。"""
 
-    exchange: str
-    routing_key: str
-    kind: Kind
+    exchange: str  # 交换机
+    routing_key: str  # 路由键（即消息类型值）
+    kind: Kind  # 消费方式
 
 
 def route(task_type: TaskType) -> Route:

@@ -39,25 +39,25 @@ class MenuStatusIn(BaseModel):
 async def list_menus(
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(50, ge=1, le=200, description="每页条数"),
+    menu_id: Optional[int] = Query(None, description="菜单ID（精确）"),
+    parent_id: Optional[int] = Query(None, description="父级ID（精确）"),
     name: Optional[str] = Query(None, description="名称（模糊）"),
-    path: Optional[str] = Query(None, description="路径（模糊）"),
-    scope: Optional[str] = Query(None, description="权限点（模糊）"),
-    visible: Optional[bool] = Query(None, description="显隐"),
+    visible: Optional[bool] = Query(None, description="启动状态（精确）：true=显示 / false=隐藏"),
     _: object = Depends(require_scope(Scope.MENU_PAGE)),  # noqa: B008
     __: object = Depends(get_current_user),  # noqa: B008
 ) -> Any:
-    """菜单列表分页查询（含隐藏项，支持名称/路径/权限点/显隐过滤）。
+    """菜单列表分页查询（含隐藏项，支持 id/父级ID 精确、名称模糊、启动状态精确过滤）。
 
-    请求：query { page, page_size, name?, path?, scope?, visible? }
+    请求：query { page, page_size, menu_id?, parent_id?, name?, visible? }
     权限：menu:page
     返回：items / total / page / page_size
     """
     rows, total = await MenuDao.list_paged(
         page=page,
         page_size=page_size,
+        menu_id=menu_id,
+        parent_id=parent_id,
         name=name,
-        path=path,
-        scope=scope,
         visible=visible,
     )
     return success({"items": rows, "total": total, "page": page, "page_size": page_size})

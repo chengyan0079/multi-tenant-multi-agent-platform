@@ -1,9 +1,4 @@
-"""
-graph - 简历评审工作流
-
-Author: 骆昊
-Version: 0.0.1
-"""
+"""简历评审工作流图：上传 → 下载 → 抽取 → 结构化 → 六维 → 问题 → 总结 → 落库。"""
 
 from langgraph.graph import StateGraph, START, END
 

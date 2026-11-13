@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from backend.agents.base import Agent
 from backend.agents.qa.graph import build_qa_graph

@@ -1,29 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   App as AntdApp,
-  Button,
   Card,
-  Modal,
   Popconfirm,
   Result,
   Tag,
   Typography,
-  Upload,
 } from 'antd';
-import type { UploadProps } from 'antd';
-import { InboxOutlined } from '@ant-design/icons';
 import { ProTable, type ActionType, type ProColumns } from '../../../components/ProTable';
 import { useNavigate } from 'react-router-dom';
 
 import {
   deleteReview,
   listResumes,
-  uploadResume,
   type ResumeItem,
 } from '../../../services/resume';
 import { hasScope } from '../../../services/auth';
-
-type UploadFile = NonNullable<UploadProps['fileList']>[number];
 
 const STATUS_COLOR: Record<string, string> = {
   pending: 'default',
@@ -41,19 +33,15 @@ const STATUS_LABEL: Record<string, string> = {
 const formatTime = (value: string | null): string =>
   value ? value.replace('T', ' ').slice(0, 19) : '-';
 
-/** 简历分析：列表 + 上传 PDF，处理中自动刷新，完成后进入报告页。 */
+/** 简历分析：列表 + 报告查看（上传发起入口已收口至统一咨询）。 */
 export default function ResumeAnalysis() {
   const { message } = AntdApp.useApp();
   const navigate = useNavigate();
   const actionRef = useRef<ActionType>();
 
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [fileList, setFileList] = useState<UploadFile[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [hasProcessing, setHasProcessing] = useState(false);
 
   const canPage = hasScope('resume:page');
-  const canUpload = hasScope('resume:upload');
   const canView = hasScope('resume:view');
   const canDelete = hasScope('resume:delete');
 
@@ -62,35 +50,6 @@ export default function ResumeAnalysis() {
     const timer = window.setInterval(() => actionRef.current?.reload(), 3000);
     return () => window.clearInterval(timer);
   }, [hasProcessing]);
-
-  const openUpload = () => {
-    setFileList([]);
-    setUploadOpen(true);
-  };
-
-  const submitUpload = async () => {
-    const raw = fileList[0]?.originFileObj ?? fileList[0];
-    if (!raw) {
-      message.warning('请先选择简历文件');
-      return;
-    }
-    if (!raw.name.toLowerCase().endsWith('.pdf')) {
-      message.error('仅支持 PDF 文件');
-      return;
-    }
-    setUploading(true);
-    try {
-      const res = await uploadResume(raw as File);
-      message.success(res.message || '简历已提交，正在后台评审');
-      setUploadOpen(false);
-      setFileList([]);
-      actionRef.current?.reload();
-    } catch (e) {
-      message.error(e instanceof Error ? e.message : '上传失败');
-    } finally {
-      setUploading(false);
-    }
-  };
 
   const onDelete = async (reviewId: string) => {
     try {
@@ -170,14 +129,7 @@ export default function ResumeAnalysis() {
   }
 
   return (
-    <Card
-      title={<Typography.Title level={4} style={{ margin: 0 }}>简历分析</Typography.Title>}
-      extra={
-        <Button type="primary" disabled={!canUpload} onClick={openUpload}>
-          上传简历
-        </Button>
-      }
-    >
+    <Card title={<Typography.Title level={4} style={{ margin: 0 }}>简历分析</Typography.Title>}>
       <ProTable<ResumeItem>
         actionRef={actionRef}
         rowKey="review_id"
@@ -202,37 +154,6 @@ export default function ResumeAnalysis() {
         pagination={{ pageSize: 20, showSizeChanger: true }}
         scroll={{ x: 'max-content' }}
       />
-
-      <Modal
-        title="上传简历"
-        open={uploadOpen}
-        onCancel={() => setUploadOpen(false)}
-        onOk={() => void submitUpload()}
-        okText="上传并分析"
-        cancelText="取消"
-        confirmLoading={uploading}
-        destroyOnClose
-      >
-        <Upload.Dragger
-          beforeUpload={(file) => {
-            if (!file.name.toLowerCase().endsWith('.pdf')) {
-              message.error('仅支持 PDF 文件');
-              return Upload.LIST_IGNORE;
-            }
-            return false;
-          }}
-          maxCount={1}
-          fileList={fileList}
-          onChange={({ fileList: fl }) => setFileList(fl)}
-          accept=".pdf"
-        >
-          <p className="ant-upload-drag-icon">
-            <InboxOutlined />
-          </p>
-          <p className="ant-upload-text">点击或拖拽简历 PDF 到此处</p>
-          <p className="ant-upload-hint">仅支持 PDF；上传后后台异步评审，列表会自动刷新</p>
-        </Upload.Dragger>
-      </Modal>
     </Card>
   );
 }

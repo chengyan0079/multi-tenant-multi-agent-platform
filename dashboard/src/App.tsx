@@ -8,9 +8,11 @@ import Agents from './pages/Agents';
 import QaResults from './pages/agent/qa/QaResults';
 import ResumeAnalysis from './pages/agent/resume/ResumeAnalysis';
 import ResumeReport from './pages/agent/resume/ResumeReport';
-import ExamStart from './pages/agent/exam/ExamStart';
+
 import ExamResults from './pages/agent/exam/ExamResults';
 import ExamReport from './pages/agent/exam/ExamReport';
+import ExamReview from './pages/agent/exam/ExamReview';
+import ExamReviewDetail from './pages/agent/exam/ExamReviewDetail';
 import InterviewResults from './pages/agent/interview/InterviewResults';
 import InterviewReport from './pages/agent/interview/InterviewReport';
 import UnifiedChat from './pages/unified/UnifiedChat';
@@ -78,10 +80,25 @@ export default function App() {
         <Route path="agent/resume" element={<Navigate to="/agent/resume/analysis" replace />} />
         <Route path="agent/resume/analysis" element={<ResumeAnalysis />} />
         <Route path="agent/resume/analysis/:id" element={<ResumeReport />} />
-        <Route path="agent/exam" element={<Navigate to="/agent/exam/start" replace />} />
-        <Route path="agent/exam/start" element={<ExamStart />} />
+        <Route path="agent/exam" element={<Navigate to="/agent/exam/results" replace />} />
         <Route path="agent/exam/results" element={<ExamResults />} />
         <Route path="agent/exam/results/:id" element={<ExamReport />} />
+        <Route
+          path="agent/exam/reviews"
+          element={
+            <RequireScope scope="exam:review">
+              <ExamReview />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="agent/exam/reviews/:id"
+          element={
+            <RequireScope scope="exam:review">
+              <ExamReviewDetail />
+            </RequireScope>
+          }
+        />
         <Route path="agent/exam/analysis" element={<Navigate to="/agent/exam/results" replace />} />
         <Route path="agent/interview" element={<Navigate to="/agent/interview/results" replace />} />
         <Route path="agent/interview/results" element={<InterviewResults />} />

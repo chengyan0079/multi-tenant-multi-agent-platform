@@ -199,63 +199,80 @@ async def get_my_submission(
     )
 
 
-# @router.get("/pending-reviews")
-# async def get_pending_reviews(
-#     _: object = Depends(require_scope(Scope.EXAM_REVIEW)),  # noqa: B008
-#     current: CurrentUser = Depends(get_current_user),
-# ) -> dict:
-#     async with session_scope() as session:
-#         rows = (
-#             await session.execute(
-#                 text(
-#                     '''
-#                     SELECT es.id, es.user_id, u.username AS student_name,
-#                            e.title AS exam_title, es.submitted_at
-#                       FROM agent_exam_submissions es
-#                       JOIN users u ON u.id = es.user_id
-#                       JOIN agent_exams e ON e.id = es.exam_id
-#                      WHERE es.tenant_id = :tenant_id AND es.status = 'pending_review'
-#                      ORDER BY es.submitted_at DESC
-#                     '''
-#                 ),
-#                 {'tenant_id': current.tenant_id},
-#             )
-#         ).mappings().all()
-#
-#     items = []
-#     for row in rows:
-#         submission_id = str(row['id'])
-#         pre_review = {'total_score': 0, 'full_score': 0, 'needs_review_count': 0}
-#         weak_points = []
-#         try:
-#             state_snap = await _get_graph().aget_state({"configurable": {"thread_id": submission_id}})
-#             if state_snap and state_snap.values:
-#                 sv = state_snap.values
-#                 raw_summary = sv.get('pre_review_summary')
-#                 summary_model = TypeAdapter(PreReviewSummary).validate_python(raw_summary) if raw_summary else None
-#                 pre_review = {
-#                     'total_score': summary_model.total_score if summary_model else 0,
-#                     'full_score': summary_model.full_score if summary_model else 0,
-#                     'needs_review_count': summary_model.needs_review_count if summary_model else 0,
-#                 }
-#                 raw_wp = sv.get('weak_points')
-#                 weak_points = (
-#                     [wp.model_dump() for wp in TypeAdapter(list[WeakPoint]).validate_python(raw_wp)]
-#                     if raw_wp else []
-#                 )
-#         except Exception as e:
-#             logger.warning('exam.pending_review_state_read_failed', submission_id=submission_id, error=str(e))
-#
-#         items.append({
-#             'submission_id': submission_id,
-#             'student_name': row['student_name'],
-#             'exam_title': row['exam_title'],
-#             'submitted_at': row['submitted_at'].isoformat() if row['submitted_at'] else None,
-#             'pre_review': pre_review,
-#             'weak_points': weak_points[:3],
-#         })
-#
-#     return success({'items': items, 'total': len(items)})
+@router.get("/pending-reviews")
+async def get_pending_reviews(
+    _: object = Depends(require_scope(Scope.EXAM_REVIEW)),  # noqa: B008
+    current: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """教师待复核列表（本租户 pending_review 提交）。
+
+    请求：无
+    权限：exam:review
+    返回：items[{ submission_id, student_name, exam_title, submitted_at, pre_review, weak_points }]
+    """
+    async with session_scope() as session:
+        rows = (
+            await session.execute(
+                text(
+                    """
+                    SELECT es.id, es.user_id, u.username AS student_name,
+                           e.title AS exam_title, es.submitted_at
+                      FROM agent_exam_submissions es
+                      JOIN agent_user u ON u.id = es.user_id
+                      JOIN agent_exams e ON e.id = es.exam_id
+                     WHERE u.tenant_id = :tenant_id AND es.status = 'pending_review'
+                     ORDER BY es.submitted_at DESC
+                    """
+                ),
+                {"tenant_id": current.tenant_id},
+            )
+        ).mappings().all()
+
+    items = []
+    for row in rows:
+        submission_id = str(row["id"])
+        pre_review = {"total_score": 0, "full_score": 0, "needs_review_count": 0}
+        weak_points: list[dict] = []
+        try:
+            state_snap = await _get_graph().aget_state({"configurable": {"thread_id": submission_id}})
+            if state_snap and state_snap.values:
+                sv = state_snap.values
+                raw_summary = sv.get("pre_review_summary")
+                summary_model = (
+                    TypeAdapter(PreReviewSummary).validate_python(raw_summary)
+                    if raw_summary
+                    else None
+                )
+                pre_review = {
+                    "total_score": summary_model.total_score if summary_model else 0,
+                    "full_score": summary_model.full_score if summary_model else 0,
+                    "needs_review_count": summary_model.needs_review_count if summary_model else 0,
+                }
+                raw_wp = sv.get("weak_points")
+                weak_points = (
+                    [wp.model_dump() for wp in TypeAdapter(list[WeakPoint]).validate_python(raw_wp)]
+                    if raw_wp
+                    else []
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "exam.pending_review_state_read_failed",
+                submission_id=submission_id,
+                error=str(e),
+            )
+
+        items.append(
+            {
+                "submission_id": submission_id,
+                "student_name": row["student_name"],
+                "exam_title": row["exam_title"],
+                "submitted_at": row["submitted_at"].isoformat() if row["submitted_at"] else None,
+                "pre_review": pre_review,
+                "weak_points": weak_points[:3],
+            }
+        )
+
+    return success({"items": items, "total": len(items)})
 
 
 @router.get("/submissions/{submission_id}/review")

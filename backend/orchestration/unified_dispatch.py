@@ -1,8 +1,4 @@
-"""Dispatch 契约（§4.7）：adapter 在框架边界转换 LangGraph 的 dict 与业务 BaseModel。
-
-提供：AgentAdapter 协议、DefaultAgentAdapter（通用实现）、dispatch()（按 execution_mode 分流）、
-fork_config()（保留同一组 callbacks，仅覆盖子图分区键）。
-"""
+"""Dispatch 契约：adapter 在框架边界转换 dict 与业务模型；dispatch 按 execution_mode 分流。"""
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol

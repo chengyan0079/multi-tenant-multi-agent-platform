@@ -24,3 +24,6 @@ class AgentTool(TimestampMixin, Base):
     plugin: Mapped[str] = mapped_column(String(64), default="", comment="所属插件")
     description: Mapped[str] = mapped_column(Text, default="", comment="描述")
     schema: Mapped[str] = mapped_column(Text, default="{}", comment="工具Schema（JSON）")
+    config: Mapped[str] = mapped_column(
+        Text, default="{}", comment="工具运行配置（JSON：provider/api_key/endpoint 等）"
+    )

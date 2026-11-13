@@ -292,11 +292,11 @@ class Identity:
     超管没有租户上下文，tenant_id 恒为 None。
     """
 
-    user_id: int
-    tenant_id: int | None
-    role_name: str
-    scopes: list[str]
-    is_super_admin: bool = False
+    user_id: int  # 用户 id
+    tenant_id: int | None  # 当前租户 id；超管为 None
+    role_name: str  # 角色名
+    scopes: list[str]  # 权限点集合
+    is_super_admin: bool = False  # 是否平台超管
 
     @property
     def is_tenant_admin(self) -> bool:

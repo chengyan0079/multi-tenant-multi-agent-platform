@@ -17,14 +17,9 @@ export interface CardProps {
 
 const RoutingCard: FC<CardProps> = ({ event }) => (
   <Card size="small" style={{ margin: '8px 0' }}>
-    <Typography.Text strong>路由决策</Typography.Text>
-    <div>
-      <Tag color="blue">{String(event.agent_type ?? '')}</Tag>
-      <Tag>来源：{String(event.source ?? '')}</Tag>
-      <Tag>模式：{String(event.execution_mode ?? '')}</Tag>
-      {event.confidence != null && <Tag>置信度：{String(event.confidence)}</Tag>}
-    </div>
-    {event.reason ? <Typography.Text type="secondary">{String(event.reason)}</Typography.Text> : null}
+    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      已为你匹配到对应能力{event.reason ? `：${String(event.reason)}` : ''}
+    </Typography.Text>
   </Card>
 );
 

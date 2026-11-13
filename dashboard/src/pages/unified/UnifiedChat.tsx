@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Card, Empty, Input, Space, Tag, message } from 'antd';
+import { Button, Card, Empty, Input, Popover, Space, Tag, message } from 'antd';
+import { ArrowRightOutlined, BulbOutlined, PauseOutlined, ToolOutlined } from '@ant-design/icons';
 import ChatBubble from '../../components/ChatBubble';
 import SessionList from '../../components/SessionList';
 import { StreamController } from '../../components/StreamController';
@@ -252,34 +253,75 @@ export default function UnifiedChat() {
                 <Card
                   key={a.agent_type}
                   hoverable
-                  style={{ width: 200 }}
+                  style={{ width: 220, height: 200 }}
+                  extra={a.card?.badge ? <Tag color="blue">{a.card.badge}</Tag> : undefined}
                   onClick={() => onCardClick(a)}
                 >
-                  <Card.Meta title={a.display_name} description={a.description} />
-                  <div style={{ marginTop: 8 }}>
-                    {a.tags.map((t) => (
-                      <Tag key={t}>{t}</Tag>
-                    ))}
+                  <Card.Meta
+                    title={a.display_name}
+                    description={
+                      <div
+                        style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {a.description}
+                      </div>
+                    }
+                  />
+                  <div style={{ marginTop: 12, color: '#1677ff', fontSize: 13 }}>
+                    {a.card?.action_label ?? '点击咨询'} <ArrowRightOutlined />
                   </div>
                 </Card>
               ))}
             </div>
-            <div style={{ marginTop: 16 }}>
-              {agents.flatMap((a) => a.templates).map((tpl, i) => (
-                <Tag
-                  key={i}
-                  style={{ cursor: 'pointer', marginBottom: 8 }}
-                  onClick={() => {
-                    setSelectedAgent(
-                      agents.find((a) => a.templates.includes(tpl))?.agent_type ?? null,
-                    );
-                    setInput(tpl);
-                  }}
-                >
-                  {tpl}
-                </Tag>
-              ))}
-            </div>
+            {(() => {
+              const tpls = agents.flatMap((a) => a.templates);
+              if (!tpls.length) return null;
+              return (
+                <div style={{ marginTop: 24, maxWidth: 560 }}>
+                  <div style={{ marginBottom: 10, color: '#888', fontSize: 13 }}>或者，挑一个常见问题开始</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {tpls.map((tpl, i) => (
+                      <div
+                        key={i}
+                        onClick={() => {
+                          setSelectedAgent(
+                            agents.find((a) => a.templates.includes(tpl))?.agent_type ?? null,
+                          );
+                          setInput(tpl);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '9px 12px',
+                          background: '#fafafa',
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 8,
+                          cursor: 'pointer',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = '#f0f5ff';
+                          e.currentTarget.style.borderColor = '#bcd4ff';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = '#fafafa';
+                          e.currentTarget.style.borderColor = '#f0f0f0';
+                        }}
+                      >
+                        <BulbOutlined style={{ color: '#faad14' }} />
+                        <span style={{ flex: 1 }}>{tpl}</span>
+                        <ArrowRightOutlined style={{ color: '#bfbfbf' }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         ) : (
           <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
@@ -299,6 +341,20 @@ export default function UnifiedChat() {
         )}
 
         <div style={{ borderTop: '1px solid #f0f0f0', padding: 12 }}>
+          <div style={{ marginBottom: 8 }}>
+            <Popover
+              content={
+                <div style={{ width: 240 }}>
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="工具调用能力待开发" />
+                </div>
+              }
+              title="可用工具"
+            >
+              <Button type="text" size="small" icon={<ToolOutlined />}>
+                工具
+              </Button>
+            </Popover>
+          </div>
           <Space.Compact style={{ width: '100%' }}>
             <Input.TextArea
               value={input}
@@ -314,8 +370,8 @@ export default function UnifiedChat() {
               disabled={streaming}
             />
             {streaming ? (
-              <Button danger onClick={stop}>
-                停止
+              <Button danger icon={<PauseOutlined />} onClick={stop}>
+                暂停输出
               </Button>
             ) : (
               <Button type="primary" onClick={() => void send()}>

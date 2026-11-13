@@ -98,7 +98,7 @@ flowchart TB
 | 配置 | `ConfigManager` → `app_state.settings` | 接 **Nacos Config**（增强，非替代） |
 | 存储 | PostgreSQLManager / RedisManager / MilvusManager / BrokerManager | Python 侧保留（运行时表） |
 | 模型 | `ModelManager` + `LLM Factory` | Python 侧保留；LLM 出口可经 Higress 代理 |
-| 编排 | `OrchestratorManager` + `AgentRegistry`（四 Agent 图） | Python 侧保留（应用内核） |
+| 编排 | `OrchestratorManager` + `AgentRegistry`（继承自动发现的 Agent 图） | Python 侧保留（应用内核） |
 | RAG | `RagAdapterManager` + `backend/rag` | Python 侧保留；外部 RAG 经 MCP 接入 |
 | 插件 | `PluginManager` + `backend/plugins` | Python 侧保留；MCP 作为一类外部插件 |
 | 鉴权 | `middleware/auth.py` + `security/security.py` 的 `require_scope` 等 | **整体迁 Java 侧**（见 §3）；Python 侧切流后只信网关注入声明 |

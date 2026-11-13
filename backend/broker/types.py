@@ -8,7 +8,6 @@ from enum import Enum
 class TaskType(str, Enum):
     """全部业务消息类型。"""
 
-    AGENT_RUN = "agent.run"
     QA_PARSE = "qa.parse"
     QA_RAGAS_REVIEW = "qa.ragas_review"
     RESUME_REVIEW = "resume.review"

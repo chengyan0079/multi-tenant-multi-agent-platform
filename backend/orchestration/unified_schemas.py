@@ -1,8 +1,4 @@
-"""统一咨询入口内部契约（State / 编排层 / dispatch 使用的 Pydantic 模型，D17）。
-
-仅定义数据结构，不含业务逻辑；消费方为 Step 3+ 的注册表、Step 6 的编排层与 adapter。
-所有模型继承 pydantic.BaseModel；DTO 的 extra='forbid' 由对应请求/响应模块负责。
-"""
+"""统一咨询入口内部契约：State / 编排层 / dispatch 使用的 Pydantic 模型。"""
 from enum import Enum
 from typing import Any, Literal
 
@@ -99,24 +95,24 @@ class AttachmentRef(BaseModel):
 
 
 class AgentCard(BaseModel):
-    icon: str = ""
-    badge: str = ""
-    sort_order: int = 0
-    action_label: str = ""
+    icon: str = ""  # 图标
+    badge: str = ""  # 角标
+    sort_order: int = 0  # 排序
+    action_label: str = ""  # 卡片按钮文案
 
 
 class MenuSpec(BaseModel):
-    name: str = ""
-    path: str = ""
-    icon: str = ""
-    sort_order: int = 0
-    parent_path: str = ""
-    scope: str = ""
+    name: str = ""  # 菜单名
+    path: str = ""  # 路由
+    icon: str = ""  # 图标
+    sort_order: int = 0  # 排序
+    parent_path: str = ""  # 父级路由
+    scope: str = ""  # 菜单可见 scope
 
 
 class ProgressLabel(BaseModel):
-    node: str
-    text: str
+    node: str  # 节点名
+    text: str  # 进度文案
 
 
 # --------------------------------------------------------------------------- #

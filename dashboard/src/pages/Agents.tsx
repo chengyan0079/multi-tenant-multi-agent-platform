@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Descriptions,
   Drawer,
   Form,
   Input,
@@ -29,13 +30,17 @@ import {
   deleteAgent,
   listAgentModels,
   listAgents,
+  listCapabilities,
   removeAgentModel,
   setAgentEnabled,
+  setCapabilities,
   updateAgent,
   updateAgentModel,
   type AgentItem,
   type AgentModelBinding,
+  type CapabilityItem,
 } from '../services/agents';
+import { listTenants, type TenantItem } from '../services/rbac';
 import { MODEL_TYPES, listModels, type ModelItem } from '../services/models';
 import { sortByTimeThenId } from '../utils/sort';
 import { hasScope } from '../services/auth';
@@ -66,6 +71,15 @@ export default function Agents() {
   const [addForm] = Form.useForm();
   const [addLoading, setAddLoading] = useState(false);
   const [bindPending, setBindPending] = useState<string | null>(null);
+
+  // 详情 / 租户开通策略
+  const [detailRow, setDetailRow] = useState<AgentItem | null>(null);
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [tenants, setTenants] = useState<TenantItem[]>([]);
+  const [policyTenantId, setPolicyTenantId] = useState<number | null>(null);
+  const [capabilities, setCapList] = useState<CapabilityItem[]>([]);
+  const [capLoading, setCapLoading] = useState(false);
+  const [capSaving, setCapSaving] = useState(false);
 
   // 智能体管理权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
   const canPage = hasScope('agent:page');
@@ -301,6 +315,62 @@ export default function Agents() {
     }));
   }, [models]);
 
+  // ---------- 详情 / 租户开通策略 ----------
+  const openDetail = (row: AgentItem) => setDetailRow(row);
+
+  const openPolicy = async () => {
+    setPolicyOpen(true);
+    if (!tenants.length) {
+      try {
+        const res = await listTenants({ page: 1, page_size: 200 });
+        setTenants(res.items ?? []);
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : String(e));
+      }
+    }
+  };
+
+  const loadCapabilities = async (tenantId: number) => {
+    setCapLoading(true);
+    try {
+      const res = await listCapabilities(tenantId, { page: 1, page_size: 200 });
+      setCapList(res.items ?? []);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCapLoading(false);
+    }
+  };
+
+  const onSelectTenant = (tenantId: number) => {
+    setPolicyTenantId(tenantId);
+    setCapList([]);
+    void loadCapabilities(tenantId);
+  };
+
+  const toggleCapability = (agentType: string, enabled: boolean) => {
+    setCapList((prev) =>
+      prev.map((c) => (c.agent_type === agentType ? { ...c, enabled, configured: true } : c)),
+    );
+  };
+
+  const saveCapabilities = async () => {
+    if (policyTenantId == null) return;
+    setCapSaving(true);
+    try {
+      await setCapabilities(
+        policyTenantId,
+        capabilities.map((c) => ({ agent_type: c.agent_type, enabled: c.enabled })),
+      );
+      message.success('租户开通策略已保存');
+      await loadCapabilities(policyTenantId);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCapSaving(false);
+    }
+  };
+
   const columns: ColumnsType<AgentItem> = [
     { title: '智能体', dataIndex: 'name', key: 'name' },
     { title: '类型', dataIndex: 'agent_type', key: 'agent_type' },
@@ -353,6 +423,9 @@ export default function Agents() {
       width: 220,
       render: (_: unknown, row: AgentItem) => (
         <Space size="small">
+          <Button type="link" size="small" onClick={() => openDetail(row)}>
+            详情
+          </Button>
           {canUpdate && (
             <Button type="link" size="small" onClick={() => openConfig(row)}>
               配置
@@ -464,9 +537,14 @@ export default function Agents() {
     <Card
       title={<Typography.Title level={4} style={{ margin: 0 }}>智能体列表</Typography.Title>}
       extra={
-        <Button type="primary" disabled={!canAdd} onClick={openCreate}>
-          新增智能体
-        </Button>
+        <Space>
+          <Button disabled={!canUpdate} onClick={() => void openPolicy()}>
+            租户开通策略
+          </Button>
+          <Button type="primary" disabled={!canAdd} onClick={openCreate}>
+            新增智能体
+          </Button>
+        </Space>
       }
     >
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -627,6 +705,117 @@ export default function Agents() {
               </Button>
             </Form.Item>
           </Form>
+        </Space>
+      </Drawer>
+
+      {/* 详情 */}
+      <Drawer
+        title={`智能体详情${detailRow ? ` · ${detailRow.name}` : ''}`}
+        width={560}
+        open={detailRow != null}
+        onClose={() => setDetailRow(null)}
+        destroyOnClose
+      >
+        {detailRow && (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="Agent 类型">{detailRow.agent_type}</Descriptions.Item>
+              <Descriptions.Item label="名称">{detailRow.name}</Descriptions.Item>
+              <Descriptions.Item label="说明">{detailRow.description || '-'}</Descriptions.Item>
+              <Descriptions.Item label="版本">{detailRow.version}</Descriptions.Item>
+              <Descriptions.Item label="全局状态">
+                <Tag color={detailRow.enabled ? 'green' : 'orange'}>
+                  {detailRow.enabled ? '运行中' : '已停用'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="代码接入">
+                <Tag color={detailRow.registered ? 'blue' : 'default'}>
+                  {detailRow.registered ? '已接入' : '未接入'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="更新时间">
+                {detailRow.updated_at ? dayjs(detailRow.updated_at).format('YYYY-MM-DD HH:mm:ss') : '-'}
+              </Descriptions.Item>
+            </Descriptions>
+            <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
+              输入 Schema
+            </Typography.Title>
+            <pre style={{ maxHeight: 320, overflow: 'auto', background: '#f6f7f9', padding: 12 }}>
+              {detailRow.input_schema ? JSON.stringify(detailRow.input_schema, null, 2) : '（无）'}
+            </pre>
+          </Space>
+        )}
+      </Drawer>
+
+      {/* 租户开通策略 */}
+      <Drawer
+        title="租户开通策略"
+        width={680}
+        open={policyOpen}
+        onClose={() => setPolicyOpen(false)}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Typography.Text type="secondary">
+            未配置视为开通；关闭后该租户不可用该智能体（以全局启用为前提）。
+          </Typography.Text>
+          <Select
+            style={{ width: '100%' }}
+            placeholder="选择租户"
+            showSearch
+            optionFilterProp="label"
+            value={policyTenantId ?? undefined}
+            onChange={(v) => onSelectTenant(v as number)}
+            options={tenants.map((t) => ({ label: `${t.name}（#${t.id}）`, value: t.id }))}
+          />
+          {policyTenantId != null && (
+            <>
+              <Table<CapabilityItem>
+                size="small"
+                rowKey="agent_type"
+                loading={capLoading}
+                pagination={false}
+                dataSource={capabilities}
+                columns={[
+                  { title: '智能体', dataIndex: 'name', key: 'name' },
+                  { title: '类型', dataIndex: 'agent_type', key: 'agent_type' },
+                  {
+                    title: '全局',
+                    dataIndex: 'global_enabled',
+                    key: 'global_enabled',
+                    render: (v: boolean) => (
+                      <Tag color={v ? 'green' : 'default'}>{v ? '启用' : '停用'}</Tag>
+                    ),
+                  },
+                  {
+                    title: '租户开通',
+                    key: 'enabled',
+                    render: (_: unknown, row: CapabilityItem) => (
+                      <Switch
+                        checked={row.enabled}
+                        disabled={!canUpdate}
+                        onChange={(checked) => toggleCapability(row.agent_type, checked)}
+                      />
+                    ),
+                  },
+                  {
+                    title: '来源',
+                    dataIndex: 'configured',
+                    key: 'configured',
+                    render: (v: boolean) => <Tag>{v ? '已配置' : '默认开通'}</Tag>,
+                  },
+                ]}
+              />
+              <Button
+                type="primary"
+                loading={capSaving}
+                disabled={!canUpdate}
+                onClick={() => void saveCapabilities()}
+              >
+                保存策略
+              </Button>
+            </>
+          )}
         </Space>
       </Drawer>
     </Card>

@@ -1,128 +1,104 @@
-# 多租户多智能体协作平台
+# 多租户多智能体协作平台（Multi-tenant Multi-Agent Collaboration Platform）
 
-单仓三块：`backend/` 一个 FastAPI 应用、`dashboard/` 管理后台前端（React + Ant Design）、`offline/` 意图模型离线训练与评估。
+---
 
-本文件按**当前代码实况**维护：已跑通的写在前面，骨架、占位、未接入项集中标注，不把“代码存在”写成“能力可用”。设计与表结构见 `docs/`。
+## 1. 项目定位与价值
 
-> 文档基线：2026-11-06。最近一轮同步覆盖了 QA/简历/考试、消息队列、审计、看板、Prompt Nacos、租户能力策略等实现。
+- **统一咨询入口**：用户只面对一个对话式入口，四类业务 Agent 的「发起动作」全部收敛；对话型（QA / 面试）实时流式，任务型（简历 / 考试）走异步任务与人工复核（HITL）。
+- **扩展零改动**：业务智能体仅需继承 `Agent` 基类即被自动发现、自动注册、自动接入入口、前端卡片与模板由后端规格下发——新增一个 Agent 不动编排层、协议、前端与路由。
+- **生产化底座**：多租户 RBAC + 行级隔离、异步解耦（Outbox + 消息队列 + 死信重投）、会话级 `checkpointer`、多模型注册表、配置中心 / 服务发现、统一 SSE 协议与全链路 `trace_id`、审计三日志、质量门禁。
 
-## 1. 现在能跑什么
+---
 
-| 能力 | 入口 | 说明 |
-| --- | --- | --- |
-| 登录与身份 | `POST /api/v1/auth/login`、`GET /auth/me`、`GET /auth/menus` | 密码校验（bcrypt），签发 JWT；成功/失败都落 `agent_login_log`；菜单按 scopes 从库下发 |
-| 认权 | 路由装配处统一挂依赖 | JWT 验签后查 RBAC 表得 `scopes`；`admin/**` 整组超管，`tenant/**` 整组租户上下文 |
-| 监控看板 | `GET /api/v1/dashboard` | 超管看全局/聚焦租户，租户管理员只看本租户；60 秒缓存，支持 `refresh=true` |
-| 管理后台 API | `/api/v1/admin/**` | 租户、用户/角色/菜单、Agent 定义与开通策略、插件、模型、消息、审计、配置中心 |
-| 租户业务 API | `/api/v1/tenant/**` | QA、简历、考试、文件、消息、审计、用户/角色、编排入口 |
-| QA 知识问答 | `/tenant/qa/chat/stream`、`/chat/stop`、`/qa/sessions`、`/qa/results` | SSE 流式问答、停止生成、会话/历史、结果/RAGAS 质量评估；Prompt 走 Nacos |
-| 简历评审 | `/tenant/resume/upload`、`/reviews` | PDF 上传 → Outbox `resume.review` → LangGraph 六维评审 → 报告详情；Prompt 走 Nacos |
-| 考试批改 | `/tenant/exam/submit`、`/submissions/{id}/review`、`/confirm` | Word 提交 → 三轨批改 → 汇总/薄弱点 → `interrupt()` 教师复核 → 确认发布；Prompt 走 Nacos |
-| 模拟面试 | `/tenant/interview/sessions`、`/chat/stream`、`/report` | 建会话并生成开场白 → 多阶段 SSE 面试 → 自动报告；Prompt 走 Nacos |
-| 文件知识库 | `/tenant/agent/files/**` | MinIO 上传/下载、批量上传、解析入 Milvus；已解析/解析中不会重复提交 |
-| 消息管理 | `/api/v1/admin/messages/**`、`/tenant/messages/**` | Outbox 队列、死信队列、重投/完成/失败；失败态保留错误原因 |
-| 审计 | `/admin/audit/logs`、`login-logs`、`api-logs` | 业务审计、登录日志、API 调用日志；租户/用户 ID 已 JOIN 成名称，支持租户与调用域筛选 |
-| 配置中心 | `/api/v1/admin/config/**` | 配置查询/历史、申请/复核/撤回；通过后写 Nacos |
-| 模型注册表 | `/api/v1/admin/models/**` | llm/embedding/reranker/classifier 的 active 记录驱动运行时，api_key 出参脱敏 |
-| Nacos | `NacosConfigManager`、`NacosDiscoverManager`、`NacosAIManager` | 配置中心、服务发现、MCP Server 发布；Prompt 读取 `group=PROMPT` |
-| 日志 | `backend/common/logger.py` | loguru 双写；启动/后台日志不带 trace，HTTP 请求内才注入 trace |
-| 管理后台前端 | `dashboard/` | 登录、看板、Agent/工具/模型、RBAC、配置中心、审计、消息、QA/简历/面试页面；考试页仍为 mock |
+## 2. 核心能力一览
 
-## 2. 未实现 / 已知限制
-
-| 项 | 现状 |
+| 维度 | 能力 |
 | --- | --- |
-| 面试会话删除 | 当前为软删归档：`agent_interview_sessions.status=deleted` + `agent_thread.status=archived`；checkpointer 状态保留可恢复，未做物理清理 |
-| 考试前端 | 后端提交/复核/确认接口与考试图已就绪，但 `dashboard/src/pages/agent/exam/*` 仍是 mock 数据，需要继续对接 |
-| `agent_run` 运行台账 | 表已建、字段齐全（prompt/completion tokens、cost、延迟），但当前没有写入链路；Token 总消耗暂时查不到 |
-| 看板业务口径 | `agent_run` 为空时，成功率/调用占比用 API 日志兜底；智能体数按「全局启用且未被租户显式关闭」计算 |
-| 业务审计覆盖 | `agent_audit_log` 目前主要记录 RBAC/租户/配置等管理动作；QA/简历/文件等业务操作没有逐条写业务审计，看板会用最近 API 调用兜底 |
-| 统一入口 | 旧 `chat/unified` 已下线；目前各 Agent 走独立入口，没有统一意图路由 |
-| 工具调用统计 | 插件页只有能力清单/启停，没有调用次数统计 |
-| 长期记忆 | 已注册 MemoryManager，但记忆读写链路仍未全面接入业务 |
-| Observability | `ObservabilityManager` 仍未注册，Langfuse/tracing 只有占位 |
-| 离线任务 | `offline/tasks/review`、`agent_audit` 仍抛 `NotImplementedError` |
-| Broker | `BrokerManager` 受 `RABBITMQ_ENABLED` 控制；未启用时 Outbox 只缓冲不投递 |
-| 租户能力策略 | `agent_capability_policy` 是租户级开关；**未配置视为开通**，只有 `enabled=false` 才关闭 |
+| 统一咨询入口 | 一个对话流入口，4 个业务 Agent 收敛；意图路由分派到对应 Agent 图；卡片 / 模板 / 路由键由后端 `specs()` 下发，前端不写死 |
+| 多智能体编排 | 「统一编排层（薄图）+ 各 Agent 独立编译图」分层；声明式 `AgentSpec` 单一真相源，编排层不写 `if agent_type ==` 分支 |
+| 异步任务与 HITL | 简历 / 考试走 Outbox 异步执行；考试批改 `interrupt()` 挂起待教师复核，确认后发布 |
+| 多模型治理 | `agent_model` / `agent_model_registry` 驱动运行时；LLM / embedding / reranker / classifier 分类型 active 记录；api_key 出参脱敏 |
+| 租户与权限 | JWT + RBAC + scope；业务 / 记忆按 `tenant_id` 行级隔离，Milvus 分区键、Redis `t:{tenant_id}:` 前缀 |
+| 可观测与审计 | `trace_id` 贯穿日志与数据；业务 / 登录 / API 调用三套审计日志；请求级 trace 注入；限流 |
+| 配置中心与集成 | Nacos 配置中心（Prompt 走 `group=PROMPT` 热刷新）、服务发现；Prompt 缺省回退代码内置 |
 
-## 3. 架构与装配现状
+---
+
+## 3. 系统架构
 
 ```
-Browser / curl
+Browser / 统一咨询前端 (/consultation/*)
       │  Authorization: Bearer <JWT> + X-Trace-Id
       ▼
-FastAPI  backend/api/router.py → /api/v1
-   ├── admin/**   整组 require_super_admin
-   ├── tenant/**  整组 require_tenant（超管 403）
-   ├── auth/**    /login 公开，/menus /me 挂 get_current_user
-   └── health、dashboard
+FastAPI  /api/v1
+   ├─ auth/**        登录 / 菜单 / 身份（JWT 签发、登录落库、成功失败均审计）
+   ├─ admin/**       整组 require_super_admin：租户/用户/角色/菜单/Agent/模型/插件/配置/审计/消息
+   ├─ tenant/**      整组 require_tenant：QA/简历/面试/考试/文件/消息/审计/编排入口
+   └─ health / dashboard
       │
-      ├── middleware：trace_id（纯 ASGI，兼容 SSE）→ api_log（落库）→ 限流
-      ├── security：JWT → RBAC 查库 → scopes → require_scope
+      ├─ middleware：trace_id（纯 ASGI，兼容 SSE）→ api_log（落库）→ 限流
+      ├─ security：JWT → RBAC 查库 → scopes → require_scope
       ▼
-Orchestrator ── AgentRegistry（已装配，从 agent / capability_policy 加载）
-      ├── QA：分类/HyDE/Multi-Query/检索/生成/记忆（checkpointer）
-      ├── Resume：解析→结构化→六维→问题→总结→回写（线性，不绑 checkpointer）
-      ├── Exam：解析→三轨→汇总→薄弱点→教师复核（interrupt，checkpointer）
-      └── Interview：多阶段状态机 → SSE 生成 → 报告回写（checkpointer）
+统一编排层  UnifiedGraph（薄图，持有会话级 checkpoint；thread_id = 会话 U）
+   ├─ 双通道路由：显式（点卡片/模板，跳过分类）· 隐式（LLM 意图分类）
+   ├─ dispatch → 按 AgentSpec.execution_mode 分派
+   ├─ 会话 / 历史 / 记忆一次维护，checkpointer 统一为会话级
+   ▼
+独立执行图（各自独立编译 / 独立 State / 独立演进；复用统一会话级 checkpointer）
+   ├─ QA        检索 / 精排 / 生成（多轮，会话上下文由统一层托管）
+   ├─ Interview 多阶段状态机 → SSE → 报告
+   ├─ Exam      解析 → 三轨批改 → 薄弱点 → interrupt() 教师复核 → 发布
+   └─ Resume    解析 → 结构化 → 六维 → 问题 → 总结（线性）
+      ▼
+Orchestrator + AgentRegistry（自动发现 + 库加载 + 热刷新）
       ▼
 PostgreSQL / Redis / Milvus / MinIO / RabbitMQ / Nacos
 ```
 
-启动顺序（`backend/server/register.py`，同 order 并行、跨 order 串行，失败回滚）：
+**启动装配**（`server/register.py`，同 order 并行、跨 order 串行、失败回滚）：Logging → Redis/PostgreSQL/Model/Security/Broker → Scheduler/Plugin/Milvus/Checkpointer/Memory → Orchestrator → FastAPI → Nacos 配置中心 → Nacos 服务发现。
 
-| order | 组件 |
-| --- | --- |
-| 10 | Logging |
-| 20 | Redis、PostgreSQL、Model、Security；Broker（受开关控制） |
-| 30 | Scheduler、Plugin、Milvus、Checkpointer、Memory |
-| 40 | Orchestrator |
-| 50 | FastAPI |
-| 60 | Nacos 配置中心 |
-| 70 | Nacos 服务发现 |
-| 75 | Nacos AI（MCP Server 发布） |
+---
 
-`ObservabilityManager` 仍未注册。
+## 4. 统一咨询入口（核心亮点）
 
-## 4. 目录结构
+这是本项目架构设计的重点：用「**统一编排层 + 独立执行图**」在收口入口的同时保留各业务图的独立演进能力。
 
-```
-backend/
-├─ main.py                 入口：AppServer 装配 + uvicorn
-├─ app_state.py            进程级单例 + 请求上下文 contextvars
-├─ server/                 AppServer / BaseManager / register.py / managers/*
-├─ config/                 pydantic-settings 读 .env → config 单例
-├─ api/
-│  ├─ router.py            按 admin / tenant / auth / 系统域分组挂载
-│  └─ v1/{admin,tenant,auth}/、dashboard.py、health.py
-├─ agents/{qa,resume,exam,interview}/   state + graph + nodes + prompts
-├─ orchestration/          Orchestrator + AgentRegistry
-├─ broker/                 Outbox / publisher / consumer / handlers / 定时任务
-├─ mcp/                    protocol / registry / builtin / retrieval / external
-├─ common/                 四模型工厂 / memory / config_center / logger / response
-├─ security/               rbac / security（JWT、依赖、输入护栏）
-├─ middleware/             auth / trace_id / api_log / rate_limit
-├─ observability/          exception / tracing（占位）
-└─ data/                   clients / dao / postgres（仅生成 DDL）/ sql / milvus
-dashboard/                  Vite + React + Ant Design 管理后台
-offline/                    离线训练/评估，不 import backend
-scripts/                    schema.sql / gen_schema.py / migrations / dev
-tests/                      pytest
-deploy/                     Dockerfile + gunicorn.conf.py
-docs/                       架构、数据库、登录权限、前端对接清单等
-```
+- **入口收敛**：一个流式聊天框，空态展示 4 张 Agent 卡片 + 模板问题；点击卡片即进入对应 Agent 的入口逻辑。收口的仅是「发起 Agent 图执行」这一个动作，结果页 / 报告页 / 详情页保持不变。
+- **智能体自动发现**：`Agent` 基类通过 `__init_subclass__` 在子类定义时自动登记，识别与文件路径、文件命名完全解耦。新增 Agent 只需在某处继承并实现，无需在编排器或注册表手动登记。
+- **AgentSpec 单一真相源**：意图提示词、scope、卡片、菜单、SSE 标签、checkpoint 分区、观测 tags 全部由 spec 生成；前端按 `event_type` 查渲染器表，不 import 任何 `agents/*`，遵循「平台能力不感知业务」。
+- **双通道路由**：点卡片 / 模板问题 = 显式通道（跳过意图分类）；直接输入 = 隐式通道（LLM 分类），`dispatch` 按 `execution_mode`（stream / task / clarify / pipeline）分流到对应图。
+- **统一 SSE 协议**：对话型逐字流 `token`；任务型流 `task_started / task_progress / task_result`，考试额外 `review_required` 事件。一套帧协议覆盖所有 Agent。
+- **会话 / 历史 / 记忆一次维护**：唯一会话历史源 + 会话级 `checkpointer`；短期记忆（Redis）与长期记忆（PG）分层，与 checkpoint 摘要、turn 历史形成职责清晰的记忆体系。
+- **观测一次**：一条 `trace` 覆盖意图分类与所有下游调用（含异步任务），`trace_id` 贯穿日志与数据；失败早暴露——spec 启动期 fail-fast 校验。
+- **扩展验收**：新增一个 Agent 仅需实现 `Agent` 子类与声明 `AgentSpec`，前后端改动量趋近于零，这是架构第一约束（D10）。
 
-## 5. 技术栈
+---
 
-- 后端：Python 3.12、FastAPI、pydantic-settings、SQLAlchemy(asyncpg) 手写 SQL、LangGraph/LangChain、sse-starlette、slowapi、loguru、nacos-sdk-python
-- 存储：PostgreSQL（业务/权限/审计/checkpoint）、Redis（缓存/短期记忆/停止标记）、Milvus（RAG 文档向量）、MinIO（文件与简历 PDF）、RabbitMQ（Outbox 投递）
-- 模型：LLM 走 OpenAI 兼容接口；embedding/reranker/classifier 为 bge-m3、bge-reranker-v2-m3、bert-base-chinese
-- 前端：React 18、TypeScript、Ant Design 5、Recharts、Vite 5
-- 质量：pytest、ruff
+## 5. 工程化与生产能力
 
-数据访问约定：运行时**不用 ORM**，DAO 全部 `text()` 手写 SQL；`data/postgres` 下的模型只供 `scripts/gen_schema.py` 生成 `schema.sql`。
+- **异步解耦**：业务动作经 Outbox 入队，由 RabbitMQ 投递；死信队列支持重投 / 标记失败，失败态保留错误原因；Broker 未启用时 Outbox 仅缓冲不投递（优雅降级）。
+- **持久化与一致性**：会话级 `checkpointer`（PostgreSQL）；`updated_at` 由触发器维护；DAO 全部手写 SQL（`text()`），`data/postgres` 下的 ORM 仅用于生成 `schema.sql`，运行时不用 ORM；统一响应信封 `{code, msg, data}`，业务失败为 HTTP 200 + `code != 0`。
+- **多模型注册表**：active 记录驱动运行时取模型；支持 LLM / embedding / reranker / classifier 多类别；api_key 出参脱敏，编辑留空表示保留原 key。
+- **配置中心与集成**：`NacosConfigManager` / `NacosDiscoverManager` 分别负责配置中心与服务发现；Prompt 读取 `group=PROMPT`，缺失回退代码内置默认值。
+- **安全与隔离**：JWT 验签后查 RBAC 得 `scopes`；`admin/**` 整组超管、`tenant/**` 整组租户上下文（超管无租户，调租户接口 403）；存储按 `tenant_id` 行级过滤，向量 / 缓存按租户分区前缀。
+- **可观测与审计**：`trace_id` 全链路（兼容 SSE）；请求内注入 trace 的 loguru 双写；业务 / 登录 / API 调用三套审计日志（租户 / 操作人已 JOIN 名称，支持筛选）；API 级限流。
+- **质量门禁**：`pytest`（DAO 与客户端用 AsyncMock 替身，不依赖真实中间件）、`ruff` 格式化与静态检查、`pydantic` 校验边界、`fail-fast` 启动（manager 初始化失败即回滚）。
 
-## 6. 快速开始
+---
+
+## 6. 技术栈
+
+- **后端**：Python 3.12、FastAPI、pydantic-settings、SQLAlchemy(asyncpg) 手写 SQL、LangGraph / LangChain、sse-starlette、slowapi、loguru、nacos-sdk-python
+- **存储**：PostgreSQL（业务 / 权限 / 审计 / checkpoint）、Redis（缓存 / 短期记忆 / 停止标记）、Milvus（RAG 文档向量）、MinIO（文件与简历 PDF）、RabbitMQ（Outbox 投递）
+- **模型**：LLM 走 OpenAI 兼容接口；embedding / reranker / classifier 为 bge-m3、bge-reranker-v2-m3、bert-base-chinese
+- **前端**：React 18、TypeScript、Ant Design 5、Recharts、Vite 5
+- **质量**：pytest、ruff
+
+数据访问约定：运行时**不用 ORM**，DAO 全部 `text()` 手写 SQL；`data/postgres` 仅 `scripts/gen_schema.py` 生成 `schema.sql` 的模型来源。
+
+---
+
+## 7. 快速开始
 
 ```bash
 # 1) 依赖
@@ -132,19 +108,18 @@ pip install -e ".[dev]"
 # 2) 配置
 cp .env.example .env        # 至少填 JWT_SECRET、POSTGRES_*、NACOS_*
 
-# 3) 中间件（PostgreSQL / Redis / Milvus + etcd / MinIO / RabbitMQ）
+# 3) 中间件（PostgreSQL / Redis / Milvus+etcd / MinIO / RabbitMQ；Langfuse 可选）
 docker compose up -d
+docker compose ps            # 等到 postgres / redis / milvus / minio / rabbitmq 全部 healthy
+# 单独拉起/排查：docker compose up -d postgres redis etcd milvus minio rabbitmq
+# Milvus 首次启动需初始化 etcd 与索引，冷启动可达数十秒；日志：docker compose logs -f milvus
+# Langfuse（可观测，可选）：按官方 compose 拉起后配置 LANGFUSE_* 即生效
 
-# 4) 建库、建表与种子（两个脚本都要执行，缺 seed_data.sql 会没有角色/菜单）
+# 4) 建库、建表与种子（两个脚本都要执行）
 psql -h localhost -U agent -d agent_platform -f scripts/schema.sql
 psql -h localhost -U agent -d agent_platform -f scripts/seed_data.sql
-# 表与数据落在 unified_schemas schema；库名仍是 agent_platform。
-# schema.sql 由 python scripts/gen_schema.py 从模型生成，改表结构后重新生成（请勿手改）。
-# 应用连接的 search_path 默认 unified_schemas，存量库可用 POSTGRES_SEARCH_PATH 指回旧 schema。
-# UUID 主键用 PG13+ 内置 gen_random_uuid()，不依赖 uuid-ossp 扩展，新旧 schema 互不干扰。
-# 两个脚本都要跑：只跑 schema.sql 会没有角色/菜单，登录与菜单不可用。
 
-# 5) 启动后端（端口取 .env 的 PORT）
+# 5) 启动后端
 python backend/main.py
 
 # 6) 启动前端（另开终端）
@@ -152,194 +127,110 @@ cd dashboard && npm install && npm run dev
 ```
 
 - 后端默认 `PORT=8000`；本仓库 `.env` 现为 `9800`，`dashboard/vite.config.ts` 代理也指向 `9800`。
-- 前端固定 `5173`，只代理 `/api` 与 `/v1`；生产需同域反代或 CORS。
+- 种子账号：`admin / 123456`（超管）。
+- Nacos 未启动时置 `NACOS_ENABLED=false`；Prompt 回退代码内置默认值。
 - 启动会做模型就绪自检：`agent_model_registry` 中 llm / embedding / reranker / classifier 各需至少一条 `enabled=true`。
-- 种子账号：`admin / 123456`（超管，无租户）。
-- Nacos 未启动时把 `NACOS_ENABLED`、`NACOS_CONFIG_ENABLED` 置 False；Prompt 会回退代码内置默认值。
-- Broker 默认受 `RABBITMQ_ENABLED` 控制；当前示例 `.env` 为 True。
+- 运维指标：`GET /metrics`（Prometheus 文本，免鉴权）；健康检查 `GET /health?deep=true`。
 
-## 7. 配置
-
-统一由 `backend/config/schemas.py`（pydantic-settings）读 `.env`，按分组加前缀；其余模块只消费 `config` 单例。
-
-| 分组 | 前缀 | 关键项 |
-| --- | --- | --- |
-| 服务 | `SERVICE_*` / `PORT` / `VERSION` | `SERVICE_IP`、`PORT`、`DOCS_ENABLED` |
-| PostgreSQL | `POSTGRES_` | host / port / user / password / db / search_path |
-| Redis | `REDIS_` | host / port / password |
-| Milvus | `MILVUS_` | host / port / db_name / collection |
-| RAG 分块/检索 | `QA_` | `PARENT_CHUNK_*` / `CHILD_CHUNK_*` / `RECALL_TOP_K` / `RERANK_TOP_K` / `MAX_UPLOAD_MB` / `AUTO_PARSE` |
-| MinIO | `MINIO_` | endpoint / bucket / access_key / secret_key |
-| 安全 | `JWT_` | secret / algorithm / expire_minutes |
-| 可观测 | `LANGFUSE_` | host 与密钥（tracing 尚未接） |
-| Nacos 发现 | `NACOS_` | enabled / server_addr / namespace / group |
-| Nacos 配置 | `NACOS_CONFIG_` | enabled / server_addr / namespace / group |
-| 日志 | `LOG_*` | level / file / size / file_days |
-| API 日志 | `API_LOG_*` | enabled / db / save_body / max_body / exclude |
-| 定时任务 | `SCHEDULER_` | `RESUME_TIMEOUT_MIN` / `SCAN_INTERVAL` / `ESCALATION_TIMEOUT_MIN` |
-| 离线 | `OFFLINE_*` | data / base_model / model_out / epochs / batch / lr / max_len |
-
-Prompt 支持 Nacos：`group=PROMPT`，`data_id` 为 `qa_*` / `resume_*` / `exam_*` / `interview_*` 小写；Nacos 缺失时回退代码内置默认值。面试字典型提示词兼容 JSON 与 Python 字典字面量。
-
-## 8. API 概览
-
-全部在 `/api/v1` 下。返回统一信封 `{code, msg, data}`；业务失败是 HTTP 200 + `code != 0`，鉴权失败是 401/403。
-
-**认证** `/auth`
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/login` | body `{username, password, tenant_id?}` |
-| GET | `/me` | 当前身份（用户、租户、角色、scopes） |
-| GET | `/menus` | 按 scopes 过滤的菜单树 |
-| POST | `/logout` | 失效当前 token 的 Redis 会话 |
-
-**管理域** `/admin`（整组 super_admin）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET/POST | `/agents` | 列表（含租户开通状态）/ 新增 |
-| GET/PUT/DELETE | `/agents/{type}` | 详情 / 更新 / 删除 |
-| PATCH | `/agents/{type}/enabled` | 全局启停 |
-| GET/PUT | `/agents/tenants/{id}/capabilities` | 租户级开通策略 |
-| GET/POST/PUT/DELETE | `/agents/{type}/models` | Agent 模型绑定 |
-| GET/POST/PUT/DELETE/PATCH | `/models` | 模型注册表 CRUD / 启停 |
-| GET/POST/PATCH/DELETE | `/tenants` | 租户列表/新建/启停/删除 |
-| GET/POST/PUT/DELETE | `/menus` | 菜单管理 |
-| GET/POST/PUT/DELETE | `/roles` | 角色与权限点 |
-| GET/PUT | `/rbac/users`、`/rbac/roles` | 用户/角色管理 |
-| GET/POST/PATCH | `/plugins` | 插件清单/新增/启停 |
-| GET/POST/PUT/DELETE | `/config/*` | 配置查询、申请、复核、撤回 |
-| GET | `/audit/logs`、`/audit/login-logs`、`/audit/api-logs` | 业务审计 / 登录日志 / API 调用日志 |
-| GET/PATCH | `/messages/queue`、`/messages/dead-letters` | 消息队列 / 死信队列 / 状态变更 |
-
-**租户域** `/tenant`（整组需租户 token，超管 403）
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/qa/chat`、`/qa/chat/stream`、`/qa/chat/stop` | 普通/流式问答、停止生成 |
-| GET/POST/DELETE | `/qa/sessions` | 会话列表/新增/删除/详情 |
-| GET | `/qa/results`、`/qa/results/{id}`、`/quality` | 问答结果、详情、RAGAS 质量 |
-| POST | `/qa/results/{id}/review` | 触发 RAGAS 测评 |
-| POST | `/resume/upload` | 上传 PDF，异步评审 |
-| GET/DELETE | `/resume/reviews`、`/reviews/{id}` | 评审列表/详情/删除 |
-| POST | `/exam/submit` | 提交试卷，异步批改 |
-| GET | `/exam/my-submissions`、`/submissions/{id}/review` | 我的提交、教师复核 |
-| POST | `/exam/submissions/{id}/confirm` | 教师确认并发布 |
-| POST | `/interview/sessions` | 创建面试会话并生成开场白 |
-| POST | `/interview/sessions/{id}/chat`、`/chat/stream` | 普通/流式多轮面试 |
-| POST | `/interview/chat/stop` | 写 Redis 停止标记，停止当前流式生成 |
-| GET | `/interview/sessions` | 面试会话列表（排除已删除） |
-| GET | `/interview/sessions/{id}` | 会话详情 + checkpointer 历史消息回放 |
-| DELETE | `/interview/sessions/{id}` | 删除会话（软删归档） |
-| GET | `/interview/sessions/{id}/report` | 面试报告 |
-| GET/POST | `/agent/files`、`/upload`、`/batch-upload`、`/parse` | 文件列表/上传/批量上传/解析 |
-| GET | `/agent/files/{id}/download` | 文件下载 |
-| GET/PUT/DELETE | `/users`、`/roles` | 本租户用户/角色 |
-| GET | `/audit/logs` | 本租户审计日志 |
-| GET/PATCH | `/messages/queue`、`/messages/dead-letters` | 本租户消息/死信 |
-
-**系统域**
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/health`、`/api/v1/health` | 探针，免鉴权 |
-| GET | `/api/v1/dashboard` | 看板（超管全局/聚焦租户，租户管理员本租户） |
-
-## 9. 认证与权限
-
-身份只有一个来源：`POST /auth/login` 签发的 JWT，`Authorization: Bearer`。后端不读任何身份头，也不给开发默认值。
-
-- 登录会话由 Redis 承载（滑动续期）：签发 JWT 时写 `auth:session:{jti}`；`/auth/logout` 立即失效。
-- 普通用户/租户管理员 token 含 `tenant_id`；超管不含租户，业务接口一律 403。
-- 授权真源是 `agent_role`、`agent_role_permission`、`agent_user_tenant`；`get_current_user` 解析出 `scopes`。
-- 路由防护用 `require_role` / `require_scope`；`admin/**` 整组 `require_super_admin`，`tenant/**` 整组 `require_tenant`。
-- 存储隔离：业务/记忆按 `tenant_id` 行级过滤；Milvus 用 partition key；Redis 用 `t:{tenant_id}:` 前缀。
-- Agent 可用性 = `agent.enabled` AND 租户 `agent_capability_policy`（未配置视为开通）AND 调用方 scope。
-
-详见 `docs/登录与权限校验说明.md`。
-
-## 10. 数据层
-
-`schema.sql` 由 `scripts/gen_schema.py` 从 `backend/data/postgres` 模型生成，按域分布：
-
-| 域 | 表 |
-| --- | --- |
-| 身份与权限 | `agent_user`、`agent_user_tenant`、`agent_role`、`agent_role_permission`、`agent_menu`、`agent_login_log`、`agent_api_call_log` |
-| 租户 | `agent_tenant` |
-| 会话与运行 | `agent_thread`、`agent_run`、`agent_message`、`agent_long_term_memory`、`agent_escalation` |
-| Agent 与能力 | `agent`、`agent_capability_policy`、`agent_tool`、`agent_plugin` |
-| 模型 | `agent_model`、`agent_model_registry` |
-| 业务 | `agent_exams`、`agent_exam_submissions`、`agent_exam_reviews`、`agent_questions`、`agent_scoring_points`、`agent_resume_reviews`、`agent_interview_sessions`、`agent_interview_questions`、`agent_qa_results`、`agent_qa_ragas_evals` |
-| 配置中心 | `agent_config_approval`、`agent_config_review` |
-| 消息 | `agent_outbox`、`agent_dead_letter` |
-| 审计与知识 | `agent_audit_log`、`agent_knowledge_pending_queue` |
-
-- DAO 按域放在 `backend/data/dao/{auth,agent,business,ops}`，全部手写 SQL。
-- `schema.sql` 只含 DDL；种子在 `scripts/seed_data.sql`：平台超管租户、admin 账号、2 个内置角色（admin / tenant_admin）及权限点、菜单树、Agent 登记、模型登记。
-- `updated_at` 由 `set_updated_at()` / `update_updated_at_column()` 触发器刷新；不再使用 `WHEN (OLD IS DISTINCT FROM NEW)`（json 列没有 `=`，会导致任何 UPDATE 失败）。
-- 改表结构流程：改 `data/postgres` 模型 → `python scripts/gen_schema.py` → 重新导入 `schema.sql`。
-
-表结构细节见 `docs/数据库设计文档.md`。
-
-## 11. 管理后台前端
-
-`dashboard/`，Vite + React 18 + TypeScript + Ant Design 5。
-
-| 路由 | 页面 | 状态 |
-| --- | --- | --- |
-| `/login` | 登录 | 已接 |
-| `/dashboard` | 监控概览 | 已接；刷新按钮强制回源 |
-| `/agents/list` | 智能体管理 | 已接；缺详情/租户策略 UI |
-| `/tools` | 工具与插件 | 已接清单/启停；缺调用统计 |
-| `/models` | 模型注册表 | 已接 |
-| `/users`、`/tenants`、`/roles`、`/menus` | RBAC 与租户 | 已接 |
-| `/config/*` | 配置中心 | 已接 |
-| `/audit/operation`、`/audit/login`、`/audit/api` | 业务/登录/API 审计 | 已接；ID 映射名称、支持筛选 |
-| `/messages/queue`、`/messages/dead-letters` | 消息/死信 | 已接；固定列、状态/模式筛选、失败原因 |
-| `/agent/qa/*` | QA 文件/结果/问答/会话 | 已接；SSE、停止、动态加载 |
-| `/agent/resume/analysis` | 简历列表/报告 | 已接；上传、轮询、报告、删除 |
-| `/agent/exam/*` | 考试发起/结果/报告 | 后端已接，前端仍 mock |
-| `/agent/resume/upload`、`/resume/*` | 旧简历入口 | 兼容保留 |
-
-- token 存 `localStorage.ap_token`，会话信息存 `ap_session`；任意 401 清 token 回登录页。
-- 请求层 `services/http.ts` 主动带 `X-Trace-Id`，后端 trace 中间件透传。
-- 所有 ProTable 列表统一支持「固定列」选择（`components/ProTable.tsx`），默认固定前两列。
-- 左侧菜单由登录响应 `menus` 驱动，不再代码写死。
-- 逐页测试要点见 `docs/前端页面接口对接现状与测试清单.md`。
-
-## 12. 离线模块
-
-`offline/` 只负责产出模型产物，在线只消费，**不 import 任何 `backend` 代码**。
+## 8. 质量与工程实践
 
 ```bash
-python -c "from offline import list_tasks, run_task; print(list_tasks()); run_task('intent_training')"
+make test      # pytest -q
+make format    # ruff format + ruff check --fix
 ```
 
-| 功能块 | 状态 |
-| --- | --- |
-| `intent_training` | 已实现：微调 bert-base-chinese，产物写 `models/` |
-| `intent_eval` | 已实现：准确率 / 分类报告 / 混淆矩阵 → `metrics.json` |
-| `review` | 未实现：`run()` 抛 `NotImplementedError` |
-| `agent_audit` | 未实现：同上 |
+测试不依赖真实中间件（DAO 与客户端用 AsyncMock 替身）。覆盖 schema 与模型一致性、登录日志、菜单与角色、看板统计、权限映射、身份解析、记忆隔离、就绪自检、审计 SQL、API 契约等。
 
-在线侧由 `LLMFactory.classify()` 懒加载产物（读 `meta.json` 取标签顺序与 `max_len`）。
+---
 
-## 13. 测试
+## 9. Agent 执行图流程图
 
-```bash
-make test        # pytest -q
-make format      # ruff format + ruff check --fix
+统一咨询入口按 `AgentSpec.execution_mode` 把请求分流到各 Agent 独立图；各图独立编译、独立 State、独立演进，但**复用统一编排层的会话级 checkpointer**（`thread_id = 会话 U`）。
+
+```mermaid
+flowchart TD
+    IN["用户输入 / 点卡片 / 模板问题"] --> RT{"意图路由"}
+    RT -->|"显式：点卡片或模板（跳过分类）"| DISP
+    RT -->|"隐式：LLM 意图分类"| DISP
+    DISP["dispatch 按 execution_mode 分流"] --> MODE{"execution_mode"}
+
+    MODE -->|stream| QA
+    MODE -->|stream| IV
+    MODE -->|task| CV
+    MODE -->|task| EX
+    MODE -->|pipeline| PIPE["run_pipeline 多 Agent 串联"]
+
+    subgraph GRAPHS["独立执行图（各自独立编译 / State / 演进）"]
+        QA["QA 问答：检索 → 精排 → 生成"]
+        IV["面试：多阶段状态机 → SSE → 报告"]
+        CV["简历：解析 → 结构化 → 六维 → 总结"]
+        EX["考试：解析 → 三轨批改 → 薄弱点 → interrupt() 教师复核 → 发布"]
+    end
+
+    QA --> CP[("统一会话级 checkpointer（thread_id = 会话 U）")]
+    IV --> CP
+    CV --> OUT["Outbox 异步任务"]
+    EX --> OUT
+    OUT --> CP
+    CP --> HITL["考试 interrupt() 挂起 → 教师复核 → 确认发布"]
+
+    style CP fill:#e8f0fe,stroke:#3b5bdb
 ```
 
-测试不依赖真实中间件（DAO 与客户端用 AsyncMock 替身）。覆盖 schema.sql 与模型一致性、登录日志、菜单与角色、看板统计、权限映射、身份解析、记忆隔离、就绪自检、审计 SQL 等。
+### 各 Agent 的 LangGraph 实际编译图
 
-## 14. 已知限制
+以下为四个业务 Agent 图的实际编译结果（节点名即代码中的 graph 节点）：
 
-1. `deploy/Dockerfile` 的 gunicorn 入口是 `backend.main:app_state.fastapi_app`，该属性要到 `AppServer.start_all` 才赋值；更稳的是 `python backend/main.py`。
-2. `make dev` 固定 8000，`.env` 里的 `PORT` 对它不生效，注意和前端代理一致。
-3. 后端未配置 CORS，前端只能走 Vite 代理（开发）或同域反代（生产）。
-4. `DOCS_ENABLED` 默认 False，本地要看 Swagger 需在 `.env` 打开。
-5. 模型注册表的 `api_key` 出参为 `***`，前端编辑留空表示保留原 key。
-6. `agent_run` 尚未写入，Token 消耗/真实业务成功率/租户用量排行暂无本地台账；看板当前用 API 日志兜底。
-7. 业务审计未覆盖 QA/简历/文件等业务操作；看板「最近活动」会在审计不足时混入 API 调用记录。
+**QA 问答图**：`classify_query` 按查询类型分流（精确 / 宽泛 / 精准 / 联网 / 通用）→ 检索或改写 → 按置信度走 RAG / 直答 / 联网 → `save_memory`。
+
+![QA 问答图](docs/graphs/qa_graph.png)
+
+**模拟面试图**：`load_context` → `check_stage` 判定阶段 → 答题评估/生成回应，或生成/保存报告 → `save_memory`。
+
+![模拟面试图](docs/graphs/interview_graph.png)
+
+**简历评审图**：`upload_to_minio` → `download_pdf` → 抽取文本/结构化 → 六维评审 → 问题诊断 → 总结 → 落库。
+
+![简历评审图](docs/graphs/resume_graph.png)
+
+**考试批改图**：`parse_word` → 加载题目 → 三轨批改 → 汇总 → 薄弱点分析 → 通知教师 → `teacher_review`（`interrupt()`）→ `apply_teacher_decision` → 发布。
+
+![考试批改图](docs/graphs/exam_graph.png)
+
+---
+
+## 10. 前端界面展示
+
+> 前端为 React 18 + TypeScript + Ant Design 5 单页应用。以下为关键界面的布局示意；实际运行截图放入 `docs/screenshots/` 后，可将下方示意替换为 `![](docs/screenshots/xxx.png)`。
+
+### 10.1 统一咨询入口 `/consultation/chat`
+
+```mermaid
+flowchart LR
+    subgraph L["左侧栏"]
+        L1["会话列表 / 新建 / 删除"]
+    end
+    subgraph R["主区"]
+        R1["空态：4 张能力卡片 + 模板问题"] --> R2["流式聊天区"]
+        R2 --> R3["输入框 + 附件上传"]
+    end
+    L --- R
+```
+
+### 10.2 智能体管理 `/agents`
+
+```mermaid
+flowchart LR
+    A["智能体列表"] --> B["详情 Drawer（版本 / 接入状态 / 输入 Schema）"]
+    A --> C["租户开通策略 Drawer（选租户 → 开关 → 保存）"]
+    A --> D["模型绑定 / 全局启停 / 新增删除"]
+```
+
+### 10.3 监控看板 `/dashboard`
+
+```mermaid
+flowchart LR
+    K["4 张指标卡"] --> T["请求趋势面积图"]
+    T --> P["智能体调用占比（饼图）"]
+    P --> G["平台存量（global：租户 / 账号 / Agent / 模型 / 插件）"]
+```

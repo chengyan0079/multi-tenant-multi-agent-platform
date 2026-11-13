@@ -61,6 +61,13 @@ export interface TenantRankRow {
   threads: number;
   runs: number;
   tokens: number;
+  avg_cost_ms: number | null;
+}
+
+export interface UsagePoint {
+  date: string;
+  tokens: number;
+  avg_ms: number;
 }
 
 export interface DashboardData {
@@ -71,6 +78,7 @@ export interface DashboardData {
   agent_distribution: DistributionItem[];
   latency_by_hour: LatencyPoint[];
   recent_activities: ActivityRow[];
+  usage_trend: UsagePoint[];
   /** 以下仅超管返回 */
   global?: Record<string, number>;
   tenant_ranking?: TenantRankRow[];

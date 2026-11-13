@@ -1133,6 +1133,7 @@ CREATE TABLE IF NOT EXISTS agent_tool (
 	plugin VARCHAR(64) NOT NULL, 
 	description TEXT NOT NULL, 
 	schema TEXT NOT NULL, 
+	config TEXT NOT NULL, 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	PRIMARY KEY (id), 
@@ -1145,6 +1146,7 @@ COMMENT ON COLUMN "agent_tool".name IS '工具名';
 COMMENT ON COLUMN "agent_tool".plugin IS '所属插件';
 COMMENT ON COLUMN "agent_tool".description IS '描述';
 COMMENT ON COLUMN "agent_tool".schema IS '工具Schema（JSON）';
+COMMENT ON COLUMN "agent_tool".config IS '工具运行配置（JSON：provider/api_key/endpoint 等）';
 COMMENT ON COLUMN "agent_tool".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_tool".updated_at IS '更新时间（更新时由库触发器刷新）';
 

@@ -41,7 +41,6 @@ class QueueSpec:
 
 
 TASK_QUEUES: tuple[QueueSpec, ...] = (
-    QueueSpec(TaskType.AGENT_RUN, prefetch=1),  # 多 Agent 串联 / 长推理
     QueueSpec(TaskType.QA_PARSE, prefetch=2),  # qa 知识库文档解析 + 向量化，吃 CPU
     QueueSpec(TaskType.RESUME_REVIEW, prefetch=1),  # 简历评审跑 LangGraph
     QueueSpec(TaskType.QA_RAGAS_REVIEW, prefetch=1),  # 问答 RAGAS 质量测评（LLM 打分）
@@ -56,22 +55,27 @@ BROADCAST_TYPES: tuple[TaskType, ...] = ()
 
 
 def retry_queue_name(queue_name: str) -> str:
+    """重试队列名（`<queue>.retry`）。"""
     return f"{queue_name}.retry"
 
 
 def dlq_queue_name(queue_name: str) -> str:
+    """死信队列名（`<queue>.dlq`）。"""
     return f"{queue_name}.dlq"
 
 
 def dlq_queue_names() -> tuple[str, ...]:
+    """全部需重试队列对应的死信队列名。"""
     return tuple(dlq_queue_name(spec.name) for spec in TASK_QUEUES if spec.retry)
 
 
 def broadcast_queue_name(task_type: TaskType, instance_id: str) -> str:
+    """广播队列名（每副本独占：`<type>.<instance_id>`）。"""
     return f"{task_type.value}.{instance_id}"
 
 
 def broadcast_queue_names(instance_id: str) -> tuple[str, ...]:
+    """本实例全部广播队列名。"""
     return tuple(broadcast_queue_name(t, instance_id) for t in BROADCAST_TYPES)
 
 

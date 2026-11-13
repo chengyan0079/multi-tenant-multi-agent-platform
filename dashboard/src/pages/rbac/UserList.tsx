@@ -37,6 +37,7 @@ export default function UserList() {
   const [roleForm] = Form.useForm();
 
   useEffect(() => {
+    if (!isTenantContext()) return;
     listAssignableRoles()
       .then((names) => setRoleOptions(names.map((name) => ({ value: name, label: name }))))
       .catch(() => {});
@@ -264,13 +265,16 @@ export default function UserList() {
           form={roleForm}
           layout="vertical"
           onFinish={onRoleSubmit}
-          initialValues={{ role: 'student', tenant_id: editUser?.tenant_id }}
+          initialValues={{ role: 'tenant_admin', tenant_id: editUser?.tenant_id }}
         >
           <Form.Item name="tenant_id" label="目标租户" rules={[{ required: true }]}>
             <Select options={tenantOptions} />
           </Form.Item>
-          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
-            <Select options={roleOptions} />
+          <Form.Item label="角色">
+            <Input value="租户管理员" disabled />
+          </Form.Item>
+          <Form.Item name="role" hidden>
+            <Input />
           </Form.Item>
         </Form>
       </Modal>

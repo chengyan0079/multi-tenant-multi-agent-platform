@@ -81,12 +81,12 @@
 ## 3. 编排层（`orchestration`）
 
 - **AgentRegistry**：`backend/orchestration/agent_registry.py`，`register()` / `get()` / `is_enabled_for_tenant()` / `load_from_db()`（从 `agent` 表 + `agent_capability_policy` 表加载，支持租户级开关）。
-- **四 Agent 真实注册**：`backend/server/managers/orchestrator_manager.py` 循环 `for agent_cls in (ResumeAgent, QAAgent, ExamAgent, InterviewAgent): agent_cls().register_into(registry)`。
+- **Agent 自动发现与注册**：`Agent` 基类通过 `__init_subclass__` 在子类定义时自动登记（识别仅依赖继承关系，与文件路径/命名无关）；`orchestrator_manager.start()` 先 `load_agent_modules()` 触达全部子模块，再 `iter_agent_classes()` 收集具体子类注册，并按 `agent` 表 `enabled` 同步注册表开关。新增 Agent 无需改动注册处。
 - **Orchestrator**：`backend/orchestration/orchestrator.py`：
   - `run_agent(agent_type, thread_id, inputs)` → `registry.get()` 取图 → `graph.ainvoke(inputs, configurable={"thread_id": ...})`（**单 agent 直达**）；
-  - `run_pipeline(pipeline_plan, ...)` → 顺序 `run_agent` 串联、前输出作后输入（**多 agent 串联**，但**未被统一入口使用**）；
+  - `run_pipeline(pipeline_plan, ...)` → 顺序 `run_agent` 串联、前输出作后输入（**多 agent 串联**，统一入口按 `execution_mode=pipeline` 调度）；
   - `resume(agent_type, thread_id, value)` → 向被 `interrupt()` 挂起的图注入决策；Exam 图已装配，教师复核恢复链路可用。
-- **统一入口 unified_chat（已下线）**：原 `backend/api/v1/tenant/chat/unified.py` 已删除，后续整合全部智能体后再做；原实现 `chat()`（`POST /chat`，SSE）：会话归属校验 → 规则前置拦截(零 Token) → `factory.classify`(bert-chinese 粗分) → LLM 路由 → 权限点校验 → `app_state.orchestrator.run_agent(...)`。⚠️ **只走单 agent 直达，未用 `run_pipeline`**；其 LLM 路由是占位实现（注释「真实实现见 M7」，直接把 `general` 兜底成 `qa`）。
+- **统一咨询入口（已实现）**：后端 `backend/api/v1/tenant/agent/unified_{chat,sessions,unified_session_admin}.py` 提供 `/unified/*`（chat/stream、stop、attachments、agents、sessions）；前端为 `/consultation/*`。统一编排层 `UnifiedGraph` 做双通道路由（显式点卡片/模板跳过分类；隐式 LLM 意图分类）→ `dispatch` 按 `AgentSpec.execution_mode`（stream/task/clarify/pipeline）分流 → `orchestrator.run_agent(agent_type)` 调对应独立图；对话型流 token、任务型流状态事件，一套 SSE 协议覆盖全部 Agent。
 
 ---
 
@@ -154,13 +154,13 @@
 ## 9. 明确未实现清单
 
 1. **面试会话物理清理缺失** — 删除为软删归档，checkpointer 状态保留可恢复；暂无物理清理 checkpoint / 业务行接口。
-2. **考试前端未接** — 后端考试图与接口已就绪，但 `dashboard/src/pages/agent/exam/*` 仍是 mock。
+2. **考试教师复核页待补** — 学生侧 `ExamResults` / `ExamReport` 已对接真实接口并移除 mock；教师复核 / 发布走后端 HITL，管理侧复核页尚未提供。
 3. **通知渠道未实现** — `backend/services/notification.py` `CHANNELS: dict = {}`，`send_notification` 仅记告警。
-4. **统一入口已下线** — `backend/api/v1/tenant/chat/unified.py` 已删除，后续整合全部智能体时再实现统一入口与模型路由。
+4. **统一入口已实现** — 见 §3「统一咨询入口」，后端 `/unified/*`、前端 `/consultation/*`，4 个 Agent 收敛，不再是待办项。
 5. **`core` / `rag` / `plugins` 顶层包缺失** — 能力迁移到 `orchestration` / `mcp` / `data`+`common.llm`。
 6. **resume 图未绑 checkpointer** — `backend/agents/resume/graph.py` `builder.compile()` 无 checkpointer → 无多轮会话态 / HITL 持久化。
 7. **ObservabilityManager 未注册** — `backend/server/register.py` 中仍注释，可观测性未接入。
-8. **`agent_run` 台账未写入** — 表与字段已有，但 QA/简历/考试执行完没有写 run/token；看板成功率/占比暂用 API 日志兜底。
+8. **`agent_run` 已移除** — 运行/会话历史统一由 `agent_unified_turn` 承载（统一咨询入口设计方案 §5），不再保留 run 台账表。
 9. **业务审计覆盖不全** — `agent_audit_log` 主要覆盖管理动作，QA/简历/文件等业务操作未逐条写审计。
 10. **Token 统计缺失** — 尚无 Callback 汇总 prompt/completion tokens；历史消耗只能看模型供应商控制台。
 
@@ -174,6 +174,6 @@
 | `rag/` 自研检索包 | 实为 `mcp/retrieval/` + `data/milvus/` + 外部 RAG 服务委派 |
 | `plugins/` 插件包 | 实为 `mcp/` 模块（协议/注册/发现） |
 | 四 Agent 均按 LangGraph 受控图实现 | qa(条件路由)、resume(线性)、exam(三轨+HITL)、interview(多阶段状态机) 均已落地 |
-| 多 Agent 串联 Pipeline 由统一入口调度 | `run_pipeline` 存在但统一入口已下线，当前各 Agent 独立入口 |
+| 多 Agent 串联 Pipeline 由统一入口调度 | 统一咨询入口已实现；`run_pipeline` 按 `execution_mode=pipeline` 调度，4 个 Agent 均由 `/unified/*` 发起 |
 | 自研 RAG 全链路召回/重排 | `backend/rag` + Milvus 闭环已接 QA 热路径；embedding/rerank 均在本仓库调用 |
 | broker 承载长任务/重索引/通知 | 框架完备；QA parse、resume、exam、RAGAS、通知有生产端，`agent.run`/`audit.flush` 暂无生产端 |

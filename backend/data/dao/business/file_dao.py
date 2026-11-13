@@ -1,6 +1,6 @@
 """文件元数据 DAO：`agent_file`（单表版本化）。"""
 
-# todo 版本化判定与 pg_advisory_xact_lock 并发控制见 upload 方法，改动前先读其事务边界。
+# 版本化判定与 pg_advisory_xact_lock 并发控制见 upload 方法，改动前先读其事务边界。
 from __future__ import annotations
 
 import asyncio

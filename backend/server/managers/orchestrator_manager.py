@@ -1,11 +1,8 @@
-"""编排器：注册四 Agent 图 + Orchestrator 单例。"""
+"""编排器：注册业务 Agent 图 + Orchestrator 单例。"""
 
 from __future__ import annotations
 
-from backend.agents.exam.agent import ExamAgent
-from backend.agents.interview.agent import InterviewAgent
-from backend.agents.qa.agent import QAAgent
-from backend.agents.resume.agent import ResumeAgent
+from backend.agents import iter_agent_classes, load_agent_modules
 from backend.app_state import app_state
 from backend.orchestration.agent_registry import AgentRegistry
 from backend.orchestration.orchestrator import Orchestrator
@@ -15,11 +12,17 @@ from backend.server.base_manager import BaseManager, HealthInfo
 class OrchestratorManager(BaseManager):
     async def start(self) -> None:
         registry = AgentRegistry()
-        # 模块加载时注册四 Agent 图（新增 Agent 只加一行）
-        for agent_cls in (ResumeAgent, QAAgent, ExamAgent, InterviewAgent):
+        # 加载所有业务 Agent 子模块（触发基于继承的自动登记），再收集已注册子类注册到编排器
+        load_agent_modules()
+        for agent_cls in iter_agent_classes():
             agent_cls().register_into(registry)
-        # 从库加载持久化元数据与租户级开通策略（失败仅告警，不阻断）
+        # 从库加载持久化元数据与租户级开通策略（含 agent 表的启用状态，失败仅告警，不阻断）
         await registry.start()
+        # 以 agent 表的启用状态为准，同步注册表开关；库未登记者保留代码默认值
+        for agent_type in registry.list_types(only_enabled=False):
+            meta = registry.get(agent_type)
+            if meta.db_enabled is not None:
+                registry.set_enabled(agent_type, meta.db_enabled)
         app_state.agent_registry = registry
         app_state.orchestrator = Orchestrator(registry)
 

@@ -20,6 +20,7 @@ FALLBACK_RELOAD_INTERVAL_S = 300
 
 
 def _key(target: str) -> str:
+    """刷新版本号的 Redis key（每个 target 独立）。"""
     return f"{_KEY_PREFIX}{target}"
 
 

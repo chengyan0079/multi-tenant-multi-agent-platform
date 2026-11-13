@@ -259,7 +259,7 @@ async def batch_upload_files(
         except Exception as e:  # noqa: BLE001
             results.append({"original_name": f.filename or "", "ok": False, "error": str(e)})
 
-    # todo 数据源为本次上传的内存结果而非 DB 查询，此处无法走 fetch_page
+    # 数据源为本次上传的内存结果而非 DB 查询，无法走 fetch_page
     total = len(results)
     start = (page - 1) * page_size
     return success(

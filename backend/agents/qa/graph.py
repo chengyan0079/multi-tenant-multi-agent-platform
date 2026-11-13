@@ -102,3 +102,10 @@ def build_qa_graph():
     builder.add_edge("save_memory", END)
 
     return builder.compile(checkpointer=app_state.checkpointer)
+
+
+if __name__ == "__main__":
+    graph = build_qa_graph()
+    # print(graph.get_graph().draw_mermaid())
+    # 绘制 PNG 工作流图
+    graph.get_graph().draw_png("qa_graph.png")

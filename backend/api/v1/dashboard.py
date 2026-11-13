@@ -62,6 +62,24 @@ def _fill_trend(rows: list[dict[str, Any]], *, days: int, today: date) -> list[d
     return out
 
 
+def _fill_usage(rows: list[dict[str, Any]], *, days: int, today: date) -> list[dict[str, Any]]:
+    """按天补齐 token 与平均耗时，缺数据的天填 0。"""
+    found = {r["date"]: r for r in rows}
+    start = today - timedelta(days=days - 1)
+    out: list[dict[str, Any]] = []
+    for i in range(days):
+        key = (start + timedelta(days=i)).strftime("%m-%d")
+        row = found.get(key)
+        out.append(
+            {
+                "date": key,
+                "tokens": int(row["tokens"]) if row else 0,
+                "avg_ms": int(row["avg_ms"]) if row else 0,
+            }
+        )
+    return out
+
+
 @router.get("", summary="监控看板（超管全局 / 租户管理员本租户）")
 async def dashboard(
     days: int = Query(7, ge=1, le=90, description="统计区间（天）"),
@@ -222,6 +240,11 @@ async def dashboard(
         ),
         "agent_distribution": distribution,
         "latency_by_hour": await DashboardDao.latency_by_hour(tenant_id=scope_tenant, since=since),
+        "usage_trend": _fill_usage(
+            await DashboardDao.usage_trend(tenant_id=scope_tenant, since=since),
+            days=days,
+            today=today,
+        ),
         "recent_activities": recent_activities,
     }
 

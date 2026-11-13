@@ -1,8 +1,4 @@
-"""Agent 注册/发现：启动注册 build_graph，元数据与开通策略入内存，运行期可 refresh。
-
-v3.2 统一入口改造：AgentMeta 挂 spec（AgentSpec），load_from_db 合并 agent 表运营字段，
-_rebuild_derived 派生路由/校验/权限/动态入口模型，specs() 供编排层无锁读取。
-"""
+"""Agent 注册/发现：启动注册 build_graph，元数据与开通策略入内存，运行期可 refresh。"""
 from __future__ import annotations
 
 import re

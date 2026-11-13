@@ -39,7 +39,7 @@ _DELETE_TENANT = text("DELETE FROM agent_tenant WHERE id = :tenant_id")
 _SET_USERS_ENABLED = text('UPDATE "agent_user" SET enabled = :enabled WHERE tenant_id = :tenant_id')
 
 _STATS_BINDS = (
-    # todo asyncpg 扩展协议下 "IS NULL + cast" 无法推断参数类型，需显式声明
+    # asyncpg 扩展协议下 "IS NULL + cast" 无法推断参数类型，需显式声明
     bindparam("created_from", type_=String),
     bindparam("created_to", type_=String),
     bindparam("name", type_=String),

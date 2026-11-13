@@ -26,6 +26,26 @@ class ConfigCenterError(RuntimeError):
     """配置中心调用异常。"""
 
 
+# Nacos 3.x 列表接口在时间未填充时返回 0（而非缺字段），0 不是合法时间戳
+_TIME_KEYS = (
+    "createTime",
+    "modifyTime",
+    "lastModified",
+    "lastModifiedTime",
+    "createdTime",
+    "gmtCreate",
+    "gmtModified",
+)
+
+
+def _normalize_times(data: dict[str, Any]) -> dict[str, Any]:
+    """把时间字段的 0 / 空串归一为 None，避免前端按 epoch 渲染出 1970。"""
+    for key in _TIME_KEYS:
+        if key in data and not data[key]:
+            data[key] = None
+    return data
+
+
 class NacosConfigClient(BaseClient):
     """Nacos 配置中心（SDK gRPC + OpenAPI 兜底）。"""
 
@@ -286,7 +306,7 @@ class NacosConfigClient(BaseClient):
             if j.get("code") == 0:
                 d = j.get("data")
                 if isinstance(d, dict):
-                    return d
+                    return _normalize_times(d)
                 if isinstance(d, str):
                     return {"content": d}
                 return None
@@ -300,7 +320,10 @@ class NacosConfigClient(BaseClient):
         return await asyncio.to_thread(self._rest_get_config_info, data_id, group)
 
     def _fill_config_meta(self, item: dict) -> None:
-        """列表项补齐 createTime/modifyTime/type/md5，并统一出 lastModified。"""
+        """列表项补齐 createTime/modifyTime/type/md5，并统一出 lastModified。
+
+        列表接口的时间常为 0（非缺失字段），故一律按真值判断缺失并允许覆盖。
+        """
         if not (item.get("createTime") and item.get("modifyTime")):
             try:
                 info = self._rest_get_config_info(
@@ -310,8 +333,9 @@ class NacosConfigClient(BaseClient):
                 info = None
             if isinstance(info, dict):
                 for key in ("createTime", "modifyTime", "type", "md5", "appName"):
-                    if item.get(key) is None and info.get(key) is not None:
+                    if not item.get(key) and info.get(key):
                         item[key] = info[key]
+        _normalize_times(item)
         if not item.get("lastModified"):
             item["lastModified"] = item.get("modifyTime") or item.get("createTime")
 
@@ -386,7 +410,7 @@ class NacosConfigClient(BaseClient):
             # 时间：历史列表常见 lastModifiedTime，部分版本为 createdTime
             if not it.get("createdTime"):
                 for key in ("lastModifiedTime", "gmtModified", "createTime", "timestamp"):
-                    if it.get(key) is not None:
+                    if it.get(key):
                         it["createdTime"] = it[key]
                         break
             # md5：列表接口通常不返回，用详情补齐；详情无 md5 时按内容计算
@@ -408,6 +432,7 @@ class NacosConfigClient(BaseClient):
                         it["createdTime"] = detail.get("createdTime") or detail.get(
                             "lastModifiedTime"
                         )
+            _normalize_times(it)
         return data
 
     async def list_history(
@@ -447,10 +472,10 @@ class NacosConfigClient(BaseClient):
                         "createTime",
                         "timestamp",
                     ):
-                        if obj.get(key) is not None:
+                        if obj.get(key):
                             obj["createdTime"] = obj[key]
                             break
-                return obj
+                return _normalize_times(obj)
         return data
 
     async def get_history(self, data_id: str, nid: int, group: str | None = None) -> dict | None:

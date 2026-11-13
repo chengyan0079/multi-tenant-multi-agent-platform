@@ -13,7 +13,7 @@ from backend.data.sql import fetch_all, fetch_one, session_scope
 # 显式 CAST：:tenant_id 传 None 时 asyncpg 无从推断类型（首个出现位置是 IS NULL），
 # 不转型会报 could not determine data type of parameter。
 _SCOPE = "(CAST(:tenant_id AS BIGINT) IS NULL OR {t}.tenant_id = CAST(:tenant_id AS BIGINT))"
-_SCOPE_ALIASES = frozenset({"l", "th", "r", "al"})
+_SCOPE_ALIASES = frozenset({"l", "th", "r", "al", "ut"})
 
 
 def _scope(alias: str) -> str:
@@ -111,6 +111,28 @@ GROUP BY 1
 ORDER BY 1
 """)
 
+# Token 与平均耗时按天：token 取统一会话 turn，耗时取 API 日志（两者按天 FULL JOIN 对齐）
+_USAGE_TREND = text(f"""
+WITH lat AS (
+  SELECT to_char(date_trunc('day', l.req_time), 'MM-DD') AS date,
+         CAST(COALESCE(AVG(l.cost_ms), 0) AS BIGINT) AS avg_ms
+  FROM agent_api_call_log l
+  WHERE {_scope("l")} AND l.req_time >= :since
+  GROUP BY 1
+), tok AS (
+  SELECT to_char(date_trunc('day', ut.create_at), 'MM-DD') AS date,
+         COALESCE(SUM(COALESCE((ut.token_usage->>'total')::bigint, 0)), 0) AS tokens
+  FROM agent_unified_turn ut
+  WHERE {_scope("ut")} AND ut.create_at >= :since
+  GROUP BY 1
+)
+SELECT COALESCE(lat.date, tok.date) AS date,
+       COALESCE(tok.tokens, 0) AS tokens,
+       COALESCE(lat.avg_ms, 0) AS avg_ms
+FROM lat FULL OUTER JOIN tok USING(date)
+ORDER BY 1
+""")
+
 # 最近活动：审计表时间倒序；result 列是后补的，历史数据为空时按「成功」兜底
 _RECENT = text(f"""
 SELECT
@@ -165,7 +187,12 @@ SELECT
   t.enabled,
   (SELECT COUNT(*) FROM agent_thread th WHERE th.tenant_id = t.id) AS threads,
   (SELECT COUNT(*) FROM agent_api_call_log l
-     WHERE l.tenant_id = t.id AND l.req_time >= :since) AS runs
+     WHERE l.tenant_id = t.id AND l.req_time >= :since) AS runs,
+  (SELECT ROUND(AVG(l.cost_ms)) FROM agent_api_call_log l
+     WHERE l.tenant_id = t.id AND l.req_time >= :since) AS avg_cost_ms,
+  (SELECT COALESCE(SUM(COALESCE((ut.token_usage->>'total')::bigint, 0)), 0)
+     FROM agent_unified_turn ut
+     WHERE ut.tenant_id = t.id AND ut.create_at >= :since) AS tokens
 FROM agent_tenant t
 ORDER BY runs DESC, t.id ASC
 LIMIT :limit
@@ -261,6 +288,12 @@ class DashboardDao:
         async with session_scope() as session:
             row = await fetch_one(session, _GLOBAL, {})
         return row or {}
+
+    @staticmethod
+    async def usage_trend(*, tenant_id: Optional[int], since: datetime) -> list[dict[str, Any]]:
+        """按天返回 token 与平均耗时（按 scope：超管全局 / 租户本租户）。"""
+        async with session_scope() as session:
+            return await fetch_all(session, _USAGE_TREND, {"tenant_id": tenant_id, "since": since})
 
     @staticmethod
     async def tenant_ranking(*, since: datetime, limit: int = 10) -> list[dict[str, Any]]:

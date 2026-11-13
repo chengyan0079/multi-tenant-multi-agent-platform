@@ -49,4 +49,5 @@ def build_exam_graph():
 
 if __name__ == "__main__":
     graph = build_exam_graph()
-    print(graph.get_graph().draw_mermaid())
+    # print(graph.get_graph().draw_mermaid())
+    graph.get_graph().draw_png("exam_graph.png")

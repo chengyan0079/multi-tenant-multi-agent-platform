@@ -55,36 +55,36 @@ class InterviewReport(BaseModel):
 class InterviewState(TypedDict):
     """模拟面试完整 State。"""
 
-    messages: Annotated[list[BaseMessage], add_messages]
-    user_id: int
-    tenant_id: int
-    thread_id: str
-    session_id: str
-    target_position: str
+    messages: Annotated[list[BaseMessage], add_messages]  # 消息历史（多轮合并）
+    user_id: int  # 用户 id
+    tenant_id: int  # 租户 id
+    thread_id: str  # checkpointer 分区键
+    session_id: str  # 业务会话标识
+    target_position: str  # 目标岗位
 
     # 简历联动（可选）
-    resume_review_id: Optional[str]
-    resume_projects: list[dict]
-    resume_skills: list[str]
+    resume_review_id: Optional[str]  # 关联简历评审 id
+    resume_projects: list[dict]  # 简历项目
+    resume_skills: list[str]  # 简历技能
 
     # 阶段控制
-    current_stage: str
-    stage_turn_count: int
-    total_turn_count: int
-    max_turns: int
+    current_stage: str  # 当前阶段
+    stage_turn_count: int  # 本阶段轮数
+    total_turn_count: int  # 总轮数
+    max_turns: int  # 轮数上限
 
     # 题目管理
-    question_bank: list[dict]
-    current_question: Optional[dict]
-    projects_asked: list[str]
+    question_bank: list[dict]  # 题库
+    current_question: Optional[dict]  # 当前问题
+    projects_asked: list[str]  # 已追问项目
 
     # 回答质量
-    last_answer_quality: str
-    followup_count: int
+    last_answer_quality: str  # 上一回答质量
+    followup_count: int  # 连续追问次数
 
     # 摘要与报告
-    existing_summary: Optional[str]
-    should_summarize: bool
-    report: Optional[dict]
-    fallback_used: bool
-    structured_output: Optional[dict]
+    existing_summary: Optional[str]  # 会话摘要
+    should_summarize: bool  # 是否触发摘要
+    report: Optional[dict]  # 面试报告
+    fallback_used: bool  # 是否走了兜底
+    structured_output: Optional[dict]  # 结构化输出

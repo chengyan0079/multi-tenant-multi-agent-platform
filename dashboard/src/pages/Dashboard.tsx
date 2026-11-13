@@ -34,7 +34,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   Legend,
+  Line,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -129,6 +131,13 @@ const rankingColumns = [
   },
   { title: '会话', dataIndex: 'threads', key: 'threads', width: 90 },
   { title: '运行量', dataIndex: 'runs', key: 'runs', width: 100 },
+  {
+    title: '平均耗时',
+    dataIndex: 'avg_cost_ms',
+    key: 'avg_cost_ms',
+    width: 110,
+    render: (value: number | null) => (value == null ? '-' : `${fmtNumber(value)} ms`),
+  },
   {
     title: 'Token',
     dataIndex: 'tokens',
@@ -320,6 +329,48 @@ export default function Dashboard() {
         ))}
       </Row>
 
+      {view.global ? (
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          <Col span={24}>
+            <Card
+              className="dash-card"
+              title="平台存量"
+              extra={<Typography.Text type="secondary">仅超管可见</Typography.Text>}
+            >
+              <Row gutter={[16, 16]}>
+                <Col xs={12} sm={8} md={4}>
+                  <Statistic
+                    title="租户"
+                    value={view.global.tenants ?? 0}
+                    suffix={`/ ${view.global.tenants_enabled ?? 0} 启用`}
+                  />
+                </Col>
+                <Col xs={12} sm={8} md={5}>
+                  <Statistic title="账号" value={view.global.users ?? 0} />
+                </Col>
+                <Col xs={12} sm={8} md={5}>
+                  <Statistic
+                    title="智能体"
+                    value={view.global.agents ?? 0}
+                    suffix={`/ ${view.global.agents_enabled ?? 0} 启用`}
+                  />
+                </Col>
+                <Col xs={12} sm={8} md={5}>
+                  <Statistic
+                    title="模型"
+                    value={view.global.models ?? 0}
+                    suffix={`/ ${view.global.models_enabled ?? 0} 启用`}
+                  />
+                </Col>
+                <Col xs={12} sm={8} md={5}>
+                  <Statistic title="插件" value={view.global.plugins ?? 0} />
+                </Col>
+              </Row>
+            </Card>
+          </Col>
+        </Row>
+      ) : null}
+
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} xl={16}>
           <Card
@@ -396,6 +447,72 @@ export default function Dashboard() {
               </ResponsiveContainer>
             ) : (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="区间内暂无调用" />
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col span={24}>
+          <Card
+            className="dash-card"
+            title="Token 与平均耗时趋势"
+            extra={<Typography.Text type="secondary">按天聚合 · 按当前视角过滤</Typography.Text>}
+          >
+            {(view.usage_trend ?? []).some((p) => p.tokens > 0 || p.avg_ms > 0) ? (
+              <ResponsiveContainer width="100%" height={chartHeight}>
+                <ComposedChart
+                  data={view.usage_trend ?? []}
+                  margin={{ top: 8, right: 12, left: -12, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="dashTokens" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#13b5b1" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="#13b5b1" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#eef0f5" vertical={false} />
+                  <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={12} />
+                  <YAxis
+                    yAxisId="left"
+                    tickLine={false}
+                    axisLine={false}
+                    fontSize={12}
+                    width={64}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    tickLine={false}
+                    axisLine={false}
+                    fontSize={12}
+                    width={64}
+                    unit="ms"
+                  />
+                  <Tooltip />
+                  <Legend iconType="circle" />
+                  <Area
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="tokens"
+                    name="Token"
+                    stroke="#13b5b1"
+                    strokeWidth={2}
+                    fill="url(#dashTokens)"
+                  />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="avg_ms"
+                    name="平均耗时"
+                    stroke="#e3a008"
+                    strokeWidth={2}
+                    dot={false}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="区间内暂无 Token / 耗时数据" />
             )}
           </Card>
         </Col>

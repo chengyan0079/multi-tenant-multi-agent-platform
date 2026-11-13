@@ -1,8 +1,4 @@
-"""统一任务型入口：exam/resume 两阶段第二步——建业务行 + 入队（§4.5 / §4.6）。
-
-由 DefaultAgentAdapter.on_first_turn 在 chat/stream 内调用。入队消息 data 携带
-turn_id / thread_id / trace_id，broker handler 完成后据此回写一条 task_result turn。
-"""
+"""统一任务型入口：exam/resume 两阶段第二步——建业务行 + 入队。"""
 from __future__ import annotations
 
 import json
@@ -22,6 +18,7 @@ logger = get_logger("unified_task_service")
 
 
 def _entry_value(entry: Optional[EntryPayload], name: str) -> Optional[str]:
+    """从入口字段中按名取值；缺失返回 None。"""
     if not entry or not entry.fields:
         return None
     for f in entry.fields:
@@ -31,6 +28,7 @@ def _entry_value(entry: Optional[EntryPayload], name: str) -> Optional[str]:
 
 
 async def _object_key_of(attachments: list[AttachmentRef]) -> str | None:
+    """取首个附件的 MinIO object_key（沿用两阶段上传第一步落库记录）。"""
     if not attachments:
         return None
     from backend.services.attachment_service import get_attachment_object_key
@@ -70,6 +68,7 @@ async def start_unified_task(
 async def _start_exam(
     *, turn_id, entry, attachments, tenant_id, user_id, trace_id, thread_id
 ) -> dict:
+    """建考试提交业务行并投递 EXAM_REVIEW 任务。"""
     exam_id = _entry_value(entry, "exam_id")
     if not exam_id:
         raise ValueError("exam_id 必填（入口字段缺失）")
@@ -143,6 +142,7 @@ async def _start_exam(
 async def _start_resume(
     *, turn_id, attachments, tenant_id, user_id, trace_id, thread_id
 ) -> dict:
+    """建简历评审业务行并投递 RESUME_REVIEW 任务。"""
     object_key = await _object_key_of(attachments)
     if not object_key:
         raise ValueError("resume 必须携带已上传的简历附件")

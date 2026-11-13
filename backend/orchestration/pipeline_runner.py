@@ -1,8 +1,4 @@
-"""多 Agent 串联执行器（§4.9，Q14 一期真跑）。
-
-逐步鉴权 → fork_config 分区 → orchestrator.run_agent → from_subgraph_output 归一为 PipelineCarry，
-步骤间只传 carry 不透传子图 state dict（避免 State 字段互相污染）；每步写一条 turn，完成推 pipeline_result。
-"""
+"""多 Agent 串联执行器：逐步鉴权 → 分区 → run_agent → 归一为 PipelineCarry。"""
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
@@ -22,6 +18,8 @@ from backend.orchestration.unified_schemas import ErrorEvent
 
 
 class PipelineRunner:
+    """多 Agent 串联执行器：按 plan.steps 逐步执行并汇总事件。"""
+
     def __init__(
         self,
         *,
@@ -139,6 +137,7 @@ class PipelineRunner:
         )
 
     def _spec_for(self, agent_type: str) -> Optional[AgentSpec]:
+        """按 agent_type 查注册表 spec；未注册返回 None。"""
         for s in self._registry.specs():
             if s.agent_type == agent_type:
                 return s

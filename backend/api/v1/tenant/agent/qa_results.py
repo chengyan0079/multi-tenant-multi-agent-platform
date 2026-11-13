@@ -23,9 +23,11 @@ router = APIRouter(prefix="/qa/results", tags=["qa-results"])
 
 
 class ReviewIn(BaseModel):
-    """测评请求：人工标准答案（必填）。"""
+    """测评请求：人工标准答案（必填），评估模型与数据集版本可选。"""
 
     reference_answer: str = Field(..., min_length=1, max_length=8000)
+    evaluator_model: str | None = Field(None, max_length=64, description="评估用 LLM 标识，缺省取 qa-default")
+    dataset_version: str | None = Field(None, max_length=32, description="数据集版本，缺省 v1")
 
 
 def _json_value(value: Any) -> Any:
@@ -180,10 +182,8 @@ async def submit_review(
             "trace_id": row.get("trace_id"),
             "tenant_id": tenant_id,
             "evaluator": "llm",
-            # TODO(qa_ragas): evaluator_model / dataset_version 目前是固定占位，
-            #  后续接入模型注册表与实际数据集版本后动态写入。
-            "evaluator_model": "qa-default",
-            "dataset_version": "v1",
+            "evaluator_model": (body.evaluator_model or "qa-default")[:64],
+            "dataset_version": (body.dataset_version or "v1")[:32],
             "metrics": None,
             "status": "pending",
             "error_msg": None,
@@ -196,7 +196,7 @@ async def submit_review(
             "update_tenant_id": current.home_tenant_id or tenant_id,
         },
     )
-    # TODO(qa_result): 测评状态目前只落在 agent_qa_ragas_evals；列表页若需展示
+    # 测评状态落在 agent_qa_ragas_evals；列表页若需展示
     #  “是否已测评/最近得分”，需回写 agent_qa_results 或按 qa_result_id 聚合查询。
     try:
         key = await enqueue_task(

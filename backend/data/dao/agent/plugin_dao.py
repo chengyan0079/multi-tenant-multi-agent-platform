@@ -17,7 +17,7 @@ from backend.data.sql import (
 from backend.data.sql.audit import audit_on_insert, audit_on_update
 
 _BINDS = (
-    # todo asyncpg 扩展协议下 "IS NULL" 参数无法推断类型，需显式声明
+    # asyncpg 扩展协议下 "IS NULL" 参数无法推断类型，需显式声明
     bindparam("name", type_=String),
     bindparam("status", type_=String),
 )

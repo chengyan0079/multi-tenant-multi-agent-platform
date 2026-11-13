@@ -1,10 +1,4 @@
-"""统一会话服务：一次写入 turn / 短期记忆 / 长期记忆，统一读取上下文（§5.2 / §5.8）。
-
-写入逻辑唯一落点：append_turn() 一次完成 turn 行 + 短期记忆 push + （按需）长期抽取；
-落库 / Redis 异常仅记日志，不中断 SSE、不改成功语义（§5.2）。
-
-依赖通过构造参数注入，便于在脱离真实 DB / Redis 的情况下做单测。
-"""
+"""统一会话服务：一次写入 turn / 短期记忆 / 长期记忆，统一读取上下文。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,12 +18,14 @@ logger = get_logger("unified_conversation")
 class ConversationContext:
     """load_context 装配结果（均为具体对象 / 列表，D17）。"""
 
-    existing_summary: Optional[str]
-    short_term: list[ShortTermTurn]
-    long_term: list[LongTermMemoryBlock]
+    existing_summary: Optional[str]  # 会话级摘要
+    short_term: list[ShortTermTurn]  # 短期窗口
+    long_term: list[LongTermMemoryBlock]  # 长期记忆块
 
 
 class UnifiedConversationService:
+    """统一会话服务：turn / 短期记忆 / 长期记忆的唯一写入口。"""
+
     def __init__(
         self,
         *,

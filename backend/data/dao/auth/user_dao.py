@@ -17,7 +17,7 @@ SELECT id, username, name, password, tenant_id, is_super_admin, enabled, create_
 FROM "agent_user" WHERE id = :user_id
 """)
 _BINDS = (
-    # todo asyncpg 扩展协议下 "IS NULL + cast" 无法推断参数类型，必须显式声明
+    # asyncpg 扩展协议下 "IS NULL + cast" 无法推断参数类型，必须显式声明
     bindparam("tenant_id", type_=Integer),
     bindparam("username", type_=String),
     bindparam("created_from", type_=String),

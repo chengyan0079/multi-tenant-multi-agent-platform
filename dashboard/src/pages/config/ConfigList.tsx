@@ -73,6 +73,8 @@ function fmtHistoryTime(value: unknown): string {
   if (value === null || value === undefined || value === '') return '-';
   const raw = String(value);
   const numeric = Number(value);
+  // Nacos 未填充时间时返回 0；dayjs(0) 会渲染成 1970-01-01，按无效值处理
+  if (Number.isFinite(numeric) && numeric <= 0) return '-';
   let d;
   if (Number.isFinite(numeric) && !raw.includes('-') && !raw.includes('T')) {
     // Nacos 历史时间多为 13 位毫秒；兼容 10 位秒

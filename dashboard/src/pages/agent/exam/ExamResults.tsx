@@ -1,51 +1,9 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Card, Tag, Typography } from 'antd';
 import { ProTable, type ProColumns } from '../../../components/ProTable';
-
-// 列表字段参考 agent_exam_submissions + agent_exams（详情在报告页展示）
-interface ExamSubmissionRow {
-  submissionId: string;
-  examTitle: string;
-  userId: number;
-  tenantId: number;
-  source: string;
-  status: string;
-  finalScore: number | null;
-  submittedAt: string;
-}
-
-const MOCK_ROWS: ExamSubmissionRow[] = [
-  {
-    submissionId: 'sub-1001-01',
-    examTitle: 'Java 后端工程师-基础能力测评',
-    userId: 1001,
-    tenantId: 100,
-    source: 'online',
-    status: 'published',
-    finalScore: 88,
-    submittedAt: '2026-11-05 09:30:12',
-  },
-  {
-    submissionId: 'sub-2001-01',
-    examTitle: '前端工程师-进阶测评',
-    userId: 2001,
-    tenantId: 300,
-    source: 'word',
-    status: 'reviewed',
-    finalScore: 76,
-    submittedAt: '2026-11-04 17:05:40',
-  },
-  {
-    submissionId: 'sub-3001-01',
-    examTitle: 'Java 后端工程师-基础能力测评',
-    userId: 3001,
-    tenantId: 100,
-    source: 'online',
-    status: 'ai_processing',
-    finalScore: null,
-    submittedAt: '2026-11-05 10:40:00',
-  },
-];
+import { hasScope } from '../../../services/auth';
+import { listMyExamSubmissions, type ExamSubmissionItem } from '../../../services/exam';
 
 const STATUS_COLOR: Record<string, string> = {
   submitted: 'default',
@@ -62,15 +20,27 @@ const STATUS_LABEL: Record<string, string> = {
   published: '已发布',
 };
 
-/** 考试结果（mock）：列表，点击「报告」进入报告页。 */
+/** 考试结果：当前用户的提交列表，点击「报告」进入报告页。 */
 export default function ExamResults() {
   const navigate = useNavigate();
+  const [data, setData] = useState<ExamSubmissionItem[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const columns: ProColumns<ExamSubmissionRow>[] = [
-    { title: '提交ID', dataIndex: 'submissionId', width: 130, ellipsis: true, copyable: true },
-    { title: '试卷', dataIndex: 'examTitle', ellipsis: true },
-    { title: '考生', dataIndex: 'userId', width: 80 },
-    { title: '来源', dataIndex: 'source', width: 90 },
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await listMyExamSubmissions();
+        setData(res.items ?? []);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const columns: ProColumns<ExamSubmissionItem>[] = [
+    { title: '提交ID', dataIndex: 'submission_id', width: 130, ellipsis: true, copyable: true },
+    { title: '试卷', dataIndex: 'exam_title', ellipsis: true },
     {
       title: '状态',
       dataIndex: 'status',
@@ -82,13 +52,11 @@ export default function ExamResults() {
       ),
     },
     {
-      title: '得分',
-      dataIndex: 'finalScore',
-      width: 90,
-      render: (_, row) =>
-        row.finalScore == null ? '-' : <Typography.Text strong>{row.finalScore}</Typography.Text>,
+      title: '提交时间',
+      dataIndex: 'submitted_at',
+      width: 170,
+      render: (_, row) => row.submitted_at ?? '-',
     },
-    { title: '提交时间', dataIndex: 'submittedAt', width: 170 },
     {
       title: '操作',
       width: 90,
@@ -97,7 +65,11 @@ export default function ExamResults() {
         <Button
           type="link"
           size="small"
-          onClick={() => navigate(`/agent/exam/results/${row.submissionId}`)}
+          onClick={() =>
+            navigate(`/agent/exam/results/${row.submission_id}`, {
+              state: { examTitle: row.exam_title, submittedAt: row.submitted_at },
+            })
+          }
         >
           报告
         </Button>
@@ -106,13 +78,21 @@ export default function ExamResults() {
   ];
 
   return (
-    <Card title={<Typography.Title level={4} style={{ margin: 0 }}>考试结果</Typography.Title>}>
-      <ProTable<ExamSubmissionRow>
-        rowKey="submissionId"
+    <Card
+      title={<Typography.Title level={4} style={{ margin: 0 }}>考试结果</Typography.Title>}
+      extra={
+        hasScope('exam:review') ? (
+          <Button onClick={() => navigate('/agent/exam/reviews')}>待复核</Button>
+        ) : null
+      }
+    >
+      <ProTable<ExamSubmissionItem>
+        rowKey="submission_id"
         search={false}
         options={false}
+        loading={loading}
         columns={columns}
-        dataSource={MOCK_ROWS}
+        dataSource={data}
         pagination={{ pageSize: 10, showSizeChanger: true }}
         scroll={{ x: 'max-content' }}
       />

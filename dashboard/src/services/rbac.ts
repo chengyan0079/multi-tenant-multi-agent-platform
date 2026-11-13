@@ -47,7 +47,7 @@ export interface Paged<T> {
   page_size: number;
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== '') sp.set(k, String(v));
@@ -97,7 +97,12 @@ export async function deleteRole(roleId: number) {
 export async function listMenus(
   page = 1,
   pageSize = 50,
-  filters: { name?: string; path?: string; scope?: string } = {},
+  filters: {
+    name?: string;
+    id?: number | string;
+    parent_id?: number | string;
+    visible?: boolean | string;
+  } = {},
 ) {
   return http.get<Paged<MenuNode>>(
     `/api/v1/admin/menus${qs({ page, page_size: pageSize, ...filters })}`,

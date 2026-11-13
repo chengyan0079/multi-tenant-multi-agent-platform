@@ -792,7 +792,7 @@ async def notify_teacher_node(state: ExamState) -> dict:
                 {"submission_id": state["submission_id"]},
             )
 
-    # Todo: 真实通知渠道（钉钉/企业微信/WebSocket 推送）可在这里接入；当前只通过数据库状态表达「等待教师复核」。
+    # 真实通知渠道（钉钉/企业微信/WebSocket 推送）可在这里接入；当前只通过数据库状态表达「等待教师复核」。
 
     logger.debug("notify_teacher.done", submission_id=state["submission_id"])
     return {"teacher_notified": True}

@@ -31,7 +31,7 @@ WHERE (:only_enabled = false
        OR (a.enabled = true AND a.agent_type = ANY(CAST(:registered_types AS text[]))))
 """
 _AGENTS_BINDS = (
-    # todo asyncpg 无法从 IS NULL / ANY 推断参数类型，需显式声明
+    # asyncpg 无法从 IS NULL / ANY 推断参数类型，需显式声明
     bindparam("tenant_id", type_=Integer),
     bindparam("only_enabled", type_=Boolean),
     bindparam("registered_types", type_=ARRAY(String)),
