@@ -29,6 +29,11 @@ _INSERT_COLUMNS = (
     "file_version",
     "checksum",
     "remark",
+    "agent_type",
+    "file_kind",
+    "thread_id",
+    "request_id",
+    "db_type",
 )
 
 _INSERT = text(f"""
@@ -195,6 +200,13 @@ class FileDao:
         file_ext: str | None,
         checksum: str,
         remark: str | None,
+        agent_type: str | None = None,
+        file_kind: str | None = None,
+        thread_id: str | None = None,
+        request_id: str | None = None,
+        db_type: str | None = None,
+        file_type: str = "files",
+        subtype: str = "",
     ) -> dict[str, Any]:
         """上传落库（方案 B 判定 + 串行写入）。
 
@@ -223,11 +235,12 @@ class FileDao:
             stored_name = f"{file_uuid}_{uploader_user_id}_v{version}_upload{file_ext}"
             tenant_seg = f"t{tenant_id}" if tenant_id is not None else "system"
             object_key = build_object_key(
-                filetype="files",
+                filetype=file_type,
                 tenant_id=tenant_seg,
                 user_id=uploader_user_id,
                 name=f"{file_uuid}_v{version}",
                 ext=(file_ext or "").lstrip(".") or "bin",
+                subtype=subtype,
             )
 
             # 上传 MinIO（在锁/事务内，保证串行；失败则整体回滚）
@@ -248,6 +261,11 @@ class FileDao:
                 "file_version": version,
                 "checksum": checksum,
                 "remark": remark,
+                "agent_type": agent_type,
+                "file_kind": file_kind,
+                "thread_id": thread_id,
+                "request_id": request_id,
+                "db_type": db_type,
             }
             params.update(audit_on_insert(tenant_id=tenant_id))
             row = await fetch_one(session, _INSERT, params)

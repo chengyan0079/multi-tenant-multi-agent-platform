@@ -190,6 +190,13 @@ class TokenEvent(_EventBase):
     content: str = ""
 
 
+class ReasoningEvent(_EventBase):
+    """思考过程增量（思考模式开启时的 reasoning_content）。"""
+
+    event_type: Literal["reasoning"] = "reasoning"
+    content: str = ""
+
+
 class ProgressEvent(_EventBase):
     event_type: Literal["progress"] = "progress"
     stage: str = ""
@@ -200,9 +207,11 @@ class MetaEvent(_EventBase):
     thread_id: str = ""
     turn_id: str = ""
     turn_index: int = 0
-    answer_mode: str | None = None
+    answer_mode: str | None = None  # rag / direct / web_search / general
     confidence: float | None = None
-    sources: list[str] | None = None
+    sources: list[str] | None = None  # 出处（文件名/URL/知识库）
+    latency_ms: int | None = None  # 本轮耗时（毫秒）
+    token_usage: dict | None = None  # prompt/completion/total（LLM 回调累计）
 
 
 class GuidanceEvent(_EventBase):
@@ -311,16 +320,8 @@ class StatePatch(BaseModel):
     sources: list[str] = Field(default_factory=list)
 
 
-class QaResultRef(BaseModel):
-    """PersistencePayload.qa_result 引用（§5.11 表外引用，最小定义）。"""
-
-    qa_result_id: str
-    trace_id: str | None = None
-
-
 class PersistencePayload(BaseModel):
     artifact: ArtifactRef | None = None
-    qa_result: QaResultRef | None = None
     touch: bool = True
 
 

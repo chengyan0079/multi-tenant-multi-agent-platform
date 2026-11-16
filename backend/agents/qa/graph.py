@@ -1,23 +1,8 @@
-"""问答图：分类 → (HyDE/Multi-Query) → 检索 → 生成 → (低置信) Web 兜底 → 记忆，checkpointer 用本项目 AsyncPostgresSaver。"""
+"""问答图路由函数：classify/retrieve/web_search 之后的分流（图装配由 AgentTemplate 统一完成）。"""
 
 from __future__ import annotations
 
-from langgraph.graph import END, START, StateGraph
-
-from backend.agents.qa.nodes import (
-    classify_query_node,
-    enqueue_pending_node,
-    generate_direct_node,
-    generate_general_node,
-    generate_rag_node,
-    hyde_generate_node,
-    multi_query_rewrite_node,
-    retrieve_node,
-    save_memory_node,
-    web_search_node,
-)
 from backend.agents.qa.state import QAState
-from backend.app_state import app_state
 
 
 def _route_by_query_type(state: QAState) -> str:
@@ -42,70 +27,3 @@ def _route_after_web_search(state: QAState) -> str:
     if state.get("query_type", "").upper() == "GENERAL":
         return "generate_general"
     return "generate_direct"
-
-
-def build_qa_graph():
-    """构建知识问答工作流并绑定 checkpointer。"""
-    builder = StateGraph(QAState)
-
-    builder.add_node("classify_query", classify_query_node)
-    builder.add_node("hyde_generate", hyde_generate_node)
-    builder.add_node("multi_query_rewrite", multi_query_rewrite_node)
-    builder.add_node("retrieve", retrieve_node)
-    builder.add_node("generate_rag", generate_rag_node)
-    builder.add_node("web_search", web_search_node)
-    builder.add_node("generate_direct", generate_direct_node)
-    builder.add_node("generate_general", generate_general_node)
-    builder.add_node("enqueue_pending", enqueue_pending_node)
-    builder.add_node("save_memory", save_memory_node)
-
-    builder.add_edge(START, "classify_query")
-
-    builder.add_conditional_edges(
-        "classify_query",
-        _route_by_query_type,
-        {
-            "GENERAL": "generate_general",
-            "GENERAL_WEB": "web_search",
-            "PRECISE": "retrieve",
-            "VAGUE": "hyde_generate",
-            "BROAD": "multi_query_rewrite",
-        },
-    )
-
-    builder.add_edge("hyde_generate", "retrieve")
-    builder.add_edge("multi_query_rewrite", "retrieve")
-
-    builder.add_conditional_edges(
-        "retrieve",
-        _route_by_confidence,
-        {
-            "high": "generate_rag",
-            "low_web": "web_search",
-            "low_direct": "generate_direct",
-        },
-    )
-
-    builder.add_conditional_edges(
-        "web_search",
-        _route_after_web_search,
-        {
-            "generate_general": "generate_general",
-            "generate_direct": "generate_direct",
-        },
-    )
-
-    builder.add_edge("generate_rag", "save_memory")
-    builder.add_edge("generate_general", "save_memory")
-    builder.add_edge("generate_direct", "enqueue_pending")
-    builder.add_edge("enqueue_pending", "save_memory")
-    builder.add_edge("save_memory", END)
-
-    return builder.compile(checkpointer=app_state.checkpointer)
-
-
-if __name__ == "__main__":
-    graph = build_qa_graph()
-    # print(graph.get_graph().draw_mermaid())
-    # 绘制 PNG 工作流图
-    graph.get_graph().draw_png("qa_graph.png")

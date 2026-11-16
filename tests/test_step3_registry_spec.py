@@ -19,7 +19,7 @@ def test_real_agents_metadata_are_specs_and_validate() -> None:
     assert len(specs) == 1
     assert sum(1 for s in specs if s.default_agent) == 1
     scopes = {s.scope for s in specs}
-    assert {"qa:ask"} == scopes
+    assert {"unified:ask"} == scopes
 
 
 def test_specs_filter_disabled() -> None:
@@ -46,12 +46,13 @@ def test_dynamic_entry_model_via_registry() -> None:
 def test_render_route_prompt_uses_enabled_only() -> None:
     reg = _registry_with_real_agents()
     prompt = reg.render_route_prompt()
-    assert "智能问答" in prompt
+    # 断言 spec 行（只包含已启用 Agent），避免与提示词固定文案里的字样混淆
+    assert "- qa（知识问答）" in prompt
     reg.set_enabled("qa", False)
-    assert "智能问答" not in reg.render_route_prompt()
+    assert "- qa（知识问答）" not in reg.render_route_prompt()
 
 
 def test_label_to_agent_and_scope_maps() -> None:
     reg = _registry_with_real_agents()
     reg._rebuild_derived()
-    assert reg.scope_for_agent("qa") == "qa:ask"
+    assert reg.scope_for_agent("qa") == "unified:ask"

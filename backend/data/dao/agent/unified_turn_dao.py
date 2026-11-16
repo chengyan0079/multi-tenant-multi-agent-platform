@@ -45,7 +45,23 @@ class UnifiedTurnRow(BaseModel):
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "UnifiedTurnRow":
-        return cls(**{k: row[k] for k in cls.model_fields if k in row})
+        """DB 行 → 模型：UUID 转 str，JSONB 字符串转 dict（asyncpg 直出类型需归一）。"""
+        from uuid import UUID
+
+        data: dict[str, Any] = {}
+        for key in cls.model_fields:
+            if key not in row:
+                continue
+            value = row[key]
+            if isinstance(value, UUID):
+                value = str(value)
+            elif key in ("payload", "routing", "token_usage") and isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    value = None
+            data[key] = value
+        return cls(**data)
 
 
 _INSERT = text(
@@ -57,8 +73,9 @@ INSERT INTO agent_unified_turn
    create_user_id, update_user_id, create_tenant_id, update_tenant_id)
 VALUES
   (:id, :tenant_id, :user_id, :thread_id, :trace_id, :turn_index, :agent_type, :spec_version,
-   :event_type, :user_content, :assistant_content, :payload::json, :routing::json, :status,
-   :error_code, :error_msg, :latency_ms, :token_usage::json,
+   :event_type, :user_content, :assistant_content,
+   CAST(:payload AS JSONB), CAST(:routing AS JSONB), :status,
+   :error_code, :error_msg, :latency_ms, CAST(:token_usage AS JSONB),
    :create_user_id, :update_user_id, :create_tenant_id, :update_tenant_id)
 RETURNING id
 """
@@ -75,7 +92,7 @@ _SELECT_COLUMNS = (
 
 
 class UnifiedTurnDao:
-    """agent_unified_turn 读写。落库失败由调用方（UnifiedConversationService）降级处理。"""
+    """agent_unified_turn 读写。落库失败直接抛出（不降级），由接口层返回 code/msg。"""
 
     @staticmethod
     def _build_insert_params(*, row: UnifiedTurnRow) -> dict[str, Any]:

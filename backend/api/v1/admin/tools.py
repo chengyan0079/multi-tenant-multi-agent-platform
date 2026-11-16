@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.common.response import success
 from backend.data.dao.agent.tool_dao import ToolDao
@@ -16,20 +16,25 @@ router = APIRouter(prefix="/tools", tags=["admin"])
 
 
 class ToolIn(BaseModel):
+    # schema 与 BaseModel.schema 冲突，改字段名 + alias 保持 API 兼容
+    model_config = ConfigDict(populate_by_name=True)
+
     tenant_id: int
     name: str = Field(..., min_length=1, max_length=64)
     plugin: str = Field("", max_length=64)
     description: str = ""
-    schema: str = "{}"
+    tool_schema: str = Field("{}", alias="schema")
     config: str = "{}"
     enabled: bool = True
 
 
 class ToolUpdateIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str = Field(..., min_length=1, max_length=64)
     plugin: str = Field("", max_length=64)
     description: str = ""
-    schema: str = "{}"
+    tool_schema: str = Field("{}", alias="schema")
     config: str = "{}"
     enabled: bool = True
 
@@ -44,7 +49,7 @@ class BindIn(BaseModel):
 
 @router.get("", summary="工具列表（租户级分页）")
 async def list_tools(
-    tenant_id: int = Query(..., description="租户ID"),
+    tenant_id: Optional[int] = Query(None, description="按租户过滤；不传则全部（超管）"),
     name: Optional[str] = Query(None),
     enabled: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
@@ -69,7 +74,7 @@ async def create_tool(body: ToolIn, _=Depends(require_scope(Scope.TOOL_ADD))):
         name=body.name,
         plugin=body.plugin,
         description=body.description,
-        schema=body.schema,
+        schema=body.tool_schema,
         config=body.config,
         enabled=body.enabled,
     )
@@ -85,7 +90,7 @@ async def update_tool(
         name=body.name,
         plugin=body.plugin,
         description=body.description,
-        schema=body.schema,
+        schema=body.tool_schema,
         config=body.config,
         enabled=body.enabled,
     )

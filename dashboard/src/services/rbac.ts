@@ -227,8 +227,7 @@ export async function deleteTenant(tenantId: number) {
  * @deprecated 仅作历史参考，前端下拉已改由 listScopes() 动态加载。
  */
 export const SCOPE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'qa:ask', label: 'qa:ask（问答）' },
-  { value: 'qa:page', label: 'qa:page（问答记录查询）' },
+  { value: 'unified:ask', label: 'unified:ask（统一咨询提问）' },
   { value: 'config:page', label: 'config:page（配置查询）' },
   { value: 'config:update', label: 'config:update（配置写入）' },
   { value: 'config:review', label: 'config:review（配置复核）' },
@@ -270,16 +269,18 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'menu:list', label: 'menu:list（菜单管理查询）' },
   { value: 'menu:page', label: 'menu:page（菜单管理分页）' },
   { value: 'dashboard:menu', label: 'dashboard:menu（监控概览菜单）' },
-  { value: 'qa:menu', label: 'qa:menu（会话运行/咨询问答菜单）' },
+  { value: 'unified_turn:page', label: 'unified_turn:page（问答结果列表）' },
+  { value: 'unified_turn:view', label: 'unified_turn:view（问答结果详情）' },
+  { value: 'unified_turn:review', label: 'unified_turn:review（问答结果测评）' },
   { value: 'agent:menu', label: 'agent:menu（智能体/工具菜单）' },
   { value: 'model:menu', label: 'model:menu（模型配置菜单）' },
   { value: 'config:menu', label: 'config:menu（配置中心菜单）' },
   { value: 'audit:menu', label: 'audit:menu（审计日志菜单）' },
   { value: 'message:menu', label: 'message:menu（消息管理菜单）' },
-  { value: 'qa_file:page', label: 'qa_file:page（文件列表分页）' },
-  { value: 'qa_file:view', label: 'qa_file:view（文件详情）' },
-  { value: 'qa_file:upload', label: 'qa_file:upload（文件上传/解析）' },
-  { value: 'qa_file:download', label: 'qa_file:download（文件下载）' },
+  { value: 'unified_file:page', label: 'unified_file:page（文件列表分页）' },
+  { value: 'unified_file:view', label: 'unified_file:view（文件详情）' },
+  { value: 'unified_file:upload', label: 'unified_file:upload（文件上传/解析）' },
+  { value: 'unified_file:download', label: 'unified_file:download（文件下载）' },
   { value: 'menu:menu', label: 'menu:menu（菜单管理菜单）' },
 ];
 

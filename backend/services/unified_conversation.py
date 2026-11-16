@@ -66,7 +66,11 @@ class UnifiedConversationService:
         latency_ms: Optional[int] = None,
         token_usage: Optional[dict[str, Any]] = None,
     ) -> str:
-        """写回一轮：turn 行 + 短期记忆 push。返回 turn_id（落库失败时为 'local'）。"""
+        """写回一轮：turn 行 + 短期记忆 push。返回 turn_id。
+
+        **落库失败直接抛异常**（不再降级吞掉）：turn 是会话历史唯一真相源，
+        写失败若静默会导致轮次/记忆/回放全部缺失且难以察觉。
+        """
         from backend.data.dao.agent.unified_turn_dao import UnifiedTurnRow
 
         row = UnifiedTurnRow(
@@ -89,11 +93,16 @@ class UnifiedConversationService:
             latency_ms=latency_ms,
             token_usage=token_usage,
         )
-        turn_id = "local"
-        try:
-            turn_id = await self.turn_dao.append(row=row)
-        except Exception:
-            logger.exception("写入 agent_unified_turn 失败（不中断主链路）")
+        turn_id = await self.turn_dao.append(row=row)
+
+        # 首轮自动命名（按咨询主题；仅当标题为空时写一次）
+        if turn_index == 1 and user_content:
+            from backend.data.dao.agent.thread_dao import ThreadDao
+
+            title = " ".join((user_content or "").split())[:30] or "新会话"
+            await ThreadDao.set_title_if_empty(
+                thread_id=thread_id, tenant_id=tenant_id, title=title
+            )
 
         # 短期记忆：每轮成功 / 停止 / 失败后 push
         try:
@@ -125,21 +134,21 @@ class UnifiedConversationService:
         summary: Optional[str] = None,
         turns: Optional[list[ShortTermTurn]] = None,
     ) -> None:
-        """按阈值触发长期记忆抽取并写入 PG（失败仅降级）。"""
-        try:
-            blocks = await self.extractor.extract(
-                agent_id=agent_id, summary=summary, turns=turns or []
+        """按阈值触发长期记忆抽取并写入 PG。
+
+        写入失败直接抛出（不降级）：SQL 异常必须暴露，交由上层返回 code/msg。
+        """
+        blocks = await self.extractor.extract(
+            agent_id=agent_id, summary=summary, turns=turns or []
+        )
+        for b in blocks:
+            await self.long_term_dao.append(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=b.agent_id or agent_id,
+                block=b.block,
+                content=b.content,
             )
-            for b in blocks:
-                await self.long_term_dao.append(
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    agent_id=b.agent_id or agent_id,
-                    block=b.block,
-                    content=b.content,
-                )
-        except Exception:
-            logger.exception("长期记忆写入失败（降级，不影响主链路）")
 
     async def load_context(
         self,

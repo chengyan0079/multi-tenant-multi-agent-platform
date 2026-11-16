@@ -15,6 +15,8 @@ def build_run_config(
     trace_id: str,
     spec: AgentSpec,
     callbacks: Optional[list] = None,
+    tenant_id: Optional[int] = None,
+    user_id: Optional[int] = None,
 ) -> RunnableConfig:
     """构造一次调用所需的 LangChain config，注入统一入口观测元数据与 tags。"""
     base: RunnableConfig = {
@@ -24,6 +26,8 @@ def build_run_config(
             "source": "unified",
             "agent_type": spec.agent_type,
             "spec_version": spec.version,
+            "tenant_id": str(tenant_id) if tenant_id is not None else "",
+            "user_id": str(user_id) if user_id is not None else "",
         },
         "tags": list(spec.tags) + ["unified"],
     }

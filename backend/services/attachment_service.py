@@ -56,6 +56,8 @@ async def upload_attachment(
         file_ext=ext,
         checksum=checksum,
         remark="unified_attachment",
+        agent_type="unified",
+        file_kind="attachment",
     )
     # 与最新版内容一致时被拦截（不重复落库），仍返回已有引用
     row = res.get("row") or res.get("latest")

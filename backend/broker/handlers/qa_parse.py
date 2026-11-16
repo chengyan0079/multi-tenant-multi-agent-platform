@@ -16,7 +16,7 @@ from backend.services.indexing import parse_document
 async def handle_qa_parse(msg: TaskMessage) -> None:
     # 解析链路走 file:upload 权限点（与上传同源），零信任重新校验
     try:
-        await authorize_task(msg.header.user_id, msg.header.tenant_id, [Scope.QA_FILE_UPLOAD])
+        await authorize_task(msg.header.user_id, msg.header.tenant_id, [Scope.UNIFIED_FILE_UPLOAD])
     except BizException:
         # 鉴权失败不会进入 parse_document 的失败回写，这里补上，避免文件永远停在 parsing
         await mark_parse_failed(msg.data.get("file_id"), msg.header.tenant_id)

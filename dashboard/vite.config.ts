@@ -8,8 +8,10 @@ export default defineConfig({
     port: 5173,
     open: false,
     proxy: {
-      '/api': { target: 'http://localhost:9800', changeOrigin: true },
-      '/v1': { target: 'http://localhost:9800', changeOrigin: true },
+      // 用 127.0.0.1 显式走 IPv4：后端只监听 IPv4，
+      // 用 localhost 时 Node 会先试 ::1（IPv6）→ ECONNREFUSED / AggregateError
+      '/api': { target: 'http://127.0.0.1:9800', changeOrigin: true },
+      '/v1': { target: 'http://127.0.0.1:9800', changeOrigin: true },
     },
   },
 });

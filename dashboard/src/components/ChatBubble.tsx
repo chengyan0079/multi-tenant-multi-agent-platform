@@ -13,23 +13,10 @@ interface Props {
 export default function ChatBubble({ role, content, markdown = false }: Props) {
   const isUser = role === 'user';
   return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: isUser ? 'flex-end' : 'flex-start',
-        margin: '8px 0',
-      }}
-    >
+    <div className={`chat-row ${isUser ? 'is-user' : 'is-assistant'}`}>
       <div
-        style={{
-          maxWidth: '78%',
-          padding: '8px 12px',
-          borderRadius: 8,
-          whiteSpace: markdown ? 'normal' : 'pre-wrap',
-          wordBreak: 'break-word',
-          background: isUser ? '#1677ff' : '#f0f0f0',
-          color: isUser ? '#fff' : 'rgba(0,0,0,0.88)',
-        }}
+        className={`chat-bubble ${isUser ? 'is-user' : 'is-assistant'} ${markdown ? 'md' : ''}`}
+        style={{ whiteSpace: markdown ? 'normal' : 'pre-wrap' }}
       >
         {markdown ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>

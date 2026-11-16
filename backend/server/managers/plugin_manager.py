@@ -1,14 +1,19 @@
-"""插件管理：以 DB 启用清单为白名单，装配运行时单例注册表。"""
+"""插件管理：内置插件注册 + 按租户（agent_tool enabled）登记工具集合。
+
+统一由 `agent_tool` 维护（工具类型/租户/启停/配置），不再使用 `agent_plugin`。
+- 内置插件实例全局注册（代码能力）；
+- 租户可用工具集合来自 `agent_tool`（tenant_id + enabled），逐租户输出日志；
+- 工具运行配置由各工具按租户从 `agent_tool.config` 读取（不在此 configure）。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 from backend.app_state import app_state
 from backend.common.logger import get_logger
-from backend.data.dao.agent.plugin_dao import PluginDao
+from backend.data.dao.agent.tool_dao import ToolDao
 from backend.mcp.loader import discover_builtin
 from backend.mcp.registry import PluginRegistry
 from backend.server.base_manager import BaseManager, HealthInfo
@@ -18,31 +23,33 @@ logger = get_logger("plugin_manager")
 _reload_lock = asyncio.Lock()
 
 
-def _parse_config(raw: str | None) -> dict[str, Any]:
-    if not raw:
-        return {}
-    value = json.loads(raw)
-    return value if isinstance(value, dict) else {}
-
-
 async def _build_registry() -> PluginRegistry:
-    rows = await PluginDao.list_enabled()
-    enabled = {r["name"]: r for r in rows}
-    registry = PluginRegistry()
+    """**一切从 `agent_tool` 获取**：注册集合 = agent_tool 中已启用的工具（去重），
+    代码只提供实现（discover_builtin 按 name 匹配），不注册表里没有的插件。
+    """
+    builtin = {p.manifest.name: p for p in discover_builtin()}
+    enabled_rows = await ToolDao.list_all_enabled()  # [{tenant_id, name}]
+    wanted = {str(r["name"]) for r in enabled_rows}
 
-    for plugin in discover_builtin():
-        row = enabled.get(plugin.manifest.name)
-        if row is None:
-            continue
-        try:
-            plugin.configure(_parse_config(row["config"]))
-        except (ValueError, TypeError) as exc:
-            logger.exception(f"插件 config 非法，跳过: {plugin.manifest.name} - {exc}")
+    registry = PluginRegistry()
+    for name in sorted(wanted):
+        plugin = builtin.get(name)
+        if plugin is None:
+            logger.warning(f"agent_tool 已注册工具但无代码实现，跳过: {name}")
             continue
         registry.register_plugin(plugin)
-
     # 插件 register() 只在 start() 里执行，完成单例初始化
     await registry.start()
+
+    mapping: dict[int, set[str]] = {}
+    for item in enabled_rows:
+        tenant_id = int(item["tenant_id"])
+        name = str(item["name"])
+        mapping.setdefault(tenant_id, set()).add(name)
+        logger.info(f"租户 {tenant_id} 注册工具 {name}")
+    registry.set_tenant_tools(mapping)
+    if not mapping:
+        logger.warning("未发现任何租户启用的工具（agent_tool 无 enabled 记录）")
     return registry
 
 
@@ -55,7 +62,7 @@ async def reload_plugins() -> int:
         if previous is not None:
             await previous.stop()
         if registry.plugin_count == 0:
-            logger.warning("插件注册表为空：agent_plugin 无启用记录或与代码实现无匹配")
+            logger.warning("插件注册表为空：agent_tool 无启用记录或与代码实现无匹配")
         return registry.plugin_count
 
 
@@ -67,6 +74,12 @@ class PluginManager(BaseManager):
         if app_state.plugin_registry is not None:
             await app_state.plugin_registry.stop()
             app_state.plugin_registry = None
+
+    async def startup_stats(self) -> str | None:
+        reg = app_state.plugin_registry
+        if reg is None:
+            return None
+        return f"插件={reg.plugin_count}"
 
     async def health(self) -> HealthInfo:
         reg = app_state.plugin_registry

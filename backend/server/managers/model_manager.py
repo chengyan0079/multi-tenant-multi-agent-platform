@@ -25,10 +25,49 @@ _GLOBAL_BUILDERS: dict[str, Callable[[LLMFactory, dict[str, Any]], Any]] = {
 
 
 class ModelManager(BaseManager):
+    # OCR 预加载结果：skip（未启用/未安装）/ ready / failed
+    _ocr_status: str = "skip"
+
+    async def startup_stats(self) -> str | None:
+        ocr_part = f"，ocr={self._ocr_status}"
+        try:
+            rows = await ModelDao.list_by_provider("local")
+            return f"本地模型={len(rows)}{ocr_part}"
+        except Exception:  # noqa: BLE001 - 统计失败不打印
+            return f"ocr={self._ocr_status}"
+
     async def start(self) -> None:
         factory = LLMFactory()
         await self._preload(factory)
         app_state.llm_factory = factory
+        await self._preload_ocr()
+
+    async def _preload_ocr(self) -> None:
+        """OCR 引擎预加载（RapidOCR 首次加载 1~2s，避免首个扫描件解析时才加载）。
+
+        结果记录到 self._ocr_status（ready / skip / failed），供启动完成日志展示。
+        """
+        import time
+
+        from backend.config import config
+        from backend.rag import ocr
+
+        if not getattr(config.qa, "ocr_enabled", True):
+            self._ocr_status = "skip"
+            logger.info("OCR 未启用（QA_OCR_ENABLED=false），跳过预加载")
+            return
+        if not ocr.is_available():
+            self._ocr_status = "skip"
+            logger.warning("未安装 rapidocr_onnxruntime，跳过 OCR 预加载")
+            return
+        t0 = time.perf_counter()
+        ok = await ocr.preload()
+        elapsed = (time.perf_counter() - t0) * 1000
+        self._ocr_status = "ready" if ok else "failed"
+        if ok:
+            logger.info(f"OCR 引擎预加载完成（RapidOCR），耗时 {elapsed:.1f} ms")
+        else:
+            logger.warning(f"OCR 引擎预加载失败（降级），耗时 {elapsed:.1f} ms")
 
     async def reload(self) -> None:
         """配置（model_registry / agent_model）变更后重载：失效缓存并重新预加载。"""

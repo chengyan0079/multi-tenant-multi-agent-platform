@@ -7,6 +7,9 @@ export interface QaResultItem {
   tenant_id: number;
   user_id: number;
   session_id: string;
+  thread_id?: string | null;
+  agent_type?: string;
+  token_usage?: Record<string, unknown> | null;
   question: string;
   answer_mode: string | null;
   query_type: string | null;
@@ -20,7 +23,14 @@ export interface QaResultDetail extends QaResultItem {
   thread_id: string | null;
   agent_type: string;
   answer: string | null;
-  retrieved_contexts: { doc_id: string; content: string; score: number; source?: string }[];
+  retrieved_contexts: {
+    doc_id?: string | null;
+    chunk_id?: string | null;
+    content: string;
+    score?: number | null;
+    page?: number | null;
+    source?: string | null;
+  }[];
   sources: string[];
   reference_answer: string | null;
   token_usage: Record<string, unknown> | null;
@@ -63,12 +73,20 @@ export const listQaResults = (params: {
   page_size?: number;
   session_id?: string;
   status?: string;
+  turn_id?: string;
+  thread_id?: string;
+  trace_id?: string;
+  user_id?: number;
 } = {}) => {
   const qs = new URLSearchParams();
   if (params.page) qs.set('page', String(params.page));
   if (params.page_size) qs.set('page_size', String(params.page_size));
   if (params.session_id) qs.set('session_id', params.session_id);
   if (params.status) qs.set('status', params.status);
+  if (params.turn_id) qs.set('turn_id', params.turn_id);
+  if (params.thread_id) qs.set('thread_id', params.thread_id);
+  if (params.trace_id) qs.set('trace_id', params.trace_id);
+  if (params.user_id) qs.set('user_id', String(params.user_id));
   const s = qs.toString();
   return http.get<QaResultList>(`/api/v1/tenant/qa/results${s ? `?${s}` : ''}`);
 };

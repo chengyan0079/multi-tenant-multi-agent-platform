@@ -147,7 +147,8 @@ class QaSettings(BaseSettings):
     vague_top_k: int = 8  # VAGUE（HyDE）检索召回数
     broad_per_query_top_k: int = 5  # BROAD 多查询每个子查询召回数
     merge_top_k: int = 5  # BROAD 合并后取前 N
-    high_confidence_threshold: float = 0.75  # 高置信度判定阈值（精排分数）
+    # 高置信度判定阈值：取首条精排分数（bge-reranker 归一化分数常见 0.2~0.6）
+    high_confidence_threshold: float = 0.45
     web_search_max_results: int = 5  # Web 搜索结果上限
     summary_trigger_turns: int = 6  # 用户提问轮数达到即触发摘要压缩
 
@@ -163,10 +164,16 @@ class QaSettings(BaseSettings):
     child_chunk_overlap: int = 20  # 子片重叠
     parent_context_by_highlight: bool = True  # 生成节点用"父片内高亮子片"替代纯子片
     index_batch_size: int = 32  # 单批向量化/写入条数
+    # —— OCR（扫描件/图片型 PDF 无文本层时逐页降级，QA_OCR_* 可覆盖）——
+    ocr_enabled: bool = True  # 关闭则扫描页直接跳过（整篇无文本 → 解析失败）
+    ocr_dpi: int = 180  # 页面渲染 DPI（越高越准但越慢）
+    ocr_max_pages: int = 200  # 单文件 OCR 页数上限（防超大文件拖死解析）
     # —— 检索 / 精排 ——
-    recall_top_k: int = 10  # 混合召回候选数（精排前）
-    rerank_top_k: int = 3  # 精排后保留条数
+    recall_top_k: int = 20  # 混合召回候选数（精排前，候选不足会导致精排无料可选）
+    rerank_top_k: int = 5  # 精排后保留条数（与 precise_top_k 对齐）
     rerank_max_input_chars: int = 1200  # 单条候选送入精排的最大字符数
+    # —— 思考模式（前端开关开启后透传给 LLM 的 extra_body，JSON 字符串）——
+    thinking_extra_body: str = '{"thinking": {"type": "enabled"}}'
 
 
 class SecuritySettings(BaseSettings):

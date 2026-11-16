@@ -1,4 +1,9 @@
-"""问答结果 DAO：agent_qa_results / agent_qa_ragas_evals 读写，tenant_id 为隔离边界。"""
+"""问答结果 DAO（阶段2）：**以 agent_unified_turn 为唯一历史源**。
+
+- 列表/详情直接读 `agent_unified_turn`（agent_type='qa'），不再有 agent_qa_results；
+- RAGAS 评测存 `agent_qa_ragas_evals`，外键为 `turn_id`；
+- 评测必须人工补充标准答案（reference_answer）后才会写 pending 记录并执行。
+"""
 
 from __future__ import annotations
 
@@ -8,228 +13,232 @@ from typing import Any
 
 from sqlalchemy import text
 
-from backend.data.sql import fetch_all, fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    execute_write,
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 
-_INSERT = text("""
-INSERT INTO agent_qa_results (
-    id, trace_id, tenant_id, user_id, turn_id, agent_type,
-    question, answer, answer_mode, query_type, confidence,
-    retrieved_contexts, sources, reference_answer, latency_ms, token_usage,
-    enable_web_search, status, error_msg, extra,
+_QA_WHERE = (
+    "WHERE t.tenant_id = :tenant_id AND t.agent_type = 'qa' "
+    "AND (CAST(:session_id AS UUID) IS NULL OR t.thread_id = CAST(:session_id AS UUID)) "
+    "AND (CAST(:status AS VARCHAR) IS NULL OR t.status = :status)"
+)
+
+_QA_COLUMNS = """
+       t.id, t.trace_id, t.tenant_id, t.user_id, t.agent_type,
+       t.user_content AS question, t.assistant_content AS answer,
+       t.payload->>'answer_mode' AS answer_mode,
+       t.payload->>'query_type' AS query_type,
+       (t.payload->>'confidence')::numeric AS confidence,
+       t.payload->'retrieved_contexts' AS retrieved_contexts,
+       t.payload->'sources' AS sources,
+       t.latency_ms, t.token_usage, t.status, t.error_code AS error_msg,
+       t.payload AS extra, t.create_at, t.updated_at,
+       t.thread_id::text AS session_id, t.thread_id::text AS thread_id
+"""
+
+_LIST = text(
+    f"SELECT {_QA_COLUMNS} FROM agent_unified_turn t {_QA_WHERE} "
+    "ORDER BY t.create_at DESC LIMIT :limit OFFSET :offset"
+)
+
+_COUNT = text(f"SELECT count(*) FROM agent_unified_turn t {_QA_WHERE}")
+
+_GET = text(
+    f"SELECT {_QA_COLUMNS} FROM agent_unified_turn t "
+    "WHERE t.id = CAST(:id AS UUID) AND t.tenant_id = :tenant_id AND t.agent_type = 'qa'"
+)
+
+_INSERT_EVAL = text("""
+INSERT INTO agent_qa_ragas_evals (
+    id, turn_id, trace_id, tenant_id, evaluator, evaluator_model, dataset_version,
+    reference_answer, retrieved_contexts, metrics, status, error_msg, eval_at,
     create_user_id, update_user_id, create_tenant_id, update_tenant_id
 ) VALUES (
-    :id, :trace_id, :tenant_id, :user_id, :turn_id, :agent_type,
-    :question, :answer, :answer_mode, :query_type, :confidence,
-    CAST(:retrieved_contexts AS JSON), CAST(:sources AS JSON), :reference_answer, :latency_ms,
-    CAST(:token_usage AS JSON), :enable_web_search, :status, :error_msg, CAST(:extra AS JSON),
+    :id, CAST(:turn_id AS UUID), :trace_id, :tenant_id, :evaluator, :evaluator_model, :dataset_version,
+    :reference_answer, CAST(:retrieved_contexts AS JSONB), CAST(:metrics AS JSONB), :status, :error_msg, :eval_at,
     :create_user_id, :update_user_id, :create_tenant_id, :update_tenant_id
 )
 RETURNING id
 """)
 
-# 会话归属统一收口到 agent_unified_turn：session_id 由 turn.thread_id（=U）回表得出，
-# LEFT JOIN 保证未关联 turn（过渡期）的结果行仍可被按 id 取出。
-_SELECT = text("""
-SELECT qr.id, qr.trace_id, qr.tenant_id, qr.user_id, qr.agent_type,
-       qr.question, qr.answer, qr.answer_mode, qr.query_type, qr.confidence,
-       qr.retrieved_contexts, qr.sources, qr.reference_answer, qr.latency_ms, qr.token_usage,
-       qr.enable_web_search, qr.status, qr.error_msg, qr.extra, qr.create_at, qr.updated_at,
-       t.thread_id AS session_id
-FROM agent_qa_results qr
-LEFT JOIN agent_unified_turn t ON t.id = qr.turn_id
-WHERE qr.id = :id AND qr.tenant_id = :tenant_id
-""")
-
-_LIST = text("""
-SELECT qr.id, qr.trace_id, qr.tenant_id, qr.user_id, qr.agent_type, qr.question,
-       qr.answer_mode, qr.query_type, qr.confidence, qr.status, qr.latency_ms, qr.create_at,
-       t.thread_id AS session_id
-FROM agent_qa_results qr
-LEFT JOIN agent_unified_turn t ON t.id = qr.turn_id
-WHERE qr.tenant_id = :tenant_id
-  AND (CAST(:session_id AS VARCHAR) IS NULL OR t.thread_id = :session_id)
-  AND (CAST(:status AS VARCHAR) IS NULL OR qr.status = :status)
-ORDER BY qr.create_at DESC
-LIMIT :limit OFFSET :offset
-""")
-
-_COUNT = text("""
-SELECT count(*) FROM agent_qa_results qr
-LEFT JOIN agent_unified_turn t ON t.id = qr.turn_id
-WHERE qr.tenant_id = :tenant_id
-  AND (CAST(:session_id AS VARCHAR) IS NULL OR t.thread_id = :session_id)
-  AND (CAST(:status AS VARCHAR) IS NULL OR qr.status = :status)
-""")
-
-_UPDATE_REFERENCE = text("""
-UPDATE agent_qa_results
-SET reference_answer = :reference_answer,
-    update_user_id = :update_user_id,
-    update_tenant_id = :update_tenant_id
-WHERE id = :id AND tenant_id = :tenant_id
+_SELECT_EVAL = text("""
+SELECT id, turn_id, trace_id, tenant_id, evaluator, evaluator_model, dataset_version,
+       reference_answer, retrieved_contexts,
+       faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness,
+       metrics, status, error_msg, eval_at, create_at, updated_at
+FROM agent_qa_ragas_evals WHERE id = CAST(:id AS UUID)
 """)
 
 _LIST_EVALS = text("""
-SELECT id, qa_result_id, trace_id, tenant_id, evaluator, evaluator_model, dataset_version,
+SELECT id, turn_id, trace_id, tenant_id, evaluator, evaluator_model, dataset_version,
+       reference_answer, retrieved_contexts,
        faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness,
        metrics, status, error_msg, eval_at, create_at, updated_at
 FROM agent_qa_ragas_evals
-WHERE qa_result_id = :qa_result_id AND tenant_id = :tenant_id
+WHERE turn_id = CAST(:turn_id AS UUID) AND tenant_id = :tenant_id
 ORDER BY create_at DESC
 """)
 
-_INSERT_EVAL = text("""
-INSERT INTO agent_qa_ragas_evals (
-    id, qa_result_id, trace_id, tenant_id, evaluator, evaluator_model, dataset_version,
-    metrics, status, error_msg, eval_at,
-    create_user_id, update_user_id, create_tenant_id, update_tenant_id
-) VALUES (
-    :id, :qa_result_id, :trace_id, :tenant_id, :evaluator, :evaluator_model, :dataset_version,
-    CAST(:metrics AS JSON), :status, :error_msg, :eval_at,
-    :create_user_id, :update_user_id, :create_tenant_id, :update_tenant_id
-)
-""")
-
-_SELECT_EVAL = text("""
-SELECT id, qa_result_id, status FROM agent_qa_ragas_evals WHERE id = :id
-""")
-
-_UPDATE_EVAL = text("""
+_FINISH_EVAL = text("""
 UPDATE agent_qa_ragas_evals
 SET status = :status,
+    error_msg = :error_msg,
     faithfulness = :faithfulness,
     answer_relevancy = :answer_relevancy,
     context_precision = :context_precision,
     context_recall = :context_recall,
     answer_correctness = :answer_correctness,
-    metrics = CAST(:metrics AS JSON),
-    error_msg = :error_msg,
+    metrics = CAST(:metrics AS JSONB),
     eval_at = :eval_at,
     update_user_id = :update_user_id,
     update_tenant_id = :update_tenant_id
-WHERE id = :id AND status = 'pending'
+WHERE id = CAST(:id AS UUID)
 """)
 
 
 def _json_dump(value: Any) -> str | None:
-    """JSON 列显式序列化：text() 不负责转换 Python 对象。"""
-    return None if value is None else json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
 
 
 class QaResultDao:
-    """问答结果与 RAGAS 评估的读写。"""
+    """问答结果（turn 视图）+ RAGAS 评测读写。"""
 
-    @staticmethod
-    async def insert(*, record: dict[str, Any], audit: dict[str, Any]) -> str:
-        """写一条问答结果，返回其 id。"""
-        params = {**record, **audit}
-        params["retrieved_contexts"] = _json_dump(params.get("retrieved_contexts"))
-        params["sources"] = _json_dump(params.get("sources"))
-        params["token_usage"] = _json_dump(params.get("token_usage"))
-        params["extra"] = _json_dump(params.get("extra"))
-        async with session_scope() as session:
-            return str(await fetch_value(session, _INSERT, params))
-
-    @staticmethod
-    async def get(*, result_id: str, tenant_id: int) -> dict[str, Any] | None:
-        """按 id + 租户取一条结果。"""
-        async with session_scope() as session:
-            return await fetch_one(session, _SELECT, {"id": result_id, "tenant_id": tenant_id})
+    # ---------- 问答结果（读 agent_unified_turn） ----------
 
     @staticmethod
     async def list_paged(
         *,
         tenant_id: int,
-        session_id: str | None,
-        status: str | None,
-        page: int,
-        page_size: int,
+        session_id: str | None = None,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        turn_id: str | None = None,
+        thread_id: str | None = None,
+        trace_id: str | None = None,
+        user_id: int | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
-        """租户内分页列表（可按会话/状态过滤）。"""
-        params = {"tenant_id": tenant_id, "session_id": session_id, "status": status}
+        """按 id / thread_id / trace_id / user_id / 会话 / 状态 过滤（模糊匹配 UUID 片段）。"""
+        conds = ["t.tenant_id = :tenant_id", "t.agent_type = 'qa'"]
+        params: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "limit": page_size,
+            "offset": max(page - 1, 0) * page_size,
+        }
+        if session_id:
+            conds.append("t.thread_id = CAST(:session_id AS UUID)")
+            params["session_id"] = session_id
+        if status:
+            conds.append("t.status = :status")
+            params["status"] = status
+        if turn_id:
+            conds.append("CAST(t.id AS text) ILIKE :turn_like")
+            params["turn_like"] = f"%{turn_id.strip()}%"
+        if thread_id:
+            conds.append("CAST(t.thread_id AS text) ILIKE :thr_like")
+            params["thr_like"] = f"%{thread_id.strip()}%"
+        if trace_id:
+            conds.append("t.trace_id ILIKE :trace_like")
+            params["trace_like"] = f"%{trace_id.strip()}%"
+        if user_id is not None:
+            conds.append("t.user_id = :user_id")
+            params["user_id"] = user_id
+        where = " WHERE " + " AND ".join(conds)
+        list_sql = text(
+            f"SELECT {_QA_COLUMNS} FROM agent_unified_turn t{where} "
+            "ORDER BY t.create_at DESC LIMIT :limit OFFSET :offset"
+        )
+        count_sql = text(f"SELECT count(*) FROM agent_unified_turn t{where}")
         async with session_scope() as session:
-            return await fetch_page(session, _LIST, _COUNT, params, page=page, page_size=page_size)
+            total = await fetch_value(session, count_sql, params)
+            rows = await fetch_all(session, list_sql, params)
+        return [dict(r) for r in rows], int(total or 0)
 
     @staticmethod
-    async def update_reference(
-        *,
-        result_id: str,
-        tenant_id: int,
-        reference_answer: str,
-        user_id: int,
-        tenant_audit_id: int | None,
-    ) -> int:
-        """写入人工标准答案，返回受影响行数。"""
+    async def get(*, result_id: str, tenant_id: int) -> dict[str, Any] | None:
+        """result_id 即 agent_unified_turn.id。"""
         async with session_scope() as session:
-            result = await session.execute(
-                _UPDATE_REFERENCE,
-                {
-                    "id": result_id,
-                    "tenant_id": tenant_id,
-                    "reference_answer": reference_answer,
-                    "update_user_id": user_id,
-                    "update_tenant_id": tenant_audit_id,
-                },
-            )
-            return result.rowcount or 0
+            return await fetch_one(session, _GET, {"id": result_id, "tenant_id": tenant_id})
 
-    @staticmethod
-    async def list_evals(*, qa_result_id: str, tenant_id: int) -> list[dict[str, Any]]:
-        """某条问答结果的 RAGAS 评估记录（按时间倒序）。"""
-        async with session_scope() as session:
-            return await fetch_all(
-                session,
-                _LIST_EVALS,
-                {"qa_result_id": qa_result_id, "tenant_id": tenant_id},
-            )
+    # ---------- RAGAS 评测 ----------
 
     @staticmethod
     async def insert_eval(*, eval_id: str, record: dict[str, Any], audit: dict[str, Any]) -> None:
-        """创建一条 pending 评估记录（由接口触发，handler 消费后回填）。"""
-        params = {"id": eval_id, **record, **audit}
-        params["metrics"] = _json_dump(record.get("metrics"))
+        """创建 pending 评测（record.turn_id 为评测对象，reference_answer 必填）。"""
+        params = {
+            "id": eval_id,
+            "turn_id": record.get("turn_id"),
+            "trace_id": record.get("trace_id"),
+            "tenant_id": record.get("tenant_id"),
+            "evaluator": record.get("evaluator") or "ragas",
+            "evaluator_model": record.get("evaluator_model"),
+            "dataset_version": record.get("dataset_version"),
+            "reference_answer": record.get("reference_answer"),
+            "retrieved_contexts": _json_dump(record.get("retrieved_contexts")),
+            "metrics": _json_dump(record.get("metrics")),
+            "status": record.get("status") or "pending",
+            "error_msg": record.get("error_msg"),
+            "eval_at": record.get("eval_at") or datetime.now(),
+            **audit,
+        }
         async with session_scope() as session:
-            await session.execute(_INSERT_EVAL, params)
+            await fetch_value(session, _INSERT_EVAL, params)
 
     @staticmethod
     async def get_eval(eval_id: str) -> dict[str, Any] | None:
-        """取评估记录状态（handler 幂等判断用）。"""
         async with session_scope() as session:
             return await fetch_one(session, _SELECT_EVAL, {"id": eval_id})
+
+    @staticmethod
+    async def list_evals(*, turn_id: str, tenant_id: int) -> list[dict[str, Any]]:
+        async with session_scope() as session:
+            return await fetch_all(session, _LIST_EVALS, {"turn_id": turn_id, "tenant_id": tenant_id})
 
     @staticmethod
     async def finish_eval(
         *,
         eval_id: str,
         status: str,
+        error_msg: str | None = None,
+        eval_at: datetime | None = None,
+        user_id: int | None = None,
+        tenant_id: int | None = None,
         faithfulness: float | None = None,
         answer_relevancy: float | None = None,
         context_precision: float | None = None,
         context_recall: float | None = None,
         answer_correctness: float | None = None,
-        metrics: dict[str, Any] | None = None,
-        error_msg: str | None = None,
-        eval_at: datetime | None = None,
-        user_id: int | None = None,
-        tenant_id: int | None = None,
-    ) -> int:
-        """回填评估结果（仅 pending 可更新，保证幂等）。"""
+        metrics: dict | None = None,
+    ) -> None:
         async with session_scope() as session:
-            result = await session.execute(
-                _UPDATE_EVAL,
+            await execute_write(
+                session,
+                _FINISH_EVAL,
                 {
                     "id": eval_id,
                     "status": status,
+                    "error_msg": error_msg,
+                    "eval_at": eval_at or datetime.now(),
+                    "update_user_id": user_id,
+                    "update_tenant_id": tenant_id,
                     "faithfulness": faithfulness,
                     "answer_relevancy": answer_relevancy,
                     "context_precision": context_precision,
                     "context_recall": context_recall,
                     "answer_correctness": answer_correctness,
                     "metrics": _json_dump(metrics),
-                    "error_msg": error_msg,
-                    "eval_at": eval_at,
-                    "update_user_id": user_id,
-                    "update_tenant_id": tenant_id,
                 },
             )
-            return result.rowcount or 0
+            await session.commit()

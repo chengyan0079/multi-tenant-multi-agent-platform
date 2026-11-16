@@ -30,6 +30,7 @@ class UnifiedChatRequest(_Forbid):
     entry: EntryPayload | None = Field(default=None, description="入口字段具体对象（按 spec 二次校验）")
     attachments: list[AttachmentRef] | None = Field(default=None, description="附件引用（两阶段上传返回）")
     enable_web_search: bool = Field(default=False, description="低置信度时是否启用 Web 搜索补充")
+    thinking: bool = Field(default=False, description="思考模式：开启后 LLM 输出推理过程（前端流式展示）")
 
 
 class StopChatRequest(_Forbid):
@@ -86,6 +87,8 @@ class TurnReplayItem(_Forbid):
     payload: dict[str, Any] = Field(default_factory=dict)  # 事件详情
     status: str = "success"  # 执行状态
     error_code: str | None = None  # 错误码
+    latency_ms: int | None = None  # 本轮耗时（毫秒）
+    token_usage: dict[str, Any] | None = None  # prompt/completion/total
     create_at: datetime | None = None  # 创建时间
 
 
@@ -98,6 +101,8 @@ class SessionDetail(_Forbid):
     status: str  # 状态
     agent_type: str = ""  # 最近一次 Agent 类型
     turn_count: int = 0  # 轮数
+    total_tokens: int = 0  # 全会话累计 tokens（多轮求和，不受回放分页影响）
+    total_latency_ms: int = 0  # 全会话累计耗时（毫秒）
     created_at: datetime | None = None  # 创建时间
     updated_at: datetime | None = None  # 更新时间
     turns: list[TurnReplayItem] = Field(default_factory=list)  # 回放轮次

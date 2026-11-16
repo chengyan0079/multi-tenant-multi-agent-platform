@@ -152,7 +152,7 @@ def test_role_create(client):
     resp = client.post(
         "/api/v1/admin/roles",
         headers=_auth(token),
-        json={"name": "custom", "description": "自定义", "scopes": ["qa:menu"]},
+        json={"name": "custom", "description": "自定义", "scopes": ["unified:ask"]},
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["role_id"] == 10

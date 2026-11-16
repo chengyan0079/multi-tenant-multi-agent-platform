@@ -18,7 +18,14 @@ from backend.broker.types import TaskType
 @pytest.fixture
 def _patched_ragas(monkeypatch):
     dao = MagicMock()
-    dao.get_eval = AsyncMock(return_value={"status": "pending"})
+    # 阶段2：评测输入以 eval 记录为准（标准答案必填）
+    dao.get_eval = AsyncMock(
+        return_value={
+            "status": "pending",
+            "reference_answer": "R",
+            "retrieved_contexts": "[]",
+        }
+    )
     dao.get = AsyncMock(
         return_value={
             "question": "Q",
@@ -38,7 +45,7 @@ def _ragas_msg(eval_id: str = "E1", qa_result_id: str = "R1", retry: int = 0) ->
         key="qa.ragas_review",
         type=TaskType.QA_RAGAS_REVIEW,
         header=MessageHeader(tenant_id=1, user_id=1, retry_count=retry),
-        data={"eval_id": eval_id, "qa_result_id": qa_result_id},
+        data={"eval_id": eval_id, "turn_id": qa_result_id},
     )
 
 

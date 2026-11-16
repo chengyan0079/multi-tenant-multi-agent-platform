@@ -15,15 +15,15 @@ logger = get_logger("rbac")
 
 
 class Business(str, Enum):
-    """AI 业务域（权限点的资源部分）：qa / knowledge。新增业务域在此登记。"""
+    """AI 业务域（权限点的资源部分）：qa_file / unified / knowledge。新增业务域在此登记。"""
 
-    QA = "qa"
-    QA_FILE = "qa_file"
-    QA_RESULT = "qa_result"
-    QA_SESSION = "qa_session"
-    # 统一咨询入口（单聊天框收口 4 个 Agent 的发起动作）
+    # 统一知识库文件（原 qa_file；文档上传/下载/列表）
+    UNIFIED_FILE = "unified_file"
+    # 统一咨询入口（单聊天框收口 Agent 的发起动作）
     UNIFIED = "unified"
     UNIFIED_SESSION = "unified_session"
+    # 统一咨询结果（agent_unified_turn：详情 / 质量测评）
+    UNIFIED_TURN = "unified_turn"
     # 业务域分组菜单（/agent 父节点，仅用于菜单可见性）
     BUSINESS = "business"
 
@@ -35,6 +35,7 @@ class Agent(str, Enum):
     AGENT = "agent"
     MODEL = "model"
     TOOL = "tool"
+    DB_CONNECTION = "db_connection"
 
 
 class System(str, Enum):
@@ -190,24 +191,24 @@ class Scope:
     TOOL_DELETE = f"{Agent.TOOL.value}:{Action.DELETE.value}"
     TOOL_STATUS = f"{Agent.TOOL.value}:{Action.STATUS.value}"
 
-    # ===== Business AI 业务域（qa / knowledge） =====
-    # 问哪一类就要求哪一类的 ask 权限；page=历史列表、view=单条详情
-    QA_MENU = f"{Business.QA.value}:{Action.MENU.value}"
-    QA_ASK = f"{Business.QA.value}:{Action.ASK.value}"
-    # 问答结果
-    QA_RESULT_PAGE = f"{Business.QA_RESULT.value}:{Action.PAGE.value}"
-    QA_RESULT_VIEW = f"{Business.QA_RESULT.value}:{Action.VIEW.value}"
-    QA_RESULT_REVIEW = f"{Business.QA_RESULT.value}:{Action.REVIEW.value}"
-    # 问答会话
-    QA_SESSION_PAGE = f"{Business.QA_SESSION.value}:{Action.PAGE.value}"
-    QA_SESSION_ADD = f"{Business.QA_SESSION.value}:{Action.ADD.value}"
-    QA_SESSION_VIEW = f"{Business.QA_SESSION.value}:{Action.VIEW.value}"
-    QA_SESSION_DELETE = f"{Business.QA_SESSION.value}:{Action.DELETE.value}"
-    # 问答文件
-    QA_FILE_UPLOAD = f"{Business.QA_FILE.value}:{Action.UPLOAD.value}"
-    QA_FILE_DOWNLOAD = f"{Business.QA_FILE.value}:{Action.DOWNLOAD.value}"
-    QA_FILE_PAGE = f"{Business.QA_FILE.value}:{Action.PAGE.value}"
-    QA_FILE_VIEW = f"{Business.QA_FILE.value}:{Action.VIEW.value}"
+    DB_CONNECTION_PAGE = f"{Agent.DB_CONNECTION.value}:{Action.PAGE.value}"
+    DB_CONNECTION_VIEW = f"{Agent.DB_CONNECTION.value}:{Action.VIEW.value}"
+    DB_CONNECTION_ADD = f"{Agent.DB_CONNECTION.value}:{Action.ADD.value}"
+    DB_CONNECTION_UPDATE = f"{Agent.DB_CONNECTION.value}:{Action.UPDATE.value}"
+    DB_CONNECTION_DELETE = f"{Agent.DB_CONNECTION.value}:{Action.DELETE.value}"
+    DB_CONNECTION_STATUS = f"{Agent.DB_CONNECTION.value}:{Action.STATUS.value}"
+
+    # ===== 统一咨询结果（agent_unified_turn） =====
+    # page=结果列表、view=详情/测评报告、review=发起质量测评
+    UNIFIED_TURN_PAGE = f"{Business.UNIFIED_TURN.value}:{Action.PAGE.value}"
+    UNIFIED_TURN_VIEW = f"{Business.UNIFIED_TURN.value}:{Action.VIEW.value}"
+    UNIFIED_TURN_REVIEW = f"{Business.UNIFIED_TURN.value}:{Action.REVIEW.value}"
+
+    # ===== 统一知识库文件（原 qa_file；文档上传/下载/列表） =====
+    UNIFIED_FILE_UPLOAD = f"{Business.UNIFIED_FILE.value}:{Action.UPLOAD.value}"
+    UNIFIED_FILE_DOWNLOAD = f"{Business.UNIFIED_FILE.value}:{Action.DOWNLOAD.value}"
+    UNIFIED_FILE_PAGE = f"{Business.UNIFIED_FILE.value}:{Action.PAGE.value}"
+    UNIFIED_FILE_VIEW = f"{Business.UNIFIED_FILE.value}:{Action.VIEW.value}"
 
 
 # 所有合法权限点，供 require_scope 校验声明合法性（Scope 不再是 Enum）
@@ -221,7 +222,10 @@ VALID_SCOPES: frozenset[str] = frozenset(
 # agent_type → 调用该 Agent 所需权限点（动态入口鉴权的单一权威来源）。
 # 编排/统一聊天在运行期才决定 agent_type，无法用静态 require_scope 声明，故按此表查权限点。
 SCOPE_BY_AGENT: dict[str, str] = {
-    "qa": Scope.QA_ASK,
+    # 统一入口统一用 unified:ask（三个 agent 一致，不再按 agent 细分）
+    "qa": Scope.UNIFIED_ASK,
+    "db_review": Scope.UNIFIED_ASK,
+    "db_release": Scope.UNIFIED_ASK,
 }
 
 

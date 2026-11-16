@@ -73,8 +73,11 @@ def _apply_highlights(chunks: list[Chunk]) -> None:
         )
 
 
-def _to_chunk(entity: dict, score: float) -> Chunk:
-    """Milvus entity → 统一检索结果。"""
+def _to_chunk(entity: dict, score: float, rerank_used: bool = True) -> Chunk:
+    """Milvus entity → 统一检索结果。
+
+    rerank_used=False 时 score 是 RRF 融合分（0.0x 量级，仅可比较大小，不能当相似度）。
+    """
     file_name = str(entity.get("file_name") or "")
     page = int(entity.get("page") or 0)
     source_location = str(entity.get("source_location") or "")
@@ -83,6 +86,7 @@ def _to_chunk(entity: dict, score: float) -> Chunk:
     extra = entity.get("extra") or {}
     if not isinstance(extra, dict):
         extra = {}
+    extra = {**extra, "_rerank_used": rerank_used}
     return Chunk(
         content=str(entity.get("content") or ""),
         score=float(score),
@@ -142,22 +146,37 @@ async def retrieve(
         top_k=recall_k,
     )
     if not candidates:
-        logger.debug(f"rag.retrieve: 召回为空 query={query[:50]!r} tenant={tenant_id}")
+        # 命中率排查：租户、召回条数、关联文件、查询，一眼区分「真没数据」还是「参数错」
+        logger.debug(
+            f"rag.retrieve.empty | tenant={tenant_id} file_id={file_id or '-'} "
+            f"recall_k={recall_k} query={query[:50]!r} | "
+            f"hint=检查该租户 Milvus 分区是否有 chunk、文档 parse_status 是否 parsed、embedding 是否一致"
+        )
         return []
 
     scores = await _rerank(query, candidates)
-    if scores is None:
-        # 精排降级：用 Milvus 粗排 distance
+    rerank_used = scores is not None
+    if not rerank_used:
+        # 精排降级：用 Milvus 粗排分（RRF 0.0x 量级，仅用于排序，不能当置信度）
         pairs = [(c, float(c.get("score") or 0.0)) for c in candidates]
-        logger.debug("rag.retrieve: 使用粗排分数")
+        logger.debug("rag.retrieve: 使用粗排分数（RRF，仅排序用）")
     else:
         pairs = [(c, float(s)) for c, s in zip(candidates, scores)]
 
     pairs.sort(key=lambda x: x[1], reverse=True)
-    result = [_to_chunk(entity, score) for entity, score in pairs[:final_k]]
+    result = [
+        _to_chunk(entity, score, rerank_used) for entity, score in pairs[:final_k]
+    ]
     _apply_highlights(result)
+    top = result[0].score if result else 0.0
+    low = result[-1].score if result else 0.0
+    # 命中率排查：候选数 / 是否精排 / 首末分数 / 阈值 / 租户，一条日志看全
     logger.debug(
-        f"rag.retrieve.done | query={query[:50]!r} candidates={len(candidates)} "
-        f"returned={len(result)} top_score={result[0].score if result else 0.0:.4f}"
+        f"rag.retrieve.done | tenant={tenant_id} file_id={file_id or '-'} "
+        f"query={query[:50]!r} recall_k={recall_k} final_k={final_k} "
+        f"candidates={len(candidates)} rerank_used={rerank_used} returned={len(result)} "
+        f"top_score={top:.4f} min_score={low:.4f} "
+        f"threshold={config.qa.high_confidence_threshold} "
+        f"hit={'yes' if top >= config.qa.high_confidence_threshold else 'low'}"
     )
     return result

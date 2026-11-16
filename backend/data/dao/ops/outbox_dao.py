@@ -192,6 +192,20 @@ class OutboxDao:
             return int(n)
 
 
+def _as_json(payload: bytes | str | dict) -> dict:
+    """把消息体转成 JSONB 可写入的 dict（解析失败则包成 {"raw": "..."}）。"""
+    import json
+
+    if isinstance(payload, dict):
+        return payload
+    raw = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else payload
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+    except (ValueError, TypeError):
+        return {"raw": raw[:8000]}
+
+
 class DeadLetterDao:
     """死信落库（agent_dead_letter）：消费重试超限的任务，便于排查与告警。"""
 
@@ -216,7 +230,8 @@ class DeadLetterDao:
                 DeadLetterDao._INSERT,
                 {
                     "topic": topic,
-                    "payload": payload.decode("utf-8"),
+                    # payload 是 JSONB 列：必须是 dict/list（传字符串会被二次转义成 "\"{...}\""）
+                    "payload": _as_json(payload),
                     "origin_queue": origin_queue,
                     "error": error,
                     "retry_count": retry_count,

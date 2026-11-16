@@ -45,8 +45,9 @@ class AgentMeta:
 class AgentRegistry:
     """运行时 Agent 注册表：按 agent_type 找图，支持能力开关与按租户过滤。"""
 
-    def __init__(self) -> None:
+    def __init__(self, agent_builders: Optional[Dict[str, type]] = None) -> None:
         self._agents: Dict[str, AgentMeta] = {}
+        self._builders: Dict[str, type] = dict(agent_builders or {})
         # 租户级注册缓存：tenant_id -> 已注册 agent_type 集合（来自 agent 表）
         self._tenant_agents: Dict[int, set] = {}
         # 派生物缓存（_rebuild_derived 重建）
@@ -63,41 +64,50 @@ class AgentRegistry:
         self.validate_specs()  # 启动期 fail-fast（V1–V14 可达项）
 
     async def load_from_db(self) -> None:
-        """加载 `agent` 元数据 + `agent_capability_policy` 全量策略到内存。"""
+        """从 DB 加载注册：只对 agent 表中 enabled=true 的 (tenant, agent_type) 生效。"""
+        if not self._builders:
+            # 无构造器池（如测试手动 register）：沿用内存注册
+            self._rebuild_derived()
+            return
         try:
             rows = await AgentDao.list_agents()
-            loaded = 0
+            tenant_agents: Dict[int, set] = {}
+            first_row: Dict[str, dict] = {}
             for r in rows:
-                meta = self._agents.get(r["agent_type"])
-                if meta is None:
-                    # 库里登记但代码未注册图：无法执行，仅告警（get() 会报未知类型）
-                    logger.warning(f"Agent 已在库登记但未注册图构造器: {r['agent_type']}")
+                if not r.get("enabled"):
                     continue
-                meta.name = r["name"]
-                meta.description = r["description"]
-                if r["input_schema"]:
-                    meta.input_schema = r["input_schema"]
-                meta.version = r["version"]
-                if meta.spec is not None:
-                    meta.spec = merge_db_overrides(
-                        meta.spec,
-                        name=r["name"],
-                        description=r["description"],
-                        version=r["version"],
-                    )
-                loaded += 1
-            self._tenant_agents = {}
-            for r in rows:
-                if r.get("enabled"):
-                    self._tenant_agents.setdefault(r["tenant_id"], set()).add(
-                        r["agent_type"]
-                    )
-            logger.info(
-                f"已从库加载 Agent 元数据 {loaded}/{len(rows)} 条、租户注册 {len(self._tenant_agents)} 个租户"
-            )
+                _tid = int(r["tenant_id"])
+                tenant_agents.setdefault(_tid, set()).add(r["agent_type"])
+                logger.info(f"租户 {_tid} 注册 agent {r['agent_type']}")
+                first_row.setdefault(r["agent_type"], r)
+            agents: Dict[str, AgentMeta] = {}
+            for agent_type, r in first_row.items():
+                builder = self._builders.get(agent_type)
+                if builder is None:
+                    logger.warning(f"DB 已注册但无代码构造器，跳过: {agent_type}")
+                    continue
+                inst = builder()
+                spec = inst.metadata()
+                spec = merge_db_overrides(
+                    spec, name=r["name"], description=r["description"], version=r["version"]
+                )
+                agents[agent_type] = AgentMeta(
+                    agent_type=agent_type,
+                    build_graph=inst.build_graph,
+                    input_schema=inst.input_schema(),
+                    spec=spec,
+                    name=r["name"],
+                    description=r["description"],
+                    version=r["version"],
+                )
+            self._agents = agents
+            self._tenant_agents = tenant_agents
             self._db_loaded = True
-        except Exception as e:  # 库不可用/未建表时降级为「只用代码注册值」
-            logger.exception(f"从库加载 Agent 元数据失败，使用代码注册默认值: {e}")
+            logger.info(
+                f"DB 注册生效 agent={len(agents)}，租户覆盖={len(tenant_agents)}"
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"从 DB 加载注册失败，降级为无代码注册: {e}")
             self._db_loaded = False
         finally:
             self._rebuild_derived()

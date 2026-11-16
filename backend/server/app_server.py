@@ -63,7 +63,14 @@ class AppServer:
             raise
         elapsed = time.perf_counter() - t0
         mgr._set_status(ManagerStatus.RUNNING)
-        logger.info(f"[{self.name}] {name} 启动完成，耗时 {_fmt(elapsed)}")
+        extra = ""
+        try:
+            stats = await mgr.startup_stats()
+            if stats:
+                extra = f"，{stats}"
+        except Exception as exc:  # noqa: BLE001 - 统计失败不影响启动
+            logger.warning(f"[{self.name}] {name} 启动统计失败: {exc}")
+        logger.info(f"[{self.name}] {name} 启动完成，耗时 {_fmt(elapsed)}{extra}")
         return elapsed
 
     def _log_slowest(self, timings: Dict[str, float]) -> None:

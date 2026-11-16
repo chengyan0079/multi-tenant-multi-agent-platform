@@ -457,7 +457,11 @@ export default function Dashboard() {
           <Card
             className="dash-card"
             title="Token 与平均耗时趋势"
-            extra={<Typography.Text type="secondary">按天聚合 · 按当前视角过滤</Typography.Text>}
+            extra={
+              <Typography.Text type="secondary">
+                Token 按天累计 · 耗时按天平均 · 按当前视角过滤
+              </Typography.Text>
+            }
           >
             {(view.usage_trend ?? []).some((p) => p.tokens > 0 || p.avg_ms > 0) ? (
               <ResponsiveContainer width="100%" height={chartHeight}>
@@ -495,7 +499,7 @@ export default function Dashboard() {
                     yAxisId="left"
                     type="monotone"
                     dataKey="tokens"
-                    name="Token"
+                    name="Token（当日累计）"
                     stroke="#13b5b1"
                     strokeWidth={2}
                     fill="url(#dashTokens)"

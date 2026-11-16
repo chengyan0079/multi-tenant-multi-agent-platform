@@ -80,8 +80,9 @@ class MemoryStore:
                 block=block,
                 content=content,
             )
-        except Exception as e:  # noqa: BLE001 - 表未创建/连接异常时降级
-            logger.exception(f"长记忆写入 PG 失败（表可能尚未创建）：{e}")
+        except Exception as e:  # noqa: BLE001 - SQL 写失败必须暴露，不降级
+            logger.exception(f"长记忆写入 PG 失败：{e}")
+            raise
 
     async def stop(self) -> None:
         return None

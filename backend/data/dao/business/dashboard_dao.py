@@ -54,15 +54,10 @@ SELECT
 # 智能体总数：超管看平台存量；租户看「全局启用且未被本租户显式关闭」的数量。
 # 与 AgentRegistry.is_enabled_for_tenant 一致：策略未配置视为开通，只有 enabled=false 才关闭。
 _AGENT_TOTAL_PLATFORM = text("SELECT COUNT(*) AS total FROM agent WHERE enabled")
+# agent 已租户级（agent 表含 tenant_id + enabled）；直接按租户统计，不再依赖已删除的 capability_policy
 _AGENT_TOTAL_TENANT = text(
-    "SELECT COUNT(*) AS total FROM agent a "
-    "WHERE a.enabled "
-    "  AND NOT EXISTS ("
-    "    SELECT 1 FROM agent_capability_policy p "
-    "    WHERE p.tenant_id = CAST(:tenant_id AS BIGINT) "
-    "      AND p.agent_type = a.agent_type "
-    "      AND p.enabled = false"
-    "  )"
+    "SELECT COUNT(*) AS total FROM agent "
+    "WHERE enabled AND tenant_id = CAST(:tenant_id AS BIGINT)"
 )
 
 # 近 N 天请求量 / 错误量：错误按 HTTP >= 400 计（4xx 参数错、5xx 服务错都算失败请求）
@@ -77,25 +72,26 @@ GROUP BY date_trunc('day', l.req_time)
 ORDER BY date_trunc('day', l.req_time)
 """)
 
-# 各智能体调用占比：agent_run 运行台账已下线，统一按业务 API 路径归类
+# 各智能体调用占比：按业务 API 路径归类，直接输出中文业务名（不依赖 agent 表旧名）
 _AGENT_DISTRIBUTION_API = text(f"""
-SELECT COALESCE(a.name, x.agent_type) AS name, COUNT(*) AS value
+SELECT x.agent_name AS name, COUNT(*) AS value
 FROM (
   SELECT CASE
-    WHEN l.path LIKE '/api/v1/tenant/qa/%' THEN 'qa'
-    WHEN l.path LIKE '/api/v1/tenant/resume/%' THEN 'resume'
-    WHEN l.path LIKE '/api/v1/tenant/exam/%'
-      OR l.path LIKE '/api/v1/tenant/agent/exam/%' THEN 'exam'
-    WHEN l.path LIKE '/api/v1/tenant/agent/files/%' THEN 'qa'
-    WHEN l.path LIKE '/api/v1/tenant/agent/%' THEN 'agent'
+    WHEN l.path LIKE '%/db_change%' AND l.path LIKE '%/review%' THEN '变更评审'
+    WHEN l.path LIKE '%/db_change%' AND l.path LIKE '%/release%' THEN '变更发布'
+    WHEN l.path LIKE '%/qa/results%' THEN '知识问答'
+    WHEN l.path LIKE '%/agent/files%' THEN '知识库文件'
+    WHEN l.path LIKE '%/unified/chat%' THEN '统一咨询'
+    WHEN l.path LIKE '%/unified/sessions%' THEN '会话管理'
+    WHEN l.path LIKE '%/db_change%' THEN '变更单管理'
+    WHEN l.path LIKE '%/unified/%' THEN '统一咨询'
     ELSE NULL
-  END AS agent_type
+  END AS agent_name
   FROM agent_api_call_log l
   WHERE {_scope("l")} AND l.req_time >= :since
 ) x
-LEFT JOIN agent a ON a.agent_type = x.agent_type
-WHERE x.agent_type IS NOT NULL
-GROUP BY COALESCE(a.name, x.agent_type)
+WHERE x.agent_name IS NOT NULL
+GROUP BY x.agent_name
 ORDER BY value DESC, name ASC
 LIMIT :limit
 """)
@@ -121,7 +117,7 @@ WITH lat AS (
   GROUP BY 1
 ), tok AS (
   SELECT to_char(date_trunc('day', ut.create_at), 'MM-DD') AS date,
-         COALESCE(SUM(COALESCE((ut.token_usage->>'total')::bigint, 0)), 0) AS tokens
+         CAST(COALESCE(SUM(COALESCE((ut.token_usage->>'total')::bigint, 0)), 0) AS BIGINT) AS tokens
   FROM agent_unified_turn ut
   WHERE {_scope("ut")} AND ut.create_at >= :since
   GROUP BY 1
@@ -177,7 +173,7 @@ SELECT
   (SELECT COUNT(*) FROM agent WHERE enabled) AS agents_enabled,
   (SELECT COUNT(*) FROM agent_model_registry) AS models,
   (SELECT COUNT(*) FROM agent_model_registry WHERE enabled) AS models_enabled,
-  (SELECT COUNT(*) FROM agent_plugin) AS plugins
+  (SELECT COUNT(*) FROM agent_tool) AS plugins
 """)
 
 _RANKING = text("""

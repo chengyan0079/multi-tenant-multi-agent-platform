@@ -6,7 +6,6 @@ import {
   Drawer,
   Form,
   Input,
-  InputNumber,
   Modal,
   Popconfirm,
   Select,
@@ -19,28 +18,24 @@ import { ProTable, type ActionType, type ProColumns } from '../components/ProTab
 import dayjs from 'dayjs';
 
 import {
-  createPlugin,
-  deletePlugin,
-  getPlugin,
-  listPlugins,
-  setPluginStatus,
-  updatePlugin,
-  type PluginItem,
-  type PluginPayload,
-} from '../services/plugins';
+  createTool,
+  deleteTool,
+  getTool,
+  listTools,
+  setToolEnabled,
+  updateTool,
+  type ToolItem,
+  type ToolPayload,
+} from '../services/tools';
 import { listTenants, type TenantItem } from '../services/rbac';
-import { hasScope } from '../services/auth';
+import { getSession, hasScope } from '../services/auth';
 
-const STATUS_OPTIONS = [
-  { value: 'enabled', label: '启用' },
-  { value: 'disabled', label: '停用' },
-];
-
-const DEFAULT_FORM = {
-  version: '1.0.0',
-  capabilities: '[]',
+const DEFAULT_FORM: Partial<ToolPayload> = {
+  plugin: '',
+  description: '',
+  schema: '{}',
   config: '{}',
-  status: 'enabled',
+  enabled: true,
 };
 
 function parseJson(value: string): string | null {
@@ -51,27 +46,27 @@ function parseJson(value: string): string | null {
   }
 }
 
-interface FormValues extends PluginPayload {}
+interface FormValues extends ToolPayload {}
 
 export default function Tools() {
   const { message } = AntdApp.useApp();
   const actionRef = useRef<ActionType>();
 
-  // 工具/插件权限点（与后端 Scope 对齐）：列表按 page 拦，写操作按各自 scope 拦
   const canPage = hasScope('tool:page');
   const canAdd = hasScope('tool:add');
   const canUpdate = hasScope('tool:update');
   const canDelete = hasScope('tool:delete');
   const canView = hasScope('tool:view');
   const canStatus = hasScope('tool:status');
+
   const [createForm] = Form.useForm<FormValues>();
   const [editForm] = Form.useForm<FormValues>();
 
   const [tenantOptions, setTenantOptions] = useState<{ value: number; label: string }[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<PluginItem | null>(null);
-  const [drawerPlugin, setDrawerPlugin] = useState<PluginItem | null>(null);
+  const [editTarget, setEditTarget] = useState<ToolItem | null>(null);
+  const [drawerTool, setDrawerTool] = useState<ToolItem | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -84,29 +79,38 @@ export default function Tools() {
   const tenantLabel = (id: number): string =>
     tenantOptions.find((o) => o.value === id)?.label ?? `#${id}`;
 
-  const request = useCallback(async (params: any) => {
-    const res = await listPlugins({
-      name: params.name || undefined,
-      status: params.status || undefined,
-      page: params.current ?? 1,
-      page_size: params.pageSize ?? 20,
-    });
-    return { data: res?.items ?? [], success: true, total: res?.total ?? 0 };
-  }, []);
+  // 超管默认查全部租户；租户默认查当前租户
+  const session = getSession();
+  const isSuperAdmin = session?.isSuperAdmin ?? false;
+  const defaultTenant = isSuperAdmin ? undefined : session?.tenant?.id ?? undefined;
 
-  const buildPayload = (values: FormValues): PluginPayload => ({
-    name: values.name,
-    version: values.version,
-    capabilities: values.capabilities,
-    config: values.config,
-    status: values.status,
+  const request = useCallback(
+    async (params: any) => {
+      const res = await listTools({
+        tenant_id: params.tenant_id ? Number(params.tenant_id) : defaultTenant,
+        name: params.name || undefined,
+        enabled: params.enabled === '' || params.enabled === undefined ? undefined : params.enabled,
+        page: params.current ?? 1,
+        page_size: params.pageSize ?? 20,
+      });
+      return { data: res?.items ?? [], success: true, total: res?.total ?? 0 };
+    },
+    [defaultTenant],
+  );
+
+  const buildPayload = (values: FormValues): ToolPayload => ({
     tenant_id: values.tenant_id,
-    user_id: values.user_id,
+    name: values.name,
+    plugin: values.plugin,
+    description: values.description,
+    schema: values.schema,
+    config: values.config,
+    enabled: values.enabled,
   });
 
   const validateJson = (values: FormValues): boolean => {
-    for (const field of ['capabilities', 'config'] as const) {
-      if (parseJson(values[field]) === null) {
+    for (const field of ['schema', 'config'] as const) {
+      if (parseJson(values[field] ?? '') === null) {
         message.error(`${field} 不是合法 JSON`);
         return false;
       }
@@ -116,21 +120,21 @@ export default function Tools() {
 
   const openCreate = () => {
     createForm.resetFields();
-    createForm.setFieldsValue(DEFAULT_FORM as FormValues);
+    createForm.setFieldsValue(DEFAULT_FORM);
     setCreateOpen(true);
   };
 
-  const openEdit = (row: PluginItem) => {
+  const openEdit = (row: ToolItem) => {
     setEditTarget(row);
     editForm.resetFields();
     editForm.setFieldsValue({
-      name: row.name,
-      version: row.version,
-      capabilities: parseJson(row.capabilities) ?? row.capabilities,
-      config: parseJson(row.config) ?? row.config,
-      status: row.status,
       tenant_id: row.tenant_id,
-      user_id: row.user_id,
+      name: row.name,
+      plugin: row.plugin,
+      description: row.description,
+      schema: parseJson(row.schema) ?? row.schema,
+      config: parseJson(row.config) ?? row.config,
+      enabled: row.enabled,
     });
     setEditOpen(true);
   };
@@ -139,8 +143,8 @@ export default function Tools() {
     if (!validateJson(values)) return;
     setSaving(true);
     try {
-      await createPlugin(buildPayload(values));
-      message.success('插件已新增');
+      await createTool(buildPayload(values));
+      message.success('工具已新增');
       setCreateOpen(false);
       await actionRef.current?.reload();
     } catch (e) {
@@ -154,8 +158,8 @@ export default function Tools() {
     if (!editTarget || !validateJson(values)) return;
     setSaving(true);
     try {
-      await updatePlugin(editTarget.id, buildPayload(values));
-      message.success('插件已更新');
+      await updateTool(editTarget.id, buildPayload(values));
+      message.success('工具已更新');
       setEditOpen(false);
       await actionRef.current?.reload();
     } catch (e) {
@@ -165,10 +169,10 @@ export default function Tools() {
     }
   };
 
-  const toggle = async (row: PluginItem, enabled: boolean) => {
+  const toggle = async (row: ToolItem, enabled: boolean) => {
     setTogglingId(row.id);
     try {
-      await setPluginStatus(row.id, enabled ? 'enabled' : 'disabled');
+      await setToolEnabled(row.id, enabled);
       message.success(enabled ? '已启用' : '已停用');
       await actionRef.current?.reload();
     } catch (e) {
@@ -178,10 +182,10 @@ export default function Tools() {
     }
   };
 
-  const onDelete = async (row: PluginItem) => {
+  const onDelete = async (row: ToolItem) => {
     try {
-      await deletePlugin(row.id);
-      message.success('插件已删除');
+      await deleteTool(row.id);
+      message.success('工具已删除');
       await actionRef.current?.reload();
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
@@ -189,40 +193,40 @@ export default function Tools() {
   };
 
   const openDetail = async (id: string) => {
-    setDrawerPlugin(null);
+    setDrawerTool(null);
     try {
-      setDrawerPlugin(await getPlugin(id));
+      setDrawerTool(await getTool(id));
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const columns: ProColumns<PluginItem>[] = [
+  const columns: ProColumns<ToolItem>[] = [
     { title: '名称', dataIndex: 'name', key: 'name' },
-    { title: '版本', dataIndex: 'version', key: 'version', width: 100, search: false },
+    { title: '插件', dataIndex: 'plugin', key: 'plugin', width: 140, search: false },
+    { title: '说明', dataIndex: 'description', key: 'description', width: 220, ellipsis: true, search: false },
     {
       title: '租户',
       dataIndex: 'tenant_id',
       key: 'tenant_id',
       width: 140,
-      search: false,
-      render: (_: unknown, row: PluginItem) => tenantLabel(row.tenant_id),
+      valueType: 'select',
+      valueEnum: Object.fromEntries(tenantOptions.map((o) => [o.value, { text: o.label }])),
+      render: (_: unknown, row: ToolItem) => tenantLabel(row.tenant_id),
     },
     {
       title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
+      dataIndex: 'enabled',
+      key: 'enabled',
+      width: 110,
       valueType: 'select',
-      valueEnum: { enabled: { text: '启用' }, disabled: { text: '停用' } },
-      render: (_: unknown, row: PluginItem) => (
+      valueEnum: { true: { text: '启用' }, false: { text: '停用' } },
+      render: (_: unknown, row: ToolItem) => (
         <Space size={4}>
-          <Tag color={row.status === 'enabled' ? 'green' : 'default'}>
-            {row.status === 'enabled' ? '启用' : '停用'}
-          </Tag>
+          <Tag color={row.enabled ? 'green' : 'default'}>{row.enabled ? '启用' : '停用'}</Tag>
           <Switch
             size="small"
-            checked={row.status === 'enabled'}
+            checked={row.enabled}
             disabled={!canStatus}
             loading={togglingId === row.id}
             onChange={(checked) => void toggle(row, checked)}
@@ -231,9 +235,9 @@ export default function Tools() {
       ),
     },
     {
-      title: '注册时间',
-      dataIndex: 'registered_at',
-      key: 'registered_at',
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
       width: 170,
       search: false,
       render: (value: any) => (value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-'),
@@ -243,7 +247,7 @@ export default function Tools() {
       key: 'action',
       width: 180,
       search: false,
-      render: (_: unknown, row: PluginItem) => (
+      render: (_: unknown, row: ToolItem) => (
         <Space size={4}>
           {canView && (
             <Button type="link" size="small" onClick={() => void openDetail(row.id)}>
@@ -256,7 +260,7 @@ export default function Tools() {
             </Button>
           )}
           {canDelete && (
-            <Popconfirm title="确认删除该插件？" onConfirm={() => void onDelete(row)}>
+            <Popconfirm title="确认删除该工具？" onConfirm={() => void onDelete(row)}>
               <Button type="link" size="small" danger>
                 删除
               </Button>
@@ -269,44 +273,44 @@ export default function Tools() {
 
   const renderForm = (form: typeof createForm, onFinish: (v: FormValues) => void, editing: boolean) => (
     <Form form={form} layout="vertical" onFinish={onFinish} initialValues={DEFAULT_FORM}>
-      <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-        <Input placeholder="插件名，全局唯一" disabled={editing} />
-      </Form.Item>
-      <Form.Item name="version" label="版本" rules={[{ required: true }]}>
-        <Input placeholder="如 1.0.0" />
-      </Form.Item>
-      <Form.Item name="status" label="状态" rules={[{ required: true }]}>
-        <Select options={STATUS_OPTIONS} />
-      </Form.Item>
       <Form.Item name="tenant_id" label="归属租户" rules={[{ required: true }]}>
         <Select options={tenantOptions} disabled={editing} />
       </Form.Item>
-      <Form.Item name="user_id" label="维护人 ID" rules={[{ required: true }]}>
-        <InputNumber min={1} style={{ width: '100%' }} />
+      <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+        <Input placeholder="工具名（租户内唯一）" disabled={editing} />
       </Form.Item>
-      <Form.Item name="capabilities" label="能力列表（JSON）" rules={[{ required: true }]}>
-        <Input.TextArea rows={3} placeholder='["web_search"]' />
+      <Form.Item name="plugin" label="插件">
+        <Input placeholder="如 web_search" />
       </Form.Item>
-      <Form.Item name="config" label="配置（JSON）" rules={[{ required: true }]}>
+      <Form.Item name="description" label="说明">
+        <Input />
+      </Form.Item>
+      <Form.Item name="schema" label="工具 Schema（JSON）" rules={[{ required: true }]}>
         <Input.TextArea rows={3} placeholder="{}" />
+      </Form.Item>
+      <Form.Item name="config" label="运行配置（JSON，含 api_key/endpoint 等）" rules={[{ required: true }]}>
+        <Input.TextArea rows={3} placeholder="{}" />
+      </Form.Item>
+      <Form.Item name="enabled" label="启用" valuePropName="checked">
+        <Switch />
       </Form.Item>
     </Form>
   );
 
   if (!canPage) {
-    return <Result status="403" title="无权限" subTitle="你没有查看工具与插件的权限" />;
+    return <Result status="403" title="无权限" subTitle="你没有查看工具管理的权限" />;
   }
 
   return (
     <div>
-      <ProTable<PluginItem>
-        headerTitle="工具与插件"
+      <ProTable<ToolItem>
+        headerTitle="工具管理"
         actionRef={actionRef}
         toolBarRender={() =>
           canAdd
             ? [
                 <Button key="add" type="primary" onClick={openCreate}>
-                  新增插件
+                  新增工具
                 </Button>,
               ]
             : []
@@ -321,7 +325,7 @@ export default function Tools() {
       />
 
       <Modal
-        title="新增插件"
+        title="新增工具"
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => createForm.submit()}
@@ -334,7 +338,7 @@ export default function Tools() {
       </Modal>
 
       <Modal
-        title={`编辑插件 ${editTarget?.name ?? ''}`}
+        title={`编辑工具 ${editTarget?.name ?? ''}`}
         open={editOpen}
         onCancel={() => setEditOpen(false)}
         onOk={() => editForm.submit()}
@@ -346,32 +350,27 @@ export default function Tools() {
         {renderForm(editForm, (v) => void onEdit(v), true)}
       </Modal>
 
-      <Drawer
-        title="插件详情"
-        open={drawerPlugin !== null}
-        onClose={() => setDrawerPlugin(null)}
-        width={560}
-      >
-        {drawerPlugin && (
+      <Drawer title="工具详情" open={drawerTool !== null} onClose={() => setDrawerTool(null)} width={560}>
+        {drawerTool && (
           <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label="ID">{drawerPlugin.id}</Descriptions.Item>
-            <Descriptions.Item label="名称">{drawerPlugin.name}</Descriptions.Item>
-            <Descriptions.Item label="版本">{drawerPlugin.version}</Descriptions.Item>
-            <Descriptions.Item label="状态">{drawerPlugin.status}</Descriptions.Item>
-            <Descriptions.Item label="归属租户">{tenantLabel(drawerPlugin.tenant_id)}</Descriptions.Item>
-            <Descriptions.Item label="维护人 ID">{drawerPlugin.user_id}</Descriptions.Item>
-            <Descriptions.Item label="能力列表">
+            <Descriptions.Item label="ID">{drawerTool.id}</Descriptions.Item>
+            <Descriptions.Item label="名称">{drawerTool.name}</Descriptions.Item>
+            <Descriptions.Item label="插件">{drawerTool.plugin}</Descriptions.Item>
+            <Descriptions.Item label="说明">{drawerTool.description}</Descriptions.Item>
+            <Descriptions.Item label="归属租户">{tenantLabel(drawerTool.tenant_id)}</Descriptions.Item>
+            <Descriptions.Item label="状态">{drawerTool.enabled ? '启用' : '停用'}</Descriptions.Item>
+            <Descriptions.Item label="Schema">
               <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-                {parseJson(drawerPlugin.capabilities) ?? drawerPlugin.capabilities}
+                {parseJson(drawerTool.schema) ?? drawerTool.schema}
               </pre>
             </Descriptions.Item>
             <Descriptions.Item label="配置">
               <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-                {parseJson(drawerPlugin.config) ?? drawerPlugin.config}
+                {parseJson(drawerTool.config) ?? drawerTool.config}
               </pre>
             </Descriptions.Item>
-            <Descriptions.Item label="注册时间">{drawerPlugin.registered_at}</Descriptions.Item>
-            <Descriptions.Item label="更新时间">{drawerPlugin.updated_at}</Descriptions.Item>
+            <Descriptions.Item label="创建时间">{drawerTool.create_at}</Descriptions.Item>
+            <Descriptions.Item label="更新时间">{drawerTool.updated_at}</Descriptions.Item>
           </Descriptions>
         )}
       </Drawer>

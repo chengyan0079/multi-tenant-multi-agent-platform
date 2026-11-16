@@ -60,9 +60,25 @@ class LLMFactory:
     # ---------- 纯构造（由配置 dict 构造客户端，不碰 DB） ----------
 
     @staticmethod
-    def build_llm(cfg: dict[str, Any]) -> BaseChatModel:
-        """构造 OpenAI 兼容聊天模型（model_registry 的 llm 记录 → ChatOpenAI）。"""
+    def build_llm(cfg: dict[str, Any], *, thinking: bool = False) -> BaseChatModel:
+        """构造 OpenAI 兼容聊天模型（model_registry 的 llm 记录 → ChatOpenAI）。
+
+        thinking=True 时透传 extra_body（默认 {"thinking": {"type": "enabled"}}，
+        可用 QA_THINKING_EXTRA_BODY 覆盖），让支持推理的模型输出思考过程。
+        """
+        import json
+
         from langchain_openai import ChatOpenAI
+
+        extra: dict[str, Any] = {}
+        if thinking:
+            from backend.config import config
+
+            raw = getattr(config.qa, "thinking_extra_body", "") or '{"thinking":{"type":"enabled"}}'
+            try:
+                extra["extra_body"] = json.loads(raw)
+            except (ValueError, TypeError):
+                extra["extra_body"] = {"thinking": {"type": "enabled"}}
 
         return ChatOpenAI(
             model=cfg["name"],
@@ -73,6 +89,7 @@ class LLMFactory:
             max_retries=cfg["max_retries"] if cfg["max_retries"] is not None else 2,
             # 流式输出最后一个 chunk 带 token usage，供问答结果/agent_run 统计
             stream_usage=True,
+            **extra,
         )
 
     @staticmethod
@@ -171,13 +188,16 @@ class LLMFactory:
 
     # ---------- per-agent 解析 ----------
 
-    async def get_llm(self, agent_type: str, model_type: str = "llm") -> BaseChatModel:
+    async def get_llm(
+        self, agent_type: str, model_type: str = "llm", *, thinking: bool = False
+    ) -> BaseChatModel:
         """按 agent 解析并缓存其 LLM 客户端。
 
         解析顺序：agent_model 绑定（is_default/priority）→ 无绑定回退 model_registry 的
         active；配置变更后调用 clear_llm_cache() 使其下次重新解析。
+        thinking=True 时使用单独的缓存 key（不污染普通模式客户端）。
         """
-        key = f"{model_type}:{agent_type}"
+        key = f"{model_type}:{agent_type}:thinking" if thinking else f"{model_type}:{agent_type}"
         cached = self._cache.get(key)
         if cached is not None:
             return cached
@@ -188,7 +208,7 @@ class LLMFactory:
             raise ModelError(
                 f"无可用 {model_type} 模型（agent={agent_type} 无绑定且 model_registry 无 active）"
             )
-        client = self.build_llm(cfg)
+        client = self.build_llm(cfg, thinking=thinking)
         self._cache[key] = client
         return client
 
@@ -238,8 +258,28 @@ class LLMFactory:
                 raise ModelError("Reranker 未配置（model_registry 无 enabled 的 reranker 记录）")
             reranker = self.build_reranker(cfg)
             self._cache["reranker"] = reranker
-        result = await asyncio.to_thread(reranker, query=query, documents=documents, top_n=top_n)
-        return [float(s) for s in result.scores]
+        # 明确使用 milvus_model.BGERerankFunction：
+        #   __call__(query, documents, top_k=5) —— 必须传 top_k=len(documents)，
+        #   否则默认只给前 5 个候选打分，其余分数缺失会导致排序错乱。
+        result = await asyncio.to_thread(
+            reranker, query=query, documents=documents, top_k=len(documents)
+        )
+        return self._align_rerank_scores(result, len(documents))
+
+    @staticmethod
+    def _align_rerank_scores(result: List[Any], n: int) -> List[float]:
+        """把 BGERerankFunction 的 `RerankResult(text, score, index)` 列表按 index 对齐。
+
+        - 只做**结构对齐**（放回 documents 原位置），不做数值归一化；
+        - normalize=True 时 score 是 sigmoid 0~1，原样返回。
+        """
+        out = [0.0] * n
+        for item in result or []:
+            idx = getattr(item, "index", None)
+            score = getattr(item, "score", 0.0)
+            if isinstance(idx, int) and 0 <= idx < n:
+                out[idx] = float(score)
+        return out
 
     async def classify(self, text: str) -> str:
         """bert-chinese 中文意图分类；未配置或加载失败降级为 'general'。"""
@@ -356,15 +396,16 @@ class StructuredLLM:
         )
 
 
-async def get_llm(agent_type: str) -> BaseChatModel:
+async def get_llm(agent_type: str, *, thinking: bool = False) -> BaseChatModel:
     """按 agent 创建并缓存其 LLM 客户端（委托运行中的工厂单例）。
 
+    thinking=True 时使用开启推理的客户端（extra_body 透传，见 build_llm）。
     单例由 ModelManager 启动预加载；未启动则报错，避免拿到空工厂。
     """
     factory = app_state.llm_factory
     if factory is None:
         raise ModelError("LLMFactory 未初始化（ModelManager 尚未完成启动）")
-    return await factory.get_llm(agent_type)
+    return await factory.get_llm(agent_type, thinking=thinking)
 
 
 async def get_structured_llm(agent_type: str, schema: Type[BaseModel]) -> Any:

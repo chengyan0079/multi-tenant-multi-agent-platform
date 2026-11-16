@@ -37,11 +37,11 @@ def test_identity_flags() -> None:
     tenant_scoped_admin = Identity(2, 200, RoleName.ADMIN.value, [Scope.AGENT_PAGE])
     assert tenant_scoped_admin.is_super_admin is False
 
-    tenant_admin = Identity(3, 200, RoleName.TENANT_ADMIN.value, [Scope.QA_ASK])
+    tenant_admin = Identity(3, 200, RoleName.TENANT_ADMIN.value, [Scope.UNIFIED_ASK])
     assert tenant_admin.is_tenant_admin is True
     assert tenant_admin.is_super_admin is False
 
-    student = Identity(4, 200, "student", [Scope.QA_ASK])
+    student = Identity(4, 200, "student", [Scope.UNIFIED_ASK])
     assert student.is_super_admin is False
     assert student.is_tenant_admin is False
 

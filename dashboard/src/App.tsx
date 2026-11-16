@@ -10,6 +10,11 @@ import UnifiedChat from './pages/unified/UnifiedChat';
 import UnifiedSessionList from './pages/unified/UnifiedSessionList';
 import UnifiedSessionDetail from './pages/unified/UnifiedSessionDetail';
 import Tools from './pages/Tools';
+import DbConnections from './pages/tools/DbConnections';
+import DbReview from './pages/agent/DbReview';
+import GraphStates from './pages/GraphStates';
+import DbRelease from './pages/agent/DbRelease';
+import DbWorkflow from './pages/agent/DbWorkflow';
 import UserList from './pages/rbac/UserList';
 import TenantList from './pages/rbac/TenantList';
 import RoleList from './pages/rbac/RoleList';
@@ -58,7 +63,13 @@ export default function App() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="agents" element={<Navigate to="/agents/list" replace />} />
         <Route path="agents/list" element={<Agents />} />
-        <Route path="tools" element={<Tools />} />
+        <Route path="tools" element={<Navigate to="/tools/agent-tools" replace />} />
+        <Route path="tools/agent-tools" element={<Tools />} />
+        <Route path="tools/db-connections" element={<DbConnections />} />
+        <Route path="agent/db-review" element={<DbReview />} />
+        <Route path="agent/db-release" element={<DbRelease />} />
+        <Route path="agent/db-workflow" element={<DbWorkflow />} />
+        <Route path="consultation/graph-states" element={<GraphStates />} />
         <Route path="models" element={<ModelList />} />
         {/* 智能体业务域：统一咨询 / 问答 */}
         <Route path="agent" element={<Navigate to="/consultation/chat" replace />} />
@@ -88,6 +99,15 @@ export default function App() {
           element={
             <RequireScope scope="unified_session:view">
               <UnifiedSessionDetail />
+            </RequireScope>
+          }
+        />
+        {/* 咨询结果（agent_unified_turn）：详情 + 质量测评 */}
+        <Route
+          path="consultation/results"
+          element={
+            <RequireScope scope="unified_turn:page">
+              <QaResults />
             </RequireScope>
           }
         />

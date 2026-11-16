@@ -10,6 +10,22 @@ from backend.server.base_manager import BaseManager, HealthInfo
 
 
 class PostgreSQLManager(BaseManager):
+    async def startup_stats(self) -> str | None:
+        try:
+            from sqlalchemy import text
+
+            client = app_state.clients.get_as("postgres", PostgresClient)
+            async with client.session_scope() as session:
+                n = await session.scalar(
+                    text(
+                        "SELECT count(*) FROM information_schema.tables "
+                        "WHERE table_schema = current_schema()"
+                    )
+                )
+            return f"表={int(n or 0)}"
+        except Exception:  # noqa: BLE001 - 统计失败不打印
+            return None
+
     async def start(self) -> None:
         client = app_state.clients.ensure(
             "postgres", lambda: PostgresClient.from_settings(app_state.settings.postgres)

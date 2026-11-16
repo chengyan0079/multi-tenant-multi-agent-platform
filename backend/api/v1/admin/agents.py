@@ -46,6 +46,7 @@ def _item(row: dict[str, Any], registered: bool) -> dict[str, Any]:
         "name": row["name"],
         "description": row["description"],
         "version": row["version"],
+        "enabled": row.get("enabled"),
         "registered": registered,
         "input_schema": schema,
         "updated_at": row["updated_at"],

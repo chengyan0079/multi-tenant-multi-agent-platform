@@ -51,6 +51,13 @@ class BaseManager(ABC):
         """释放资源；默认空实现，子类按需覆盖。"""
         pass
 
+    async def startup_stats(self) -> str | None:
+        """启动完成时的数量摘要（如 "keys=12" / "表=28" / "插件=6"）。
+
+        默认 None（无数量则不打印）；子类有可量化数据时覆盖。
+        """
+        return None
+
     async def health(self) -> HealthInfo:
         """健康探测。默认返回生命周期状态；子类可覆写做真实探活（如 ping DB/Redis）。
 

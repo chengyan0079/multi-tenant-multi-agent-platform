@@ -66,10 +66,16 @@ export interface TurnReplay {
   payload: Record<string, unknown>;
   status: string;
   error_code: string | null;
+  latency_ms?: number | null;
+  token_usage?: { prompt?: number; completion?: number; total?: number } | null;
   create_at: string | null;
 }
 
 export interface SessionDetail extends SessionItem {
+  /** 全会话累计 tokens（多轮求和，后端聚合，不受回放分页影响） */
+  total_tokens?: number;
+  /** 全会话累计耗时（毫秒） */
+  total_latency_ms?: number;
   turns: TurnReplay[];
 }
 
@@ -102,11 +108,15 @@ export interface UnifiedChatParams {
   entry?: { name: string; value: string }[];
   /** 两阶段上传拿到的 file_ref 列表 */
   attachments?: string[];
+  /** 思考模式：开启后 LLM 输出推理过程（reasoning 事件） */
+  thinking?: boolean;
 }
 
 export interface StreamHandlers {
   onEvent?: (e: UnifiedEvent) => void;
   onToken?: (content: string) => void;
+  /** 思考过程增量（思考模式） */
+  onReasoning?: (content: string) => void;
   onDone?: () => void;
   onStopped?: () => void;
   onError?: (message: string) => void;
@@ -117,6 +127,22 @@ export interface StreamHandlers {
 // --------------------------------------------------------------------------- //
 
 export const getUnifiedAgents = () => http.get<AgentCapability[]>('/api/v1/tenant/unified/agents');
+
+/** 统一咨询工具项（含启停状态）。 */
+export interface UnifiedToolItem {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+/** 当前租户工具列表（含启停状态）。 */
+export const getUnifiedTools = () =>
+  http.get<UnifiedToolItem[]>('/api/v1/tenant/unified/tools');
+
+/** 聊天框内快捷启停工具（租户自管）。 */
+export const setUnifiedToolEnabled = (id: string, enabled: boolean) =>
+  http.patch<{ ok: boolean }>(`/api/v1/tenant/unified/tools/${id}/enabled`, { enabled });
 
 export const listUnifiedSessions = (params: { page?: number; page_size?: number } = {}) => {
   const qs = new URLSearchParams();
@@ -139,11 +165,21 @@ export const getSessionArtifacts = (threadId: string) =>
   http.get<ArtifactList>(`/api/v1/tenant/unified/sessions/${threadId}/artifacts`);
 
 // 管理端：跨用户（仅按租户），需 unified_session:page/view/delete
-export const listAdminSessions = (params: { page?: number; page_size?: number; status?: string } = {}) => {
+export const listAdminSessions = (
+  params: {
+    page?: number;
+    page_size?: number;
+    status?: string;
+    thread_id?: string;
+    agent_type?: string;
+  } = {},
+) => {
   const qs = new URLSearchParams();
   if (params.page) qs.set('page', String(params.page));
   if (params.page_size) qs.set('page_size', String(params.page_size));
   if (params.status) qs.set('status', params.status);
+  if (params.thread_id) qs.set('thread_id', params.thread_id);
+  if (params.agent_type) qs.set('agent_type', params.agent_type);
   const s = qs.toString();
   return http.get<SessionList>(`/api/v1/tenant/unified/session-admin/sessions${s ? `?${s}` : ''}`);
 };
@@ -178,6 +214,43 @@ export async function uploadAttachment(file: File, agentType?: string): Promise<
   const env = (await res.json()) as { code: number; msg: string; data: AttachmentRef };
   if (env.code !== 0) throw new Error(env.msg || '上传失败');
   return env.data;
+}
+
+/** 审批后继续真流式（HITL resume），SSE 事件同 chat/stream。 */
+export async function streamUnifiedResume(
+  params: { thread_id: string; agent_type: string; approved: boolean; comment?: string },
+  handlers: StreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/tenant/unified/chat/resume`, {
+    method: 'POST',
+    headers: authHeaders({
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    }),
+    body: JSON.stringify(params),
+    signal,
+  });
+  if (!res.ok) {
+    if (res.status === 401) handleUnauthorized();
+    throw new Error(`请求失败：HTTP ${res.status}`);
+  }
+  await parseSseStream(res, (e) => {
+    handlers.onEvent?.(e);
+    switch (e.type) {
+      case 'token':
+        handlers.onToken?.(String(e.content ?? ''));
+        break;
+      case 'done':
+        handlers.onDone?.();
+        break;
+      case 'error':
+        handlers.onError?.(String(e.message ?? '恢复失败'));
+        break;
+      default:
+        break;
+    }
+  });
 }
 
 export const stopUnifiedChat = (sessionId: string) =>
@@ -241,6 +314,7 @@ export async function streamUnifiedChat(
       agent_type: params.agent_type ?? null,
       entry: params.entry ? { fields: params.entry } : null,
       attachments: (params.attachments ?? []).map((file_ref) => ({ file_ref })),
+      thinking: params.thinking ?? false,
     }),
     signal,
   });
@@ -262,6 +336,9 @@ export async function streamUnifiedChat(
     switch (e.type) {
       case 'token':
         handlers.onToken?.(String(e.content ?? ''));
+        break;
+      case 'reasoning':
+        handlers.onReasoning?.(String(e.content ?? ''));
         break;
       case 'stopped':
         handlers.onStopped?.();

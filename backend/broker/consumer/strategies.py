@@ -92,8 +92,23 @@ async def on_broadcast(message: "IncomingMessage") -> None:
 
 
 async def on_dead_letter(message: "IncomingMessage") -> None:
-    """最终死信：仅告警。业务侧超限时已落 agent_dead_letter 表。"""
+    """最终死信：告警 + **落库**（broker 侧 DLX 直接投递时，业务侧超限分支未执行）。"""
+    logger.warning(f"[dlq] 收到死信消息 body={message.body[:200]!r}")
     try:
-        logger.warning(f"[dlq] 收到死信消息 body={message.body[:200]!r}")
+        meta = TaskMessage.from_json(message.body)
+        topic, tenant_id, key = meta.type.value, meta.header.tenant_id, meta.key
+    except Exception:  # noqa: BLE001 - 信封非法也要能落库排查
+        topic, tenant_id, key = "unknown", None, None
+    try:
+        await DeadLetterDao.write(
+            topic=topic,
+            payload=message.body,
+            origin_queue=topic,
+            error="broker 直接投递到 DLQ（消费侧未落库或重试超限）",
+            retry_count=MAX_RETRIES,
+            tenant_id=tenant_id,
+        )
+    except Exception:  # noqa: BLE001 - 落库失败不影响 ack
+        logger.exception("[dlq] 死信落库失败")
     finally:
         await message.ack()

@@ -28,12 +28,22 @@ router = APIRouter(prefix="/unified/session-admin", tags=["unified-admin"])
 async def admin_list_sessions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    status: str | None = Query(None),
+    status: str | None = Query(None, description="会话状态过滤"),
+    thread_id: str | None = Query(None, description="按 thread_id 过滤（模糊）"),
+    agent_type: str | None = Query(None, description="按最后使用的 agent 过滤"),
     current: CurrentUser = Depends(get_current_user),
     _: object = Depends(require_scope(Scope.UNIFIED_SESSION_PAGE)),
 ) -> Any:
+    # 会话用户级：租户管理员看全部，普通用户只看自己
+    uid = None if (current.is_tenant_admin or current.is_super_admin) else current.user_id
     rows, total = await ThreadDao.list_sessions_admin(
-        tenant_id=tenant_of(current), page=page, page_size=page_size, status=status
+        tenant_id=tenant_of(current),
+        user_id=uid,
+        page=page,
+        page_size=page_size,
+        status=status,
+        thread_id=thread_id,
+        agent_type=agent_type,
     )
     items = [unified_deps.to_session_item(r) for r in rows]
     return success(

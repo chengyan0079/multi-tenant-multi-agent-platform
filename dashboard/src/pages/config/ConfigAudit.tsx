@@ -87,6 +87,7 @@ export default function ConfigAudit() {
   /** 审核队列：待审核审批单 id 数组（按申请时间升序）。点「去处理」出队一份弹审核窗，主列表展示不动。 */
   const [reviewQueue, setReviewQueue] = useState<number[]>([]);
   const queueRef = useRef<number[]>([]); // 同步最新队列，供出队时读取，避免 setState updater 副作用
+  const skippedRef = useRef<Set<number>>(new Set()); // 本次会话中审核失败（如配置不存在）的申请，随机时跳过
 
   const loadReviews = useCallback(async (id: number) => {
     setReviewsLoading(true);
@@ -190,15 +191,41 @@ export default function ConfigAudit() {
     void loadReviews(id);
   };
 
-  /** 出队：从审核队列头部取一份弹出审核窗，主列表展示不动。 */
-  const handleProcess = useCallback(() => {
-    const q = queueRef.current;
-    if (q.length === 0) {
+  /** 打开一份参与审核：**每次重新拉取待审核**，随机取一条（排除本次已失败跳过的），
+   * 审核成功（通过/驳回）后才出队（见 doReview）。 */
+  const handleProcess = useCallback(async () => {
+    // 1) 重新获取待审核（分页拉全量）
+    const collected: number[] = [];
+    const PAGE = 100;
+    let page = 1;
+    try {
+      while (true) {
+        const res = await listRequests({ status: 0, page, page_size: PAGE });
+        const items = res?.items ?? [];
+        for (const it of items) {
+          if (it.status === 0) collected.push(it.id);
+        }
+        const total = res?.total ?? 0;
+        if (items.length < PAGE || page * PAGE >= total) break;
+        page += 1;
+      }
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    setReviewQueue(collected);
+    if (collected.length === 0) {
       message.info('当前没有待审核申请');
       return;
     }
-    const [id, ...rest] = q;
-    setReviewQueue(rest);
+    // 2) 随机取一条，排除本次已失败跳过的
+    const candidates = collected.filter((id) => !skippedRef.current.has(id));
+    if (candidates.length === 0) {
+      skippedRef.current.clear();
+      message.warning('剩余待审核均处理失败，可先修正数据后重试');
+      return;
+    }
+    const id = candidates[Math.floor(Math.random() * candidates.length)];
     setDetailId(id);
     setDetail(null);
     setComment('');
@@ -214,18 +241,37 @@ export default function ConfigAudit() {
     }
     setActing(true);
     try {
-      if (action === REVIEW_APPROVE) {
-        await approveRequest(detailId, comment.trim() || undefined);
-      } else {
-        await rejectRequest(detailId, comment.trim() || undefined);
-      }
-      message.success(action === REVIEW_APPROVE ? '已审批并写入 Nacos' : '已驳回');
+      const res =
+        action === REVIEW_APPROVE
+          ? await approveRequest(detailId, comment.trim() || undefined)
+          : await rejectRequest(detailId, comment.trim() || undefined);
+      const finalStatus = (res as { status?: number } | undefined)?.status;
+      message.success(
+        action === REVIEW_APPROVE
+          ? finalStatus === 2
+            ? '目标配置已不存在，已自动作废并出队'
+            : '已审批并写入 Nacos'
+          : '已驳回',
+      );
+      const reviewedId = detailId;
+      // 乐观更新：立即从队列移除 + 更新列表状态（避免等待全量重查）
+      setReviewQueue((prev) => prev.filter((x) => x !== reviewedId));
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === reviewedId
+            ? { ...it, status: finalStatus ?? (action === REVIEW_APPROVE ? 3 : 2) }
+            : it,
+        ),
+      );
       setDetailId(null);
       setDetail(null);
       setComment('');
-      void rebuildQueue(); // 刷新队列（该单已出待审核）
-      void loadRequests(); // 刷新审核列表
+      // 再以服务端为准刷新（await 确保完成）
+      await rebuildQueue();
+      await loadRequests();
     } catch (e) {
+      // 审核失败（如「配置已不存在」）：本次会话跳过该条，避免反复弹错卡住审核
+      if (detailId !== null) skippedRef.current.add(detailId);
       message.error(e instanceof Error ? e.message : String(e));
     } finally {
       setActing(false);
@@ -399,6 +445,19 @@ export default function ConfigAudit() {
               {detail.src_history_nid ? <div><b>回滚来源：</b>历史版本 nid={detail.src_history_nid}</div> : null}
 
               <Divider titlePlacement="left">内容对比（当前 vs 申请）</Divider>
+              {detail.op_type !== 1 && !detail.old_content ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message="当前配置在 Nacos 中不存在（可能已被删除），无法展示「当前内容」对比"
+                  description={
+                    detail.op_type === 3
+                      ? '这是删除申请：目标配置已不存在，无需对比，可直接驳回。'
+                      : '请确认 dataId / group / 命名空间是否正确。'
+                  }
+                />
+              ) : null}
               <ReactDiffViewer
                 oldValue={detail.old_content ?? ''}
                 newValue={detail.content_new ?? ''}

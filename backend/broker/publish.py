@@ -42,9 +42,9 @@ async def enqueue_task(
             tenant_id=tenant_id,
             message_kind=route(type).kind.value,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - SQL 写失败必须暴露，不降级
         logger.exception(f"写 Outbox 失败 type={type} tenant={tenant_id}：{exc}")
-        return None
+        raise
     logger.debug(f"[outbox] enqueue {type} key={outbox_id}")
     return str(outbox_id)
 

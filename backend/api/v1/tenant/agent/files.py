@@ -72,12 +72,12 @@ async def list_files(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.QA_FILE_PAGE)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_PAGE)),  # noqa: B008
 ):
     """分页查询当前租户文件，支持按文件名模糊搜索。
 
     请求：query { file_name?, page, page_size }
-    权限：qa_file:page
+    权限：unified_file:page
     返回：items / total / page / page_size
     """
     # 固定本租户，忽略前端可能传入的 tenant_id
@@ -96,12 +96,12 @@ async def list_files(
 
 @router.get("/config", summary="文件上传配置")
 async def file_config(
-    _: object = Depends(require_scope(Scope.QA_FILE_PAGE)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_PAGE)),  # noqa: B008
 ):
     """返回前端所需的上传配置。
 
     请求：无
-    权限：qa_file:page
+    权限：unified_file:page
     返回：{ max_upload_mb, auto_parse }
     """
     return success(
@@ -201,6 +201,8 @@ async def _process_one_upload(
         file_ext=ext,
         checksum=checksum,
         remark=remark,
+        agent_type="qa",
+        file_kind="attachment",
     )
     if result.get("blocked"):
         latest_id = result["latest"]["id"]
@@ -224,12 +226,12 @@ async def upload_file(
     file: UploadFile = File(...),  # noqa: B008
     remark: Optional[str] = Form(None),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_UPLOAD)),  # noqa: B008
 ):
     """上传单个文件（MinIO），按去重策略落库并可选触发解析。
 
     请求：form { file: UploadFile, remark?: str }
-    权限：qa_file:upload
+    权限：unified_file:upload
     返回：文件视图（含 parse_queued）
     """
     return success(await _process_one_upload(file, current, remark))
@@ -242,12 +244,12 @@ async def batch_upload_files(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_UPLOAD)),  # noqa: B008
 ) -> Any:
     """批量上传文件，单文件失败计入失败项不中断整体。
 
     请求：form { files: list[UploadFile], remark?: str }
-    权限：qa_file:upload
+    权限：unified_file:upload
     返回：count / items(ok/error) / total / page / page_size
     """
     results: list[dict[str, Any]] = []
@@ -283,14 +285,14 @@ class ParseRequest(BaseModel):
 async def parse_files(
     body: ParseRequest,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.QA_FILE_UPLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_UPLOAD)),  # noqa: B008
 ):
     """触发文档解析（向量化入 Milvus，走消息队列）。
 
     说明：仅处理当前用户可见的文件；提交成功先置 parsing，消费端完成
           「MinIO 取文件 → 切分 → BGE-M3 向量化 → 写 Milvus」并回写 parse_status。
     请求：body { file_ids: list[int] }
-    权限：qa_file:upload
+    权限：unified_file:upload
     返回：{ queued, failed }
     """
     if not body.file_ids:
@@ -333,12 +335,12 @@ async def parse_files(
 async def get_file(
     file_id: int,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.QA_FILE_VIEW)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_VIEW)),  # noqa: B008
 ):
     """获取文件详情与版本列表。
 
     请求：path { file_id }
-    权限：qa_file:view
+    权限：unified_file:view
     返回：文件视图 + versions[]
     """
     row = await FileDao.get(file_id)
@@ -352,12 +354,12 @@ async def get_file(
 async def download_file(
     file_id: int,
     current: CurrentUser = Depends(get_current_user),  # noqa: B008
-    _: object = Depends(require_scope(Scope.QA_FILE_DOWNLOAD)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_FILE_DOWNLOAD)),  # noqa: B008
 ):
     """下载文件（MinIO），仅限最新版本。
 
     请求：path { file_id }
-    权限：qa_file:download
+    权限：unified_file:download
     返回：文件字节流（附件）
     """
     row = await FileDao.get(file_id)

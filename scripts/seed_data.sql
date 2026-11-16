@@ -108,6 +108,12 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (1, 'tool:status'),
 (1, 'tool:update'),
 (1, 'tool:view'),
+(1, 'db_connection:add'),
+(1, 'db_connection:delete'),
+(1, 'db_connection:page'),
+(1, 'db_connection:status'),
+(1, 'db_connection:update'),
+(1, 'db_connection:view'),
 (1, 'user:add'),
 (1, 'user:delete'),
 (1, 'user:menu'),
@@ -129,20 +135,15 @@ INSERT INTO agent_role_permission (role_id, scope) VALUES
 (5, 'unified_session:page'),
 (5, 'unified_session:view'),
 (5, 'unified_session:delete'),
--- 问答业务域
-(5, 'qa:menu'),
-(5, 'qa:ask'),
-(5, 'qa_file:page'),
-(5, 'qa_file:view'),
-(5, 'qa_file:upload'),
-(5, 'qa_file:download'),
-(5, 'qa_result:page'),
-(5, 'qa_result:view'),
-(5, 'qa_result:review'),
-(5, 'qa_session:page'),
-(5, 'qa_session:add'),
-(5, 'qa_session:view'),
-(5, 'qa_session:delete'),
+-- 问答文件（知识库文档上传/下载）
+(5, 'unified_file:page'),
+(5, 'unified_file:view'),
+(5, 'unified_file:upload'),
+(5, 'unified_file:download'),
+-- 统一问答结果（原 qa_result；数据源已是 agent_unified_turn）
+(5, 'unified_turn:page'),
+(5, 'unified_turn:view'),
+(5, 'unified_turn:review'),
 -- 租户自管平台域：用户 / 角色 / 消息 / 权限中心入口
 (5, 'user:menu'),
 (5, 'user:page'),
@@ -200,6 +201,12 @@ INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope)
 ('统一咨询', '/consultation', 'CommentOutlined', 0, 9, true, 'unified:menu')
 ON CONFLICT (path) DO NOTHING;
 
+-- 工具与插件：工具管理 / 数据库管理列表
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('工具管理', '/tools/agent-tools', 'ToolOutlined', (SELECT id FROM agent_menu WHERE path='/tools'), 1, true, 'tool:page'),
+('数据库管理列表', '/tools/db-connections', 'DatabaseOutlined', (SELECT id FROM agent_menu WHERE path='/tools'), 2, true, 'db_connection:page')
+ON CONFLICT (path) DO NOTHING;
+
 -- 统一咨询：父节点先单独提交，子菜单子查询才能取到其 id
 INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
 ('业务咨询', '/consultation/chat', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/consultation'), 1, true, 'unified:ask'),
@@ -213,12 +220,12 @@ ON CONFLICT (path) DO NOTHING;
 
 -- 助手智能体：问答
 INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('问答助手', '/agent/qa', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 1, true, 'qa:menu')
+('问答助手', '/agent/qa', 'CommentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 1, true, 'unified:ask')
 ON CONFLICT (path) DO NOTHING;
 
 -- 问答助手：文件上传 / 问答结果（发起入口 QA问答/会话列表 已由统一咨询收口，菜单移除）
 INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
-('文件列表', '/agent/qa/files', 'UploadOutlined', (SELECT id FROM agent_menu WHERE path='/agent/qa'), 1, true, 'qa_file:page'),
+('文件列表', '/agent/qa/files', 'UploadOutlined', (SELECT id FROM agent_menu WHERE path='/agent/qa'), 1, true, 'unified_file:page'),
 ('问答结果', '/agent/qa/results', 'UnorderedListOutlined', (SELECT id FROM agent_menu WHERE path='/agent/qa'), 2, true, 'qa_result:page')
 ON CONFLICT (path) DO NOTHING;
 
@@ -289,4 +296,61 @@ ON CONFLICT (model_type, name) DO NOTHING;
 INSERT INTO agent_tool (id, tenant_id, name, plugin, description, "schema", config, enabled) VALUES
 ('11111111-1111-1111-1111-111111111111', 0, 'web_search', 'web_search', '联网检索兜底', '{}', '{}', true),
 ('22222222-2222-2222-2222-222222222222', 0, 'code_exec', 'code_exec', '代码沙箱执行', '{}', '{}', true)
+ON CONFLICT (tenant_id, name) DO NOTHING;
+
+
+-- ------------------------------------------------------------
+-- db_review Agent 目录（租户 0）
+-- ------------------------------------------------------------
+INSERT INTO agent (tenant_id, agent_type, name, description, input_schema, enabled, version,
+    create_user_id, update_user_id)
+VALUES (0, 'db_review', '变更评审', '数据库变更评审（元数据预检/慢SQL/风险分级/审批）', NULL, true, '1.0.0',
+    (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
+ON CONFLICT (tenant_id, agent_type) DO NOTHING;
+
+
+-- 变更评审（db_review）菜单
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('变更评审', '/agent/db-review', 'DatabaseOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 2, true, 'unified:ask')
+ON CONFLICT (path) DO NOTHING;
+
+
+-- 统一咨询：图状态列表
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('图状态列表', '/consultation/graph-states', 'PartitionOutlined', (SELECT id FROM agent_menu WHERE path='/consultation'), 3, true, 'unified_session:page')
+ON CONFLICT (path) DO NOTHING;
+
+-- 咨询结果（agent_unified_turn：详情 / 质量测评）
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('咨询结果', '/consultation/results', 'FileSearchOutlined', (SELECT id FROM agent_menu WHERE path='/consultation'), 4, true, 'unified_turn:page')
+ON CONFLICT (path) DO NOTHING;
+
+
+-- ------------------------------------------------------------
+-- db_release Agent 目录（租户 0）
+-- ------------------------------------------------------------
+INSERT INTO agent (tenant_id, agent_type, name, description, input_schema, enabled, version,
+    create_user_id, update_user_id)
+VALUES (0, 'db_release', '变更发布', '沙箱验证已审批变更并输出原样 SQL（不执行生产）', NULL, true, '1.0.0',
+    (SELECT id FROM "agent_user" WHERE username='admin'), (SELECT id FROM "agent_user" WHERE username='admin'))
+ON CONFLICT (tenant_id, agent_type) DO NOTHING;
+
+-- 变更发布（db_release）菜单
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('变更发布', '/agent/db-release', 'RocketOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 3, true, 'unified:ask')
+ON CONFLICT (path) DO NOTHING;
+
+
+-- 统一业务编排（变更治理）
+INSERT INTO agent_menu (name, path, icon, parent_id, sort_order, visible, scope) VALUES
+('变更编排', '/agent/db-workflow', 'ApartmentOutlined', (SELECT id FROM agent_menu WHERE path='/agent'), 4, true, 'unified:ask')
+ON CONFLICT (path) DO NOTHING;
+
+
+-- 内置工具（租户 0）：与 mcp/builtin 代码实现一一对应
+INSERT INTO agent_tool (id, tenant_id, name, plugin, description, "schema", config, enabled) VALUES
+('33333333-3333-3333-3333-333333333333', 0, 'db_metadata', 'db_metadata', '数据库元数据（DDL/索引/统计）', '{}', '{}', true),
+('44444444-4444-4444-4444-444444444444', 0, 'slow_sql_explain', 'slow_sql_explain', '慢SQL分析（纯规则，不连库）', '{}', '{}', true),
+('55555555-5555-5555-5555-555555555555', 0, 'sql_dialect_validate', 'sql_dialect_validate', 'SQL 方言/后缀校验', '{}', '{}', true),
+('66666666-6666-6666-6666-666666666666', 0, 'sql_exec_sandbox', 'sql_exec_sandbox', '沙箱执行已审批SQL', '{}', '{}', true)
 ON CONFLICT (tenant_id, name) DO NOTHING;

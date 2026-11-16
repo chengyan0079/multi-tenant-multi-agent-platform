@@ -15,6 +15,7 @@ import {
   Space,
   Spin,
   Table,
+  Select,
   Tag,
   Typography,
 } from 'antd';
@@ -41,6 +42,9 @@ interface QaResultRow {
   tenantId: number;
   userId: number;
   sessionId: string;
+  threadId: string;
+  agentType: string;
+  tokens: number;
   question: string;
   answer: string;
   answerMode: string;
@@ -50,7 +54,14 @@ interface QaResultRow {
   latencyMs: number;
   createdAt: string;
   errorMsg?: string;
-  retrievedContexts: { docId: string; content: string; score: number }[];
+  retrievedContexts: {
+    docId?: string;
+    chunkId?: string;
+    content: string;
+    score?: number | null;
+    page?: number | null;
+    source?: string | null;
+  }[];
   sources: string[];
   referenceAnswer?: string | null;
   tokenUsage: Record<string, unknown> | null;
@@ -122,6 +133,9 @@ const mapItem = (row: QaResultItem): QaResultRow => ({
   tenantId: row.tenant_id,
   userId: row.user_id,
   sessionId: row.session_id,
+  threadId: row.thread_id ?? row.session_id ?? '',
+  agentType: row.agent_type ?? 'qa',
+  tokens: Number((row.token_usage as { total?: number } | null)?.total ?? 0),
   question: row.question,
   answer: '',
   answerMode: row.answer_mode ?? '-',
@@ -141,9 +155,13 @@ const mapDetail = (row: ApiQaResultDetail): QaResultRow => ({
   traceId: row.trace_id ?? '',
   answer: row.answer ?? '',
   retrievedContexts: (row.retrieved_contexts ?? []).map((c) => ({
-    docId: c.doc_id,
+    docId: c.doc_id ?? c.chunk_id ?? undefined,
+    chunkId: c.chunk_id ?? undefined,
     content: c.content,
-    score: Number(c.score ?? 0),
+    // 精排分数：无值保持 null（旧数据没有 score 字段，不再假装 0 分）
+    score: c.score == null ? null : Number(c.score),
+    page: c.page ?? undefined,
+    source: c.source ?? undefined,
   })),
   sources: row.sources ?? [],
   referenceAnswer: row.reference_answer,
@@ -211,9 +229,16 @@ function ContextList({ contexts }: { contexts: QaResultRow['retrievedContexts'] 
             padding: '8px 12px',
           }}
         >
-          <Space size={8} style={{ marginBottom: 4 }}>
-            <Tag>{c.docId}</Tag>
-            <Typography.Text type="secondary">score {c.score.toFixed(2)}</Typography.Text>
+          <Space size={8} style={{ marginBottom: 4 }} wrap>
+            <Tag>{c.docId || 'chunk'}</Tag>
+            {c.page ? <Tag>第 {c.page} 页</Tag> : null}
+            {c.score != null ? (
+              <Tag color={c.score >= 0.45 ? 'green' : 'default'}>
+                score {c.score.toFixed(3)}
+              </Tag>
+            ) : (
+              <Typography.Text type="secondary">score -</Typography.Text>
+            )}
           </Space>
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.7 }}>
             {c.content}
@@ -274,7 +299,22 @@ function QaInfo({ row }: { row: QaResultRow }) {
       </Descriptions.Item>
       <Descriptions.Item label="耗时">{row.latencyMs} ms</Descriptions.Item>
       <Descriptions.Item label="Token 用量">
-        <JsonBlock value={row.tokenUsage} />
+        {row.tokenUsage ? (
+          <Space wrap size={4}>
+            {row.tokenUsage.estimated ? <Tag color="orange">估算</Tag> : null}
+            {row.tokenUsage.total != null ? (
+              <Tag color="purple">total {String(row.tokenUsage.total)}</Tag>
+            ) : null}
+            {row.tokenUsage.prompt != null ? (
+              <Tag>prompt {String(row.tokenUsage.prompt)}</Tag>
+            ) : null}
+            {row.tokenUsage.completion != null ? (
+              <Tag>completion {String(row.tokenUsage.completion)}</Tag>
+            ) : null}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">-</Typography.Text>
+        )}
       </Descriptions.Item>
       <Descriptions.Item label="扩展信息">
         <JsonBlock value={row.extra} />
@@ -309,15 +349,22 @@ function QaInfo({ row }: { row: QaResultRow }) {
 /** 问答结果：对接 /api/v1/tenant/qa/results（列表/详情/测评/质量分析）。 */
 export default function QaResults() {
   const { message, modal } = AntdApp.useApp();
-  const canPage = hasScope('qa_result:page');
-  const canView = hasScope('qa_result:view');
-  const canReview = hasScope('qa_result:review');
+  const canPage = hasScope('unified_turn:page');
+  const canView = hasScope('unified_turn:view');
+  const canReview = hasScope('unified_turn:review');
 
   const [rows, setRows] = useState<QaResultRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
+  const [filters, setFilters] = useState({
+    turnId: '',
+    threadId: '',
+    traceId: '',
+    userId: '',
+    status: '',
+  });
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<QaResultRow | null>(null);
@@ -346,7 +393,15 @@ export default function QaResults() {
     if (!canPage) return;
     setLoading(true);
     try {
-      const res = await listQaResults({ page, page_size: pageSize });
+      const res = await listQaResults({
+        page,
+        page_size: pageSize,
+        turn_id: filters.turnId.trim() || undefined,
+        thread_id: filters.threadId.trim() || undefined,
+        trace_id: filters.traceId.trim() || undefined,
+        user_id: filters.userId.trim() ? Number(filters.userId.trim()) : undefined,
+        status: filters.status || undefined,
+      });
       setRows(res.items.map(mapItem));
       setTotal(res.total);
     } catch (e) {
@@ -354,7 +409,7 @@ export default function QaResults() {
     } finally {
       setLoading(false);
     }
-  }, [canPage, message, page, pageSize]);
+  }, [canPage, message, page, pageSize, filters]);
 
   useEffect(() => {
     void load();
@@ -453,6 +508,29 @@ export default function QaResults() {
   };
 
   const columns: ProColumns<QaResultRow>[] = [
+    {
+      title: 'id',
+      dataIndex: 'id',
+      width: 300,
+      ellipsis: true,
+      render: (_, row) => <Typography.Text copyable>{row.id}</Typography.Text>,
+    },
+    {
+      title: 'thread_id',
+      dataIndex: 'threadId',
+      width: 300,
+      ellipsis: true,
+      render: (_, row) => <Typography.Text copyable>{row.threadId || '-'}</Typography.Text>,
+    },
+    {
+      title: 'trace_id',
+      dataIndex: 'traceId',
+      width: 250,
+      ellipsis: true,
+      render: (_, row) => <Typography.Text copyable>{row.traceId || '-'}</Typography.Text>,
+    },
+    { title: 'Agent', dataIndex: 'agentType', width: 110 },
+    { title: 'tokens', dataIndex: 'tokens', width: 90 },
     { title: '会话ID', dataIndex: 'sessionId', width: 140, ellipsis: true },
     { title: '租户', dataIndex: 'tenantId', width: 80 },
     { title: '用户', dataIndex: 'userId', width: 80 },
@@ -568,6 +646,65 @@ export default function QaResults() {
 
   return (
     <Card title={<Typography.Title level={4} style={{ margin: 0 }}>问答结果</Typography.Title>}>
+      <Space wrap style={{ marginBottom: 12 }}>
+        <Input
+          allowClear
+          placeholder="结果 id"
+          style={{ width: 220 }}
+          value={filters.turnId}
+          onChange={(e) => setFilters((f) => ({ ...f, turnId: e.target.value }))}
+        />
+        <Input
+          allowClear
+          placeholder="thread_id"
+          style={{ width: 220 }}
+          value={filters.threadId}
+          onChange={(e) => setFilters((f) => ({ ...f, threadId: e.target.value }))}
+        />
+        <Input
+          allowClear
+          placeholder="trace_id"
+          style={{ width: 220 }}
+          value={filters.traceId}
+          onChange={(e) => setFilters((f) => ({ ...f, traceId: e.target.value }))}
+        />
+        <Input
+          allowClear
+          placeholder="用户ID"
+          style={{ width: 100 }}
+          value={filters.userId}
+          onChange={(e) => setFilters((f) => ({ ...f, userId: e.target.value }))}
+        />
+        <Select
+          allowClear
+          placeholder="状态"
+          style={{ width: 120 }}
+          value={filters.status || undefined}
+          onChange={(v) => setFilters((f) => ({ ...f, status: v || '' }))}
+          options={[
+            { value: 'success', label: '成功' },
+            { value: 'failed', label: '失败' },
+            { value: 'partial', label: '部分成功' },
+          ]}
+        />
+        <Button
+          type="primary"
+          onClick={() => {
+            setPage(1);
+            void load();
+          }}
+        >
+          查询
+        </Button>
+        <Button
+          onClick={() => {
+            setFilters({ turnId: '', threadId: '', traceId: '', userId: '', status: '' });
+            setPage(1);
+          }}
+        >
+          重置
+        </Button>
+      </Space>
       <ProTable<QaResultRow>
         rowKey="id"
         search={false}

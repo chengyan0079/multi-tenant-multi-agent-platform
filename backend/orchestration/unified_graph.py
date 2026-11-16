@@ -1,6 +1,8 @@
 """统一编排层引擎：薄图 UnifiedGraph + UnifiedState（会话级上下文与请求编排）。"""
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 import asyncio
 import uuid
 from dataclasses import dataclass
@@ -16,6 +18,7 @@ from backend.orchestration.unified_dispatch import (
     dispatch,
     fork_config,
     _partition_for,
+    _template_of,
 )
 from backend.orchestration.unified_intent import UnifiedRouter
 from backend.orchestration.unified_runtime import build_run_config
@@ -107,8 +110,15 @@ class UnifiedGraph:
         thread = await self._thread_dao.get_or_create(
             session_key=session_id, tenant_id=tenant_id, user_id=user_id
         )
-        U = thread["id"] if isinstance(thread, dict) else getattr(thread, "id")
-        turn_index = await self._next_turn_index(U)
+        # get_or_create 可能返回 dict（含 id）/ str（uuid）/ 对象，三种都要兼容
+        U = (
+            thread["id"]
+            if isinstance(thread, dict)
+            else thread
+            if isinstance(thread, str)
+            else getattr(thread, "id")
+        )
+        turn_index = await self._next_turn_index(U, tenant_id, user_id)
 
         # ⑥ 构造会话级 config（观测一次挂载）
         spec_hint = self._spec_for(agent_type) if agent_type else None
@@ -116,6 +126,8 @@ class UnifiedGraph:
             thread_id=U,
             trace_id=trace_id,
             spec=spec_hint or _NULL_SPEC,
+            tenant_id=tenant_id,
+            user_id=user_id,
         )
         # ③ 预分配本轮唯一 turn_id
         turn_id = uuid.uuid4().hex
@@ -273,6 +285,28 @@ class UnifiedGraph:
             error_code=error_code,
         )
 
+    async def _load_history(
+        self, thread_id: str, tenant_id: int, user_id: int, limit: int = 20
+    ) -> list:
+        """按 thread 读取近 N 轮历史并转为消息（失败降级为空）。"""
+        try:
+            from backend.data.dao.agent.unified_turn_dao import UnifiedTurnDao
+
+            rows = await UnifiedTurnDao.list_recent_by_thread(
+                thread_id=thread_id, tenant_id=tenant_id, user_id=user_id, limit=limit
+            )
+            msgs: list = []
+            for r in rows:
+                uc = getattr(r, "user_content", None)
+                ac = getattr(r, "assistant_content", None)
+                if uc:
+                    msgs.append(HumanMessage(content=uc))
+                if ac:
+                    msgs.append(AIMessage(content=ac))
+            return msgs
+        except Exception:  # noqa: BLE001 - 历史不可用不影响本轮
+            return []
+
     async def run_stream(
         self,
         *,
@@ -284,22 +318,37 @@ class UnifiedGraph:
         entry: Optional[EntryPayload] = None,
         attachments: Optional[list] = None,
         trace_id: Optional[str] = None,
+        thinking: bool = False,
     ):
         """流式变体：异步产出 UnifiedEvent 序列（SSE 逐帧推送），结束写回单条 turn。
 
         与 run() 共享路由 / 鉴权 / 入口校验逻辑；差异仅在 stream 模式走 adapter.stream
         真流式（逐 token），而非 run() 的收集式 dispatch。task / pipeline 模式仍复用 dispatch。
         """
+        import time
+
+        t0 = time.perf_counter()
         trace_id = trace_id or uuid.uuid4().hex
         thread = await self._thread_dao.get_or_create(
             session_key=session_id, tenant_id=tenant_id, user_id=user_id
         )
-        U = thread["id"] if isinstance(thread, dict) else getattr(thread, "id")
-        turn_index = await self._next_turn_index(U)
+        # get_or_create 可能返回 dict（含 id）/ str（uuid）/ 对象，三种都要兼容
+        U = (
+            thread["id"]
+            if isinstance(thread, dict)
+            else thread
+            if isinstance(thread, str)
+            else getattr(thread, "id")
+        )
+        turn_index = await self._next_turn_index(U, tenant_id, user_id)
 
         spec_hint = self._spec_for(agent_type) if agent_type else None
         cfg_U: RunnableConfig = build_run_config(
-            thread_id=U, trace_id=trace_id, spec=spec_hint or _NULL_SPEC
+            thread_id=U,
+            trace_id=trace_id,
+            spec=spec_hint or _NULL_SPEC,
+            tenant_id=tenant_id,
+            user_id=user_id,
         )
         turn_id = uuid.uuid4().hex
 
@@ -391,12 +440,44 @@ class UnifiedGraph:
                         spec, thread_id=U, turn_id=turn_id, artifact_id=""
                     )
                     cfg = fork_config(cfg_U, thread_id=partition)
+                    # 多轮历史 + 当前输入（压缩由 to_subgraph_input 完成）
+                    history = await self._load_history(U, tenant_id, user_id)
+                    if message:
+                        history.append(HumanMessage(content=message))
                     initial = self._adapter.to_subgraph_input(
-                        unified_state={"thread_id": U, "messages": [], "existing_summary": None},
+                        unified_state={
+                            "thread_id": U,
+                            "messages": history,
+                            "existing_summary": None,
+                            "query": message,
+                            # 关键上下文（缺了会让检索/记忆落到租户 0 或直接 KeyError）
+                            "tenant_id": tenant_id,
+                            "user_id": user_id,
+                            "session_id": session_id,
+                            "turn_id": turn_id,
+                            "trace_id": trace_id,
+                            "thinking": thinking,
+                        },
                         spec=spec,
                         entry=entry,
                         attachments=attachments or [],
                     )
+                    tpl = _template_of(routing.agent_type)
+                    tpl_ctx = None
+                    if tpl is not None:
+                        tpl_ctx = tpl.turn_context(
+                            {
+                                **initial,
+                                "tenant_id": tenant_id,
+                                "user_id": user_id,
+                                "turn_id": turn_id,
+                                "trace_id": trace_id,
+                                "session_id": session_id,
+                            }
+                        )
+                        patch = await tpl.before_turn(tpl_ctx, initial)
+                        if patch:
+                            initial.update(patch)
                     parts: list[str] = []
                     async for ev in self._adapter.stream(
                         agent_type=routing.agent_type,
@@ -410,6 +491,11 @@ class UnifiedGraph:
                             parts.append(ev.payload.content)
                         yield ev
                     assistant_content = "".join(parts)
+                    if tpl is not None and tpl_ctx is not None:
+                        await tpl.after_turn(tpl_ctx, {"answer": assistant_content})
+                        await tpl.audit(
+                            tpl_ctx, f"agent.{routing.agent_type}.run", assistant_content
+                        )
                 else:  # task
                     outcome = await dispatch(
                         agent_type=routing.agent_type,
@@ -430,6 +516,26 @@ class UnifiedGraph:
                     for e in outcome.events:
                         yield e
 
+        # token 用量：模型返回 usage 时直接用；部分网关（如 deepseek 流式）不返回 →
+        # 按字符估算（中文约 2 字符/token），并标注 estimated，前端用 ~ 区分。
+        usage: dict[str, Any] = dict(meta_sink.get("token_usage") or {})
+        if not usage.get("total"):
+            from math import ceil
+
+            ctx_chars = sum(
+                len(str(c.get("content") or ""))
+                for c in (meta_sink.get("contexts") or [])
+                if isinstance(c, dict)
+            )
+            prompt_chars = len(message or "") + ctx_chars
+            completion_chars = len(assistant_content or "")
+            usage = {
+                "prompt": ceil(prompt_chars / 2),
+                "completion": ceil(completion_chars / 2),
+                "total": ceil((prompt_chars + completion_chars) / 2),
+                "estimated": True,
+            }
+
         yield UnifiedEvent(
             event_type="meta",
             payload=MetaEvent(
@@ -439,6 +545,8 @@ class UnifiedGraph:
                 answer_mode=meta_sink.get("answer_mode"),
                 confidence=meta_sink.get("confidence"),
                 sources=meta_sink.get("sources"),
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                token_usage=usage,
             ),
         )
         yield UnifiedEvent(event_type="done", payload=_Done())
@@ -455,7 +563,17 @@ class UnifiedGraph:
             event_type="chat",
             user_content=message,
             assistant_content=assistant_content,
-            payload={"execution_mode": routing.execution_mode, "source": routing.source},
+            payload={
+                "execution_mode": routing.execution_mode,
+                "source": routing.source,
+                "answer_mode": meta_sink.get("answer_mode"),
+                "confidence": meta_sink.get("confidence"),
+                "sources": meta_sink.get("sources"),
+                # 检索上下文快照：供「问答结果」展示与 RAGAS context 指标
+                "retrieved_contexts": meta_sink.get("contexts"),
+            },
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+            token_usage=usage,
             routing=routing.model_dump(),
             status=status,
             error_code=error_code,
@@ -511,11 +629,22 @@ class UnifiedGraph:
         provided = {f.name for f in (entry.fields if entry else []) if f.value}
         return sorted(required - provided)
 
-    async def _next_turn_index(self, thread_id: str) -> int:
-        fn = getattr(self._thread_dao, "next_turn_index", None)
-        if callable(fn):
-            return await fn(thread_id)
-        return 1
+    async def _next_turn_index(self, thread_id: str, tenant_id: int, user_id: int) -> int:
+        """取该会话下一轮序号（max+1）。
+
+        必须以 agent_unified_turn 为准（turn 表有唯一索引 (thread_id, turn_index)，
+        序号重复会导致 INSERT 冲突、整轮历史丢失）。
+        """
+        from backend.data.dao.agent.unified_turn_dao import UnifiedTurnDao
+        from backend.common.logger import logger as _logger
+
+        try:
+            return await UnifiedTurnDao.next_turn_index(
+                thread_id=thread_id, tenant_id=tenant_id, user_id=user_id
+            )
+        except Exception:  # noqa: BLE001 - 无 DB 上下文（单测）时退化为 1
+            _logger.debug("next_turn_index 计算失败（无 DB 上下文？），退化为 1")
+            return 1
 
     def _spec_for(self, agent_type: str) -> Optional[AgentSpec]:
         for s in self._registry.specs():

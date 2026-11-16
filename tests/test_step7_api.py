@@ -48,7 +48,10 @@ class FakeGraph:
     def __init__(self, *_, **__):
         self.captured: dict | None = None
 
-    async def run_stream(self, *, session_id, tenant_id, user_id, message, agent_type=None, entry=None, attachments=None):
+    async def run_stream(
+        self, *, session_id, tenant_id, user_id, message,
+        agent_type=None, entry=None, attachments=None, thinking=False
+    ):
         self.captured = {
             "session_id": session_id,
             "tenant_id": tenant_id,
@@ -191,7 +194,10 @@ def test_sessions_list_and_admin_scope(monkeypatch):
     async def fake_list(*, tenant_id, user_id, page=1, page_size=20, status=None):
         return [row], 1
 
-    async def fake_list_admin(*, tenant_id, page=1, page_size=20, status=None):
+    async def fake_list_admin(
+        *, tenant_id, user_id=None, page=1, page_size=20, status=None,
+        thread_id=None, agent_type=None
+    ):
         return [row], 1
 
     monkeypatch.setattr(ThreadDao, "list_sessions", staticmethod(fake_list))
@@ -328,20 +334,28 @@ def test_qa_results_list_and_detail(monkeypatch):
         "created_at": None, "updated_at": None,
     }
 
-    async def fake_list(*, tenant_id, session_id=None, status=None, page=1, page_size=20):
+    async def fake_list(
+        *, tenant_id, session_id=None, status=None, page=1, page_size=20,
+        turn_id=None, thread_id=None, trace_id=None, user_id=None
+    ):
         return [row], 1
 
     async def fake_get(*, result_id, tenant_id):
         return row
 
+    async def fake_evals(*, turn_id, tenant_id):
+        return []
+
     monkeypatch.setattr(QaResultDao, "list_paged", staticmethod(fake_list))
     monkeypatch.setattr(QaResultDao, "get", staticmethod(fake_get))
+    # 阶段2：详情会查评测记录取标准答案
+    monkeypatch.setattr(QaResultDao, "list_evals", staticmethod(fake_evals))
 
     app = _build_app()
-    resp = _client(app, [Scope.QA_RESULT_PAGE]).get("/api/v1/tenant/qa/results")
+    resp = _client(app, [Scope.UNIFIED_TURN_PAGE]).get("/api/v1/tenant/qa/results")
     assert resp.status_code == 200
     assert resp.json()["data"]["items"][0]["id"] == "r1"
 
-    resp = _client(app, [Scope.QA_RESULT_VIEW]).get("/api/v1/tenant/qa/results/r1")
+    resp = _client(app, [Scope.UNIFIED_TURN_VIEW]).get("/api/v1/tenant/qa/results/r1")
     assert resp.status_code == 200
     assert resp.json()["data"]["id"] == "r1"

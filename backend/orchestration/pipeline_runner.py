@@ -87,7 +87,16 @@ class PipelineRunner:
             partition = f"{thread_id}:{step.agent_type}:{turn_id}"
             cfg = fork_config(cfg_U, thread_id=partition)
             initial = self._adapter.to_subgraph_input(
-                unified_state={"messages": [], "existing_summary": carry.content},
+                unified_state={
+                    "messages": [],
+                    "existing_summary": carry.content,
+                    # pipeline 每步同样需要租户/用户上下文（检索/记忆/审计依赖）
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "trace_id": trace_id,
+                },
                 spec=spec,
                 entry=None,
                 attachments=[],

@@ -5,6 +5,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Protocol
 
 from langchain_core.runnables import RunnableConfig
 
+from backend.agents import AGENT_BUILDERS
+from backend.agents.template import AgentTemplate
 from backend.orchestration.agent_spec import AgentSpec
 from backend.orchestration.unified_runtime import build_run_config
 from backend.orchestration.unified_schemas import (
@@ -15,10 +17,36 @@ from backend.orchestration.unified_schemas import (
     PipelinePlan,
     PersistencePayload,
     ProgressEvent,
+    ReasoningEvent,
     TaskStartedEvent,
     TokenEvent,
     UnifiedEvent,
 )
+
+
+def _extract_usage(output: Any) -> dict:
+    """从 LLMResult 提取 token 用量（OpenAI usage / LangChain usage_metadata）。"""
+    try:
+        llm_output = getattr(output, "llm_output", None) or {}
+        usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
+        if not usage:
+            for gens in getattr(output, "generations", None) or []:
+                for generation in gens:
+                    message = getattr(generation, "message", None)
+                    metadata = getattr(message, "usage_metadata", None) or {}
+                    if metadata:
+                        usage = metadata
+                        break
+                if usage:
+                    break
+        if not isinstance(usage, dict):
+            return {}
+        prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        total = int(usage.get("total_tokens") or (prompt + completion))
+        return {"prompt": prompt, "completion": completion, "total": total}
+    except Exception:  # noqa: BLE001 - 统计失败忽略
+        return {}
 
 
 def fork_config(parent_cfg: RunnableConfig, *, thread_id: str) -> RunnableConfig:
@@ -34,6 +62,18 @@ def fork_config(parent_cfg: RunnableConfig, *, thread_id: str) -> RunnableConfig
     if parent_cfg.get("callbacks"):
         cfg["callbacks"] = list(parent_cfg["callbacks"])
     return cfg
+
+
+def _template_of(agent_type: str):
+    """取该 agent_type 的模板实例（非模板/未注册返回 None）。"""
+    cls = AGENT_BUILDERS.get(agent_type)
+    if cls is None:
+        return None
+    try:
+        inst = cls()
+        return inst if isinstance(inst, AgentTemplate) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _partition_for(spec: AgentSpec, *, thread_id: str, turn_id: str, artifact_id: str) -> str:
@@ -112,9 +152,23 @@ class DefaultAgentAdapter:
         attachments: list[AttachmentRef],
     ) -> dict:
         # 单向注入：本轮消息窗口 + existing_summary；不反向写回统一层（§4.7）
+        messages = list(unified_state.get("messages", []))
+        tpl = _template_of(spec.agent_type)
+        if tpl is not None:
+            messages = tpl.compress_context({"messages": messages})
         return {
-            "messages": list(unified_state.get("messages", [])),
+            "messages": messages,
             "existing_summary": unified_state.get("existing_summary"),
+            # 关键上下文必须透传：缺 tenant_id 会让检索按租户 0 过滤 → 召回恒为空；
+            # 缺 user_id 会让短期/长期记忆、审计写入失败。
+            # 不做 `or 0` 兜底：缺失即 fail-fast，避免静默查错租户。
+            "tenant_id": int(unified_state["tenant_id"]),
+            "user_id": int(unified_state["user_id"]),
+            "session_id": unified_state.get("session_id"),
+            "thread_id": unified_state.get("thread_id"),
+            "turn_id": unified_state.get("turn_id"),
+            "trace_id": unified_state.get("trace_id"),
+            "thinking": bool(unified_state.get("thinking")),
         }
 
     def from_subgraph_output(self, result: dict, spec: AgentSpec) -> AgentOutcome:
@@ -159,10 +213,65 @@ class DefaultAgentAdapter:
                 )
             elif evt == "on_chat_model_stream" and node in generate_nodes:
                 chunk = (raw.get("data") or {}).get("chunk")
-                if chunk and getattr(chunk, "content", None):
-                    yield UnifiedEvent(
-                        event_type="token", payload=TokenEvent(content=chunk.content)
+                if chunk is not None:
+                    # 思考模式：DeepSeek/OpenAI 兼容网关把推理过程放在 additional_kwargs
+                    extra = getattr(chunk, "additional_kwargs", None) or {}
+                    meta_extra = getattr(chunk, "response_metadata", None) or {}
+                    reasoning = (
+                        extra.get("reasoning_content")
+                        or extra.get("reasoning")
+                        or meta_extra.get("reasoning_content")
                     )
+                    if reasoning:
+                        yield UnifiedEvent(
+                            event_type="reasoning",
+                            payload=ReasoningEvent(content=str(reasoning)),
+                        )
+                    if getattr(chunk, "content", None):
+                        yield UnifiedEvent(
+                            event_type="token", payload=TokenEvent(content=chunk.content)
+                        )
+            elif evt == "on_chain_end" and node == "retrieve" and meta_sink is not None:
+                # 检索结果快照 → 供「问答结果」展示与 RAGAS context 指标
+                # 注意：必须带 score（精排分数）/doc_id，否则前端只能显示 0 分
+                output = (raw.get("data") or {}).get("output") or {}
+                chunks = output.get("ranked_chunks") if isinstance(output, dict) else None
+                if chunks:
+
+                    def _f(chunk: Any, name: str) -> Any:
+                        val = getattr(chunk, name, None)
+                        if val is None and isinstance(chunk, dict):
+                            val = chunk.get(name)
+                        return val
+
+                    brief = []
+                    for c in chunks[:20]:
+                        content = _f(c, "content")
+                        if not content:
+                            continue
+                        score = _f(c, "score")
+                        brief.append(
+                            {
+                                "doc_id": _f(c, "doc_id") or _f(c, "chunk_id"),
+                                "chunk_id": _f(c, "chunk_id"),
+                                "content": str(content)[:2000],
+                                "page": _f(c, "page"),
+                                "score": (
+                                    round(float(score), 4) if score is not None else None
+                                ),
+                                "source": _f(c, "source"),
+                            }
+                        )
+                    if brief:
+                        meta_sink["contexts"] = brief
+            elif evt == "on_chat_model_end" and meta_sink is not None:
+                # 累计 token 用量（prompt/completion/total），供前端展示与落库
+                usage = _extract_usage((raw.get("data") or {}).get("output"))
+                if usage:
+                    acc = meta_sink.setdefault("token_usage", {})
+                    for k in ("prompt", "completion", "total"):
+                        if usage.get(k):
+                            acc[k] = int(acc.get(k, 0)) + int(usage[k])
             elif evt == "on_chain_end" and node in generate_nodes and meta_sink is not None:
                 output = (raw.get("data") or {}).get("output") or {}
                 if isinstance(output, dict):
@@ -230,11 +339,42 @@ async def dispatch(
     cfg = fork_config(parent_cfg, thread_id=partition)
 
     if spec.execution_mode == "stream":
+        # 用 dispatch 已知的租户/用户补齐 state（兼容调用方只传 messages 的情形）
+        ustate = dict(unified_state) if hasattr(unified_state, "items") else {}
+        ustate.setdefault("tenant_id", tenant_id)
+        ustate.setdefault("user_id", user_id)
+        ustate.setdefault("turn_id", turn_id)
+        ustate.setdefault("trace_id", trace_id)
         initial = adapter.to_subgraph_input(
-            unified_state=unified_state, spec=spec, entry=entry, attachments=attachments
+            unified_state=ustate, spec=spec, entry=entry, attachments=attachments
         )
-        # 复用既有 Orchestrator.run_agent（内部 build_graph + tracing）
+        # 模板钩子：before_turn（幂等/记忆）→ 运行 → after_turn（记忆/审计）
+        tpl = _template_of(agent_type)
+        tpl_ctx = None
+        if tpl is not None:
+            tpl_ctx = tpl.turn_context(
+                {
+                    **initial,
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "turn_id": turn_id,
+                    "trace_id": trace_id,
+                    "session_id": (
+                        unified_state.get("session_id", "")
+                        if hasattr(unified_state, "get")
+                        else ""
+                    ),
+                }
+            )
+            patch = await tpl.before_turn(tpl_ctx, initial)
+            if patch:
+                initial.update(patch)
         result = await orchestrator.run_agent(agent_type, partition, initial)
+        if tpl is not None and tpl_ctx is not None:
+            await tpl.after_turn(tpl_ctx, result)
+            await tpl.audit(
+                tpl_ctx, f"agent.{agent_type}.run", str(result.get("answer", ""))
+            )
         return adapter.from_subgraph_output(result, spec)
 
     if spec.execution_mode == "task":

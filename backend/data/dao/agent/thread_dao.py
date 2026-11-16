@@ -7,7 +7,13 @@ from uuid import UUID
 
 from sqlalchemy import text
 
-from backend.data.sql import fetch_one, fetch_page, fetch_value, session_scope
+from backend.data.sql import (
+    fetch_all,
+    fetch_one,
+    fetch_page,
+    fetch_value,
+    session_scope,
+)
 
 # id 由库端 uuid_generate_v4() 生成，RETURNING 直接取回，省一次查询
 _INSERT = text("""
@@ -178,7 +184,7 @@ class ThreadDao:
             params["status"] = status
         count_sql = text(f"SELECT count(*) FROM agent_thread t {where}")
         list_sql = text(
-            "SELECT t.id, t.session_key, t.title, t.status, t.created_at, t.updated_at, "
+            "SELECT t.id, t.session_key, t.title, t.status, t.create_at AS created_at, t.updated_at, "
             "(SELECT count(*) FROM agent_unified_turn u WHERE u.thread_id = t.id) AS turn_count, "
             "(SELECT agent_type FROM agent_unified_turn u WHERE u.thread_id = t.id "
             " ORDER BY u.turn_index DESC LIMIT 1) AS last_agent_type "
@@ -198,7 +204,7 @@ class ThreadDao:
         if tid is None:
             return None
         sql = text(
-            "SELECT t.id, t.session_key, t.title, t.status, t.created_at, t.updated_at, "
+            "SELECT t.id, t.session_key, t.title, t.status, t.create_at AS created_at, t.updated_at, "
             "(SELECT count(*) FROM agent_unified_turn u WHERE u.thread_id = t.id) AS turn_count, "
             "(SELECT agent_type FROM agent_unified_turn u WHERE u.thread_id = t.id "
             " ORDER BY u.turn_index DESC LIMIT 1) AS last_agent_type "
@@ -214,18 +220,16 @@ class ThreadDao:
     async def delete_session(
         *, tenant_id: int, user_id: int, thread_id: str
     ) -> int:
-        """删除会话：先清 turn 再清 thread（级联未设外键时手动处理）。"""
+        """删除会话：**只删 agent_thread**。
+
+        agent_unified_turn / agent_qa_ragas_evals / checkpoints 全部保留：
+        - 「咨询结果」页按 turn 查询，不依赖 thread，RAGAS 报告仍可查看；
+        - 会话列表按 thread 查询，删除后自然不再出现。
+        """
         tid = _as_uuid(thread_id)
         if tid is None:
             return 0
         async with session_scope() as session:
-            await session.execute(
-                text(
-                    "DELETE FROM agent_unified_turn WHERE thread_id = :tid "
-                    "AND tenant_id = :ten AND user_id = :uid"
-                ),
-                {"tid": tid, "ten": tenant_id, "uid": user_id},
-            )
             result = await session.execute(
                 text(
                     "DELETE FROM agent_thread WHERE id = :tid "
@@ -233,28 +237,66 @@ class ThreadDao:
                 ),
                 {"tid": tid, "ten": tenant_id, "uid": user_id},
             )
+            await session.commit()
             return result.rowcount or 0
 
     # ---- 管理端：跨用户（仅按租户），用于会话管理页 ----
 
     @staticmethod
+    @staticmethod
+    async def set_title_if_empty(
+        *, thread_id: str, tenant_id: int, title: str
+    ) -> int:
+        """仅当标题为空时写入（天然「只改一次」）。返回受影响行数。"""
+        tid = _as_uuid(thread_id)
+        if tid is None or not title:
+            return 0
+        async with session_scope() as session:
+            result = await session.execute(
+                text(
+                    "UPDATE agent_thread SET title = :title, updated_at = now() "
+                    "WHERE id = CAST(:tid AS uuid) AND tenant_id = :ten "
+                    # 空标题或默认「新会话」都视为未命名，可自动命名一次
+                    "AND (title IS NULL OR btrim(title) = '' OR title = '新会话')"
+                ),
+                {"title": title[:64], "tid": tid, "ten": tenant_id},
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
+
     async def list_sessions_admin(
         *,
         tenant_id: int,
+        user_id: int | None = None,
         page: int = 1,
         page_size: int = 20,
         status: str | None = None,
+        thread_id: str | None = None,
+        agent_type: str | None = None,
     ) -> tuple[list[dict], int]:
-        """管理端分页列出本租户全部会话（不限定 user）。"""
+        """管理端分页列出本租户会话（可按 thread_id/状态/agent 过滤）。"""
         offset = max(page - 1, 0) * page_size
         where = "WHERE t.tenant_id = :ten"
         params: dict = {"ten": tenant_id, "limit": page_size, "offset": offset}
+        if user_id is not None:
+            where += " AND t.user_id = :uid"
+            params["uid"] = user_id
         if status:
             where += " AND t.status = :status"
             params["status"] = status
+        if thread_id:
+            # 支持精确或前缀模糊匹配（UUID 字符串）
+            where += " AND CAST(t.id AS text) LIKE :tid_like"
+            params["tid_like"] = f"%{thread_id.strip()}%"
+        if agent_type:
+            where += (
+                " AND EXISTS (SELECT 1 FROM agent_unified_turn u2 "
+                "WHERE u2.thread_id = t.id AND u2.agent_type = :agt)"
+            )
+            params["agt"] = agent_type
         count_sql = text(f"SELECT count(*) FROM agent_thread t {where}")
         list_sql = text(
-            "SELECT t.id, t.session_key, t.title, t.status, t.created_at, t.updated_at, "
+            "SELECT t.id, t.session_key, t.title, t.status, t.create_at AS created_at, t.updated_at, "
             "(SELECT count(*) FROM agent_unified_turn u WHERE u.thread_id = t.id) AS turn_count, "
             "(SELECT agent_type FROM agent_unified_turn u WHERE u.thread_id = t.id "
             " ORDER BY u.turn_index DESC LIMIT 1) AS last_agent_type "
@@ -272,10 +314,15 @@ class ThreadDao:
         if tid is None:
             return None
         sql = text(
-            "SELECT t.id, t.session_key, t.title, t.status, t.created_at, t.updated_at, "
+            "SELECT t.id, t.session_key, t.title, t.status, t.create_at AS created_at, t.updated_at, "
             "(SELECT count(*) FROM agent_unified_turn u WHERE u.thread_id = t.id) AS turn_count, "
             "(SELECT agent_type FROM agent_unified_turn u WHERE u.thread_id = t.id "
-            " ORDER BY u.turn_index DESC LIMIT 1) AS last_agent_type "
+            " ORDER BY u.turn_index DESC LIMIT 1) AS last_agent_type, "
+            # 全会话累计（不受回放 limit 影响）
+            "(SELECT coalesce(sum(nullif(u.token_usage->>'total', '')::numeric), 0) "
+            " FROM agent_unified_turn u WHERE u.thread_id = t.id) AS total_tokens, "
+            "(SELECT coalesce(sum(u.latency_ms), 0) "
+            " FROM agent_unified_turn u WHERE u.thread_id = t.id) AS total_latency_ms "
             "FROM agent_thread t WHERE t.id = :tid AND t.tenant_id = :ten"
         )
         async with session_scope() as session:
@@ -284,19 +331,14 @@ class ThreadDao:
 
     @staticmethod
     async def delete_session_admin(*, tenant_id: int, thread_id: str) -> int:
-        """管理端删除会话：先清 turn 再清 thread（不限 user）。"""
+        """管理端删除会话：**只删 agent_thread**（保留 turn / 评测 / checkpoint）。"""
         tid = _as_uuid(thread_id)
         if tid is None:
             return 0
         async with session_scope() as session:
-            await session.execute(
-                text(
-                    "DELETE FROM agent_unified_turn WHERE thread_id = :tid AND tenant_id = :ten"
-                ),
-                {"tid": tid, "ten": tenant_id},
-            )
             result = await session.execute(
                 text("DELETE FROM agent_thread WHERE id = :tid AND tenant_id = :ten"),
                 {"tid": tid, "ten": tenant_id},
             )
+            await session.commit()
             return result.rowcount or 0

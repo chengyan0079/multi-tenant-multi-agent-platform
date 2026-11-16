@@ -13,13 +13,13 @@ def test_mask_body_hides_password_and_token() -> None:
         "username": "admin",
         "password": "s3cret",
         "token": "abc.def",
-        "scope": "qa:ask",
+        "scope": "unified:ask",
     }
     out = _mask_body(data)
     assert out["password"] == "***"
     assert out["token"] == "***"
     assert out["username"] == "admin"
-    assert out["scope"] == "qa:ask"
+    assert out["scope"] == "unified:ask"
 
 
 def test_mask_body_recurses_into_nested_and_list() -> None:

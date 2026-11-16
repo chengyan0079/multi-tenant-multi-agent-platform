@@ -23,10 +23,10 @@ _GET_CONFIG = text(
 _LIST = text("""
 SELECT id, tenant_id, name, plugin, description, schema, config, enabled, create_at, updated_at
 FROM agent_tool
-WHERE tenant_id = :tenant_id
+WHERE (:tenant_id IS NULL OR tenant_id = :tenant_id)
   AND (:name IS NULL OR name ILIKE '%' || :name || '%')
   AND (:enabled IS NULL OR enabled = :enabled)
-ORDER BY name
+ORDER BY tenant_id, name
 LIMIT :limit OFFSET :offset
 """).bindparams(
     bindparam("tenant_id", type_=Integer),
@@ -38,7 +38,7 @@ LIMIT :limit OFFSET :offset
 
 _COUNT = text("""
 SELECT count(*) FROM agent_tool
-WHERE tenant_id = :tenant_id
+WHERE (:tenant_id IS NULL OR tenant_id = :tenant_id)
   AND (:name IS NULL OR name ILIKE '%' || :name || '%')
   AND (:enabled IS NULL OR enabled = :enabled)
 """).bindparams(
@@ -94,12 +94,37 @@ async def get_tool_config(name: str, tenant_id: int = 0) -> dict[str, Any]:
 
 
 class ToolDao:
+    @staticmethod
+    async def list_all_enabled() -> list[dict[str, Any]]:
+        """所有租户启用的工具（tenant_id, name），供按租户注册。"""
+        async with session_scope() as session:
+            return await fetch_all(
+                session,
+                text(
+                    "SELECT tenant_id, name FROM agent_tool "
+                    "WHERE enabled = true ORDER BY tenant_id, name"
+                ),
+            )
+
+    @staticmethod
+    async def list_tenant_enabled(tenant_id: int) -> list[str]:
+        """指定租户启用的工具名列表。"""
+        async with session_scope() as session:
+            rows = await fetch_all(
+                session,
+                text(
+                    "SELECT name FROM agent_tool WHERE tenant_id=:t AND enabled = true "
+                    "ORDER BY name"
+                ),
+                {"t": tenant_id},
+            )
+        return [r["name"] for r in rows]
     """agent_tool 租户级读写（enabled 由租户控制）。"""
 
     @staticmethod
     async def list_paged(
         *,
-        tenant_id: int,
+        tenant_id: Optional[int] = None,
         name: Optional[str] = None,
         enabled: Optional[bool] = None,
         page: int = 1,

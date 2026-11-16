@@ -13,10 +13,10 @@ from backend.data.postgres.auth import (
     User,
 )
 from backend.data.postgres.agent import (
+    AgentDbConnection,
     AgentLongTermMemory,
     AgentModel,
     AgentModelRel,
-    AgentPluginModel,
     AgentThread,
     AgentTool,
     AgentUnifiedTurn,
@@ -24,8 +24,9 @@ from backend.data.postgres.agent import (
 )
 from backend.data.postgres.business import (
     AgentFile,
+    AgentChangeRequest,
+    AgentChangeReview,
     KnowledgePendingQueue,
-    QaResult,
     QaRagasEval,
 )
 from backend.data.postgres.ops import (
@@ -47,19 +48,20 @@ __all__ = [
     "Menu",
     "AgentLoginLog",
     # agent
+    "AgentDbConnection",
     "AgentModel",
     "AgentModelRel",
     "ModelRegistry",
     "AgentThread",
     "AgentTool",
-    "AgentPluginModel",
     "AgentLongTermMemory",
     "AgentUnifiedTurn",
     # business
     "KnowledgePendingQueue",
-    "QaResult",
     "QaRagasEval",
     "AgentFile",
+    "AgentChangeRequest",
+    "AgentChangeReview",
     # ops
     "ConfigApproval",
     "ConfigReview",

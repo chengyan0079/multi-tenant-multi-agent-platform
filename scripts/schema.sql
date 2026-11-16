@@ -137,6 +137,158 @@ COMMENT ON COLUMN "agent_audit_log".ip IS '操作来源IP';
 COMMENT ON COLUMN "agent_audit_log".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_audit_log".updated_at IS '更新时间（更新时由库触发器刷新）';
 
+CREATE TABLE IF NOT EXISTS agent_change_release (
+	id BIGSERIAL NOT NULL, 
+	tenant_id BIGINT NOT NULL, 
+	request_id BIGINT NOT NULL, 
+	sandbox_connection_id VARCHAR(64) NOT NULL, 
+	thread_id VARCHAR(128), 
+	exec_ok BOOLEAN, 
+	exec_ms INTEGER, 
+	affected_rows BIGINT, 
+	error TEXT, 
+	sandbox_rolled_back BOOLEAN, 
+	final_sql TEXT, 
+	status VARCHAR(24) NOT NULL, 
+	trace_id VARCHAR(64), 
+	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	create_user_id BIGINT NOT NULL, 
+	update_user_id BIGINT NOT NULL, 
+	create_tenant_id BIGINT, 
+	update_tenant_id BIGINT, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_change_release_request_id ON agent_change_release (request_id);
+
+CREATE INDEX IF NOT EXISTS ix_agent_change_release_tenant_id ON agent_change_release (tenant_id);
+
+COMMENT ON TABLE "agent_change_release" IS '变更发布（db_release 沙箱验证）';
+COMMENT ON COLUMN "agent_change_release".id IS '主键';
+COMMENT ON COLUMN "agent_change_release".tenant_id IS '租户ID';
+COMMENT ON COLUMN "agent_change_release".request_id IS '变更单ID';
+COMMENT ON COLUMN "agent_change_release".sandbox_connection_id IS '影子库连接ID';
+COMMENT ON COLUMN "agent_change_release".thread_id IS '图 thread_id（HITL 恢复用）';
+COMMENT ON COLUMN "agent_change_release".exec_ok IS '沙箱执行是否成功';
+COMMENT ON COLUMN "agent_change_release".exec_ms IS '执行耗时(ms)';
+COMMENT ON COLUMN "agent_change_release".affected_rows IS '影响行数';
+COMMENT ON COLUMN "agent_change_release".error IS '执行错误';
+COMMENT ON COLUMN "agent_change_release".sandbox_rolled_back IS '沙箱是否已回滚';
+COMMENT ON COLUMN "agent_change_release".final_sql IS '原样 SQL（供人工生产执行）';
+COMMENT ON COLUMN "agent_change_release".status IS 'verifying/verified/pending_gate/ready_for_prod/rejected/blocked/failed';
+COMMENT ON COLUMN "agent_change_release".trace_id IS 'trace';
+COMMENT ON COLUMN "agent_change_release".create_at IS '创建时间';
+COMMENT ON COLUMN "agent_change_release".updated_at IS '更新时间（更新时由库触发器刷新）';
+COMMENT ON COLUMN "agent_change_release".create_user_id IS '创建人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_change_release".update_user_id IS '更新人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_change_release".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+COMMENT ON COLUMN "agent_change_release".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+
+CREATE TABLE IF NOT EXISTS agent_change_request (
+	id BIGSERIAL NOT NULL, 
+	tenant_id BIGINT NOT NULL, 
+	user_id BIGINT NOT NULL, 
+	thread_id VARCHAR(64) NOT NULL, 
+	turn_id VARCHAR(64) NOT NULL, 
+	title VARCHAR(200) NOT NULL, 
+	target_database VARCHAR(128) NOT NULL, 
+	db_type VARCHAR(16) NOT NULL, 
+	connection_id VARCHAR(64) NOT NULL, 
+	sql_text TEXT NOT NULL, 
+	script_file_id BIGINT, 
+	drill_file_id BIGINT, 
+	risk_level VARCHAR(16), 
+	status VARCHAR(24) NOT NULL, 
+	trace_id VARCHAR(64), 
+	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	create_user_id BIGINT NOT NULL, 
+	update_user_id BIGINT NOT NULL, 
+	create_tenant_id BIGINT, 
+	update_tenant_id BIGINT, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_change_request_tenant_id ON agent_change_request (tenant_id);
+
+CREATE INDEX IF NOT EXISTS ix_agent_change_request_thread_id ON agent_change_request (thread_id);
+
+COMMENT ON TABLE "agent_change_request" IS '数据库变更单（db_review）';
+COMMENT ON COLUMN "agent_change_request".id IS '主键';
+COMMENT ON COLUMN "agent_change_request".tenant_id IS '租户ID';
+COMMENT ON COLUMN "agent_change_request".user_id IS '提交人';
+COMMENT ON COLUMN "agent_change_request".thread_id IS '会话线程';
+COMMENT ON COLUMN "agent_change_request".turn_id IS '本轮ID';
+COMMENT ON COLUMN "agent_change_request".title IS '标题';
+COMMENT ON COLUMN "agent_change_request".target_database IS '目标库';
+COMMENT ON COLUMN "agent_change_request".db_type IS 'mysql/postgresql';
+COMMENT ON COLUMN "agent_change_request".connection_id IS '数据源ID（图内唯一）';
+COMMENT ON COLUMN "agent_change_request".sql_text IS 'SQL 脚本';
+COMMENT ON COLUMN "agent_change_request".script_file_id IS '脚本文件ID（agent_file）';
+COMMENT ON COLUMN "agent_change_request".drill_file_id IS '回滚演练记录PDF文件ID';
+COMMENT ON COLUMN "agent_change_request".risk_level IS 'low/medium/high/critical';
+COMMENT ON COLUMN "agent_change_request".status IS 'draft/reviewing/pending_approval/approved/rejected';
+COMMENT ON COLUMN "agent_change_request".trace_id IS 'trace';
+COMMENT ON COLUMN "agent_change_request".create_at IS '创建时间';
+COMMENT ON COLUMN "agent_change_request".updated_at IS '更新时间（更新时由库触发器刷新）';
+COMMENT ON COLUMN "agent_change_request".create_user_id IS '创建人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_change_request".update_user_id IS '更新人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_change_request".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+COMMENT ON COLUMN "agent_change_request".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+
+CREATE TABLE IF NOT EXISTS agent_change_review (
+	id BIGSERIAL NOT NULL, 
+	tenant_id BIGINT NOT NULL, 
+	request_id BIGINT NOT NULL, 
+	risk_level VARCHAR(16), 
+	online_ddl BOOLEAN, 
+	estimated_rows BIGINT, 
+	lock_estimate_ms INTEGER, 
+	core_path BOOLEAN, 
+	cross_db BOOLEAN, 
+	rollback_ready BOOLEAN, 
+	slow_sql JSON, 
+	suggestions JSON, 
+	metadata_snapshot JSON, 
+	detail JSON, 
+	status VARCHAR(16) NOT NULL, 
+	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	create_user_id BIGINT NOT NULL, 
+	update_user_id BIGINT NOT NULL, 
+	create_tenant_id BIGINT, 
+	update_tenant_id BIGINT, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_change_review_request_id ON agent_change_review (request_id);
+
+CREATE INDEX IF NOT EXISTS ix_agent_change_review_tenant_id ON agent_change_review (tenant_id);
+
+COMMENT ON TABLE "agent_change_review" IS '数据库变更评审结果（db_review）';
+COMMENT ON COLUMN "agent_change_review".id IS '主键';
+COMMENT ON COLUMN "agent_change_review".tenant_id IS '租户ID';
+COMMENT ON COLUMN "agent_change_review".request_id IS '变更单ID';
+COMMENT ON COLUMN "agent_change_review".risk_level IS '风险等级';
+COMMENT ON COLUMN "agent_change_review".online_ddl IS '是否 Online DDL';
+COMMENT ON COLUMN "agent_change_review".estimated_rows IS '影响/扫描行数估算';
+COMMENT ON COLUMN "agent_change_review".lock_estimate_ms IS '预估锁时长(ms)';
+COMMENT ON COLUMN "agent_change_review".core_path IS '是否核心链路';
+COMMENT ON COLUMN "agent_change_review".cross_db IS '是否跨库事务';
+COMMENT ON COLUMN "agent_change_review".rollback_ready IS '回滚预案是否完整';
+COMMENT ON COLUMN "agent_change_review".slow_sql IS '慢SQL分析结果';
+COMMENT ON COLUMN "agent_change_review".suggestions IS '优化建议';
+COMMENT ON COLUMN "agent_change_review".metadata_snapshot IS '元数据快照（DDL/索引/统计）';
+COMMENT ON COLUMN "agent_change_review".detail IS '完整评审明细';
+COMMENT ON COLUMN "agent_change_review".status IS 'done';
+COMMENT ON COLUMN "agent_change_review".create_at IS '创建时间';
+COMMENT ON COLUMN "agent_change_review".updated_at IS '更新时间（更新时由库触发器刷新）';
+COMMENT ON COLUMN "agent_change_review".create_user_id IS '创建人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_change_review".update_user_id IS '更新人ID（写 SQL 时注入）';
+COMMENT ON COLUMN "agent_change_review".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+COMMENT ON COLUMN "agent_change_review".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
+
 CREATE TABLE IF NOT EXISTS agent_config_approval (
 	id BIGSERIAL NOT NULL, 
 	namespace VARCHAR(128) NOT NULL, 
@@ -207,6 +359,47 @@ COMMENT ON COLUMN "agent_config_review".comment IS '复核意见';
 COMMENT ON COLUMN "agent_config_review".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_config_review".updated_at IS '更新时间（更新时由库触发器刷新）';
 
+CREATE TABLE IF NOT EXISTS agent_db_connection (
+	id UUID DEFAULT gen_random_uuid() NOT NULL, 
+	tenant_id BIGINT NOT NULL, 
+	name VARCHAR(64) NOT NULL, 
+	db_type VARCHAR(16) NOT NULL, 
+	host VARCHAR(255) NOT NULL, 
+	port INTEGER NOT NULL, 
+	username VARCHAR(128) NOT NULL, 
+	password VARCHAR(512) NOT NULL, 
+	database VARCHAR(128) NOT NULL, 
+	schema_name VARCHAR(128), 
+	readonly BOOLEAN DEFAULT true NOT NULL, 
+	enabled BOOLEAN DEFAULT true NOT NULL, 
+	env VARCHAR(16) DEFAULT 'prod' NOT NULL, 
+	remark TEXT, 
+	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_db_conn_tenant_name UNIQUE (tenant_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS ix_agent_db_connection_tenant_id ON agent_db_connection (tenant_id);
+
+COMMENT ON TABLE "agent_db_connection" IS '数据库连接（数据源，租户级）';
+COMMENT ON COLUMN "agent_db_connection".id IS '主键（UUID）';
+COMMENT ON COLUMN "agent_db_connection".tenant_id IS '租户ID';
+COMMENT ON COLUMN "agent_db_connection".name IS '数据源名';
+COMMENT ON COLUMN "agent_db_connection".db_type IS 'mysql / postgresql';
+COMMENT ON COLUMN "agent_db_connection".host IS '主机';
+COMMENT ON COLUMN "agent_db_connection".port IS '端口';
+COMMENT ON COLUMN "agent_db_connection".username IS '用户名';
+COMMENT ON COLUMN "agent_db_connection".password IS '密码（开发期明文；生产必须加密）';
+COMMENT ON COLUMN "agent_db_connection".database IS '数据库名';
+COMMENT ON COLUMN "agent_db_connection".schema_name IS 'schema（PostgreSQL）';
+COMMENT ON COLUMN "agent_db_connection".readonly IS '只读标志（强制只读）';
+COMMENT ON COLUMN "agent_db_connection".enabled IS '是否启用';
+COMMENT ON COLUMN "agent_db_connection".env IS '环境：prod / staging / sandbox';
+COMMENT ON COLUMN "agent_db_connection".remark IS '备注';
+COMMENT ON COLUMN "agent_db_connection".create_at IS '创建时间';
+COMMENT ON COLUMN "agent_db_connection".updated_at IS '更新时间（更新时由库触发器刷新）';
+
 CREATE TABLE IF NOT EXISTS agent_dead_letter (
 	id UUID DEFAULT gen_random_uuid() NOT NULL, 
 	topic VARCHAR(64) NOT NULL, 
@@ -247,6 +440,11 @@ CREATE TABLE IF NOT EXISTS agent_file (
 	checksum VARCHAR(64), 
 	remark VARCHAR(512), 
 	parse_status VARCHAR(16) DEFAULT 'pending' NOT NULL, 
+	agent_type VARCHAR(64), 
+	file_kind VARCHAR(16), 
+	thread_id VARCHAR(64), 
+	request_id VARCHAR(64), 
+	db_type VARCHAR(16), 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	create_user_id BIGINT NOT NULL, 
@@ -256,9 +454,13 @@ CREATE TABLE IF NOT EXISTS agent_file (
 	PRIMARY KEY (id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_agent_file_request ON agent_file (request_id);
+
 CREATE INDEX IF NOT EXISTS idx_agent_file_tenant_create ON agent_file (tenant_id, create_at);
 
 CREATE INDEX IF NOT EXISTS idx_agent_file_tenant_user_name ON agent_file (tenant_id, uploader_user_id, lower(trim(original_name)));
+
+CREATE INDEX IF NOT EXISTS idx_agent_file_thread ON agent_file (thread_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_agent_file_object_key ON agent_file (object_key);
 
@@ -280,6 +482,11 @@ COMMENT ON COLUMN "agent_file".file_version IS '同名文件版本号（从 1 �
 COMMENT ON COLUMN "agent_file".checksum IS '内容校验（sha256 十六进制）';
 COMMENT ON COLUMN "agent_file".remark IS '备注';
 COMMENT ON COLUMN "agent_file".parse_status IS '解析状态：pending 未解析 / parsing 解析中 / parsed 已解析 / failed 解析失败';
+COMMENT ON COLUMN "agent_file".agent_type IS '归属 Agent 类型（如 db_review）';
+COMMENT ON COLUMN "agent_file".file_kind IS '文件用途：script 脚本 / drill 回滚演练 / attachment 附件';
+COMMENT ON COLUMN "agent_file".thread_id IS '关联会话/线程ID';
+COMMENT ON COLUMN "agent_file".request_id IS '关联变更单ID';
+COMMENT ON COLUMN "agent_file".db_type IS '目标库类型（mysql/postgresql），用于脚本方言校验';
 COMMENT ON COLUMN "agent_file".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_file".updated_at IS '更新时间（更新时由库触发器刷新）';
 COMMENT ON COLUMN "agent_file".create_user_id IS '创建人ID（写 SQL 时注入）';
@@ -294,8 +501,8 @@ CREATE TABLE IF NOT EXISTS agent_knowledge_pending_queue (
 	user_id BIGINT NOT NULL, 
 	confidence FLOAT NOT NULL, 
 	status VARCHAR(16) NOT NULL, 
-	resolved_user_id BIGINT NOT NULL, 
-	resolved_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, 
+	resolved_user_id BIGINT, 
+	resolved_at TIMESTAMP(0) WITHOUT TIME ZONE, 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	create_user_id BIGINT NOT NULL, 
@@ -510,53 +717,16 @@ COMMENT ON COLUMN "agent_outbox".sent_at IS '投递到 MQ 的时间';
 COMMENT ON COLUMN "agent_outbox".create_at IS '创建时间';
 COMMENT ON COLUMN "agent_outbox".updated_at IS '更新时间（更新时由库触发器刷新）';
 
-CREATE TABLE IF NOT EXISTS agent_plugin (
-	id UUID DEFAULT gen_random_uuid() NOT NULL, 
-	name VARCHAR(64) NOT NULL, 
-	version VARCHAR(32) NOT NULL, 
-	capabilities TEXT NOT NULL, 
-	status VARCHAR(32) NOT NULL, 
-	config TEXT NOT NULL, 
-	registered_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	tenant_id BIGINT NOT NULL, 
-	user_id BIGINT NOT NULL, 
-	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	create_user_id BIGINT NOT NULL, 
-	update_user_id BIGINT NOT NULL, 
-	create_tenant_id BIGINT, 
-	update_tenant_id BIGINT, 
-	PRIMARY KEY (id), 
-	UNIQUE (name)
-);
-
-CREATE INDEX IF NOT EXISTS ix_agent_plugin_tenant_id ON agent_plugin (tenant_id);
-
-COMMENT ON TABLE "agent_plugin" IS '插件注册表';
-COMMENT ON COLUMN "agent_plugin".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_plugin".name IS '插件名';
-COMMENT ON COLUMN "agent_plugin".version IS '版本';
-COMMENT ON COLUMN "agent_plugin".capabilities IS '能力列表（JSON）';
-COMMENT ON COLUMN "agent_plugin".status IS '状态（enabled/disabled）';
-COMMENT ON COLUMN "agent_plugin".config IS '配置（JSON）';
-COMMENT ON COLUMN "agent_plugin".registered_at IS '注册时间';
-COMMENT ON COLUMN "agent_plugin".tenant_id IS '租户ID（隔离边界，BigInteger）';
-COMMENT ON COLUMN "agent_plugin".user_id IS '维护人user_id（BigInteger，前端显式维护）';
-COMMENT ON COLUMN "agent_plugin".create_at IS '创建时间';
-COMMENT ON COLUMN "agent_plugin".updated_at IS '更新时间（更新时由库触发器刷新）';
-COMMENT ON COLUMN "agent_plugin".create_user_id IS '创建人ID（写 SQL 时注入）';
-COMMENT ON COLUMN "agent_plugin".update_user_id IS '更新人ID（写 SQL 时注入）';
-COMMENT ON COLUMN "agent_plugin".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
-COMMENT ON COLUMN "agent_plugin".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
-
 CREATE TABLE IF NOT EXISTS agent_qa_ragas_evals (
 	id UUID DEFAULT gen_random_uuid() NOT NULL, 
-	qa_result_id UUID NOT NULL, 
+	turn_id UUID NOT NULL, 
 	trace_id VARCHAR(64), 
 	tenant_id BIGINT NOT NULL, 
 	evaluator VARCHAR(64) NOT NULL, 
 	evaluator_model VARCHAR(128), 
 	dataset_version VARCHAR(64), 
+	reference_answer TEXT, 
+	retrieved_contexts JSON, 
 	faithfulness NUMERIC(6, 4), 
 	answer_relevancy NUMERIC(6, 4), 
 	context_precision NUMERIC(6, 4), 
@@ -575,22 +745,26 @@ CREATE TABLE IF NOT EXISTS agent_qa_ragas_evals (
 	PRIMARY KEY (id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_qa_ragas_qa_result ON agent_qa_ragas_evals (qa_result_id);
-
 CREATE INDEX IF NOT EXISTS idx_qa_ragas_status ON agent_qa_ragas_evals (status);
 
 CREATE INDEX IF NOT EXISTS idx_qa_ragas_tenant_time ON agent_qa_ragas_evals (tenant_id, eval_at);
 
 CREATE INDEX IF NOT EXISTS idx_qa_ragas_trace ON agent_qa_ragas_evals (trace_id);
 
+CREATE INDEX IF NOT EXISTS idx_qa_ragas_turn ON agent_qa_ragas_evals (turn_id);
+
+CREATE INDEX IF NOT EXISTS ix_agent_qa_ragas_evals_turn_id ON agent_qa_ragas_evals (turn_id);
+
 COMMENT ON TABLE "agent_qa_ragas_evals" IS 'RAGAS 评估结果（一次评估一行，支持多次评估留痕）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_qa_ragas_evals".qa_result_id IS '关联 agent_qa_results.id';
+COMMENT ON COLUMN "agent_qa_ragas_evals".turn_id IS '关联 agent_unified_turn.id（评测对象）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".trace_id IS '链路追踪ID';
 COMMENT ON COLUMN "agent_qa_ragas_evals".tenant_id IS '租户ID（隔离边界，BigInteger）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".evaluator IS '评估器（ragas）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".evaluator_model IS '评估模型（LLM/embedding 名称与版本）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".dataset_version IS '数据集/标注版本';
+COMMENT ON COLUMN "agent_qa_ragas_evals".reference_answer IS '人工标准答案（RAGAS 评测输入，必填触发）';
+COMMENT ON COLUMN "agent_qa_ragas_evals".retrieved_contexts IS '评测时的检索上下文快照（RAGAS context 指标用）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".faithfulness IS '忠实度（回答是否被上下文支持）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".answer_relevancy IS '答案相关性';
 COMMENT ON COLUMN "agent_qa_ragas_evals".context_precision IS '上下文精确率';
@@ -606,74 +780,6 @@ COMMENT ON COLUMN "agent_qa_ragas_evals".create_user_id IS '创建人ID（写 SQ
 COMMENT ON COLUMN "agent_qa_ragas_evals".update_user_id IS '更新人ID（写 SQL 时注入）';
 COMMENT ON COLUMN "agent_qa_ragas_evals".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
 COMMENT ON COLUMN "agent_qa_ragas_evals".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
-
-CREATE TABLE IF NOT EXISTS agent_qa_results (
-	id UUID DEFAULT gen_random_uuid() NOT NULL, 
-	trace_id VARCHAR(64), 
-	tenant_id BIGINT NOT NULL, 
-	user_id BIGINT NOT NULL, 
-	turn_id UUID, 
-	agent_type VARCHAR(32) NOT NULL, 
-	question TEXT NOT NULL, 
-	answer TEXT, 
-	answer_mode VARCHAR(32), 
-	query_type VARCHAR(32), 
-	confidence NUMERIC(5, 4), 
-	retrieved_contexts JSON, 
-	sources JSON, 
-	reference_answer TEXT, 
-	latency_ms INTEGER, 
-	token_usage JSON, 
-	enable_web_search BOOLEAN NOT NULL, 
-	status VARCHAR(16) NOT NULL, 
-	error_msg TEXT, 
-	extra JSON, 
-	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
-	create_user_id BIGINT NOT NULL, 
-	update_user_id BIGINT NOT NULL, 
-	create_tenant_id BIGINT, 
-	update_tenant_id BIGINT, 
-	PRIMARY KEY (id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_qa_results_status ON agent_qa_results (status);
-
-CREATE INDEX IF NOT EXISTS idx_qa_results_tenant_time ON agent_qa_results (tenant_id, create_at);
-
-CREATE INDEX IF NOT EXISTS idx_qa_results_trace ON agent_qa_results (trace_id);
-
-CREATE INDEX IF NOT EXISTS idx_qa_results_user_time ON agent_qa_results (user_id, create_at);
-
-CREATE INDEX IF NOT EXISTS ix_agent_qa_results_turn_id ON agent_qa_results (turn_id);
-
-COMMENT ON TABLE "agent_qa_results" IS '问答结果（一次问答一行，供 RAGAS 质量验证）';
-COMMENT ON COLUMN "agent_qa_results".id IS '主键（UUID）';
-COMMENT ON COLUMN "agent_qa_results".trace_id IS '链路追踪ID（与 agent_api_call_log.trace_id 对齐，可关联）';
-COMMENT ON COLUMN "agent_qa_results".tenant_id IS '租户ID（隔离边界，BigInteger）';
-COMMENT ON COLUMN "agent_qa_results".user_id IS '提问用户ID（user_id，BigInteger）';
-COMMENT ON COLUMN "agent_qa_results".turn_id IS '关联 agent_unified_turn.id（唯一历史源、归属会话）';
-COMMENT ON COLUMN "agent_qa_results".agent_type IS '智能体类型（默认 qa）';
-COMMENT ON COLUMN "agent_qa_results".question IS '用户问题（RAGAS user_input）';
-COMMENT ON COLUMN "agent_qa_results".answer IS '模型回答（RAGAS response）';
-COMMENT ON COLUMN "agent_qa_results".answer_mode IS '回答模式（rag/llm_direct/general/fallback）';
-COMMENT ON COLUMN "agent_qa_results".query_type IS '查询类型（如 PRECISE/BROAD）';
-COMMENT ON COLUMN "agent_qa_results".confidence IS '置信度（0-1）';
-COMMENT ON COLUMN "agent_qa_results".retrieved_contexts IS '检索上下文（JSON 数组：content/doc_id/score，RAGAS retrieved_contexts）';
-COMMENT ON COLUMN "agent_qa_results".sources IS '引用来源（JSON，展示用）';
-COMMENT ON COLUMN "agent_qa_results".reference_answer IS '参考答案（RAGAS reference；人工标注或知识库标准答案，可空）';
-COMMENT ON COLUMN "agent_qa_results".latency_ms IS '端到端耗时（毫秒）';
-COMMENT ON COLUMN "agent_qa_results".token_usage IS 'Token 用量（JSON：prompt/completion/total）';
-COMMENT ON COLUMN "agent_qa_results".enable_web_search IS '是否启用联网检索';
-COMMENT ON COLUMN "agent_qa_results".status IS '执行结果（success/failed/partial）';
-COMMENT ON COLUMN "agent_qa_results".error_msg IS '失败原因';
-COMMENT ON COLUMN "agent_qa_results".extra IS '扩展信息（JSON：模型名/图版本/实验标记等）';
-COMMENT ON COLUMN "agent_qa_results".create_at IS '创建时间';
-COMMENT ON COLUMN "agent_qa_results".updated_at IS '更新时间（更新时由库触发器刷新）';
-COMMENT ON COLUMN "agent_qa_results".create_user_id IS '创建人ID（写 SQL 时注入）';
-COMMENT ON COLUMN "agent_qa_results".update_user_id IS '更新人ID（写 SQL 时注入）';
-COMMENT ON COLUMN "agent_qa_results".create_tenant_id IS '创建租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
-COMMENT ON COLUMN "agent_qa_results".update_tenant_id IS '更新租户ID（写 SQL 时注入）；超管不挂租户，其操作记 NULL';
 
 CREATE TABLE IF NOT EXISTS agent_role (
 	id BIGSERIAL NOT NULL, 
@@ -920,8 +1026,12 @@ BEGIN
         'agent',
         'agent_api_call_log',
         'agent_audit_log',
+        'agent_change_release',
+        'agent_change_request',
+        'agent_change_review',
         'agent_config_approval',
         'agent_config_review',
+        'agent_db_connection',
         'agent_dead_letter',
         'agent_file',
         'agent_knowledge_pending_queue',
@@ -929,9 +1039,7 @@ BEGIN
         'agent_model',
         'agent_model_registry',
         'agent_outbox',
-        'agent_plugin',
         'agent_qa_ragas_evals',
-        'agent_qa_results',
         'agent_role',
         'agent_tenant',
         'agent_thread',

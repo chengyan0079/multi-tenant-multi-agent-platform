@@ -139,13 +139,19 @@ class NacosConfigClient(BaseClient):
             return False
 
     # ---------- SDK 原生能力（gRPC） ----------
-    async def get_config(self, data_id: str, group: str | None = None) -> str | None:
+    async def get_config(
+        self, data_id: str, group: str | None = None, namespace: str | None = None
+    ) -> str | None:
         await self._ensure_connected()
         from v2.nacos import NacosException
 
         try:
             return await self._raw.get_config(
-                ConfigParam(data_id=data_id, group=group or self._group)
+                ConfigParam(
+                    namespace=self._ns_id_for(namespace),
+                    data_id=data_id,
+                    group=group or self._group,
+                )
             )
         except NacosException:
             # 配置不存在等按“无内容”处理，与旧 REST 客户端语义一致
@@ -158,6 +164,7 @@ class NacosConfigClient(BaseClient):
         group: str | None = None,
         content_format: str = "text",
         cas_md5: str | None = None,
+        namespace: str | None = None,
     ) -> bool:
         await self._ensure_connected()
         from v2.nacos import NacosException
@@ -165,6 +172,7 @@ class NacosConfigClient(BaseClient):
         try:
             # cas_md5 是 str 字段（非 Optional），未提供时不能传 None，否则 pydantic 校验失败
             kwargs: dict[str, Any] = {
+                "namespace": self._ns_id_for(namespace),
                 "data_id": data_id,
                 "group": group or self._group,
                 "content": content,
@@ -181,12 +189,17 @@ class NacosConfigClient(BaseClient):
         data_id: str,
         group: str | None = None,
         cas_md5: str | None = None,
+        namespace: str | None = None,
     ) -> bool:
         await self._ensure_connected()
         from v2.nacos import NacosException
 
         try:
-            kwargs: dict[str, Any] = {"data_id": data_id, "group": group or self._group}
+            kwargs: dict[str, Any] = {
+                "namespace": self._ns_id_for(namespace),
+                "data_id": data_id,
+                "group": group or self._group,
+            }
             if cas_md5 is not None:
                 kwargs["cas_md5"] = cas_md5
             return await self._raw.remove_config(ConfigParam(**kwargs))
@@ -262,8 +275,35 @@ class NacosConfigClient(BaseClient):
         self._ns_resolved = self._namespace
         return self._ns_resolved
 
-    def _query(self, extra: dict[str, Any]) -> dict[str, Any]:
-        params: dict[str, Any] = {"namespaceId": self._ns_id()}
+    def _ns_id_for(self, namespace: str | None) -> str:
+        """把指定 namespace（可能是显示名）解析为 namespaceId（UUID）。
+
+        空 → 用默认 namespace；已是 UUID → 原样；显示名 → 查命名空间列表匹配。
+        """
+        if not namespace:
+            return self._ns_id()
+        ns = normalize_namespace_id(namespace)
+        try:
+            uuid.UUID(ns)
+            return ns
+        except ValueError:
+            pass
+        try:
+            resp = requests.get(
+                self._path("namespaces"),
+                params={},
+                headers=self._auth_header(),
+                timeout=self._timeout,
+            )
+            for n in self._check(resp) or []:
+                if isinstance(n, dict) and n.get("namespaceShowName") == ns:
+                    return n["namespace"]
+        except Exception:  # noqa: BLE001 - 解析失败按原名使用
+            pass
+        return ns
+
+    def _query(self, extra: dict[str, Any], namespace: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"namespaceId": self._ns_id_for(namespace)}
         params.update({k: v for k, v in extra.items() if v is not None})
         return params
 
@@ -286,9 +326,13 @@ class NacosConfigClient(BaseClient):
             return payload if payload is not None else True
         return data
 
-    def _rest_get_config_info(self, data_id: str, group: str | None = None) -> dict | None:
+    def _rest_get_config_info(
+        self, data_id: str, group: str | None = None, namespace: str | None = None
+    ) -> dict | None:
         """配置元信息（content/type/md5/时间）；不存在返回 None。"""
-        params = self._query({"dataId": data_id, "groupName": group or self._group})
+        params = self._query(
+            {"dataId": data_id, "groupName": group or self._group}, namespace
+        )
         resp = requests.get(
             self._path("get"),
             params=params,
@@ -316,8 +360,12 @@ class NacosConfigClient(BaseClient):
         text = resp.text.strip()
         return {"content": text} if text else None
 
-    async def get_config_info(self, data_id: str, group: str | None = None) -> dict | None:
-        return await asyncio.to_thread(self._rest_get_config_info, data_id, group)
+    async def get_config_info(
+        self, data_id: str, group: str | None = None, namespace: str | None = None
+    ) -> dict | None:
+        return await asyncio.to_thread(
+            self._rest_get_config_info, data_id, group, namespace
+        )
 
     def _fill_config_meta(self, item: dict) -> None:
         """列表项补齐 createTime/modifyTime/type/md5，并统一出 lastModified。
@@ -346,6 +394,7 @@ class NacosConfigClient(BaseClient):
         page_no: int = 1,
         page_size: int = 100,
         with_meta: bool = False,
+        namespace: str | None = None,
     ) -> dict:
         resp = requests.get(
             self._path("list"),
@@ -356,7 +405,8 @@ class NacosConfigClient(BaseClient):
                     # group 为空表示跨全部分组；不能回落到 self._group，否则其它 group 的配置会“消失”
                     "groupName": group or "",
                     "dataId": data_id or "",
-                }
+                },
+                namespace=namespace,
             ),
             headers=self._auth_header(),
             timeout=self._timeout,
@@ -375,9 +425,10 @@ class NacosConfigClient(BaseClient):
         page_no: int = 1,
         page_size: int = 100,
         with_meta: bool = False,
+        namespace: str | None = None,
     ) -> dict:
         return await asyncio.to_thread(
-            self._rest_list_configs, data_id, group, page_no, page_size, with_meta
+            self._rest_list_configs, data_id, group, page_no, page_size, with_meta, namespace
         )
 
     def _rest_list_history(
