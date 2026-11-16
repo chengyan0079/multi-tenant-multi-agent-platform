@@ -237,14 +237,13 @@ RabbitMQ **不支持 XA / 两阶段提交**，broker 与 PostgreSQL 不能放在
 
 | 功能 | type（TaskType） | 处理 |
 |---|---|---|
-| 长任务 | `AGENT_RUN` / `agent.run` | 执行多 Agent 串联；handler 存在，当前仓库内无生产端（统一入口已下线） |
-| qa 知识库文档解析 | `QA_PARSE` / `qa.parse` | `backend/rag` 自研闭环：MinIO 字节 → 解析 → **父子片两阶段切分** → 子片 BGE-M3 向量化写 Milvus（父片全文冗余在子片行）→ 回写 `parse_status` |
-| 简历评审 | `RESUME_REVIEW` / `resume.review` | 上传后异步跑 LangGraph，结果回写 `agent_resume_reviews` |
-| 考试批改 | `EXAM_REVIEW` / `exam.review` | 提交后跑 LangGraph 三轨批改，到教师复核 `interrupt()` 暂停，确认后恢复 |
-| QA 测评 | `QA_RAGAS_REVIEW` / `qa.ragas_review` | 异步跑 RAGAS，写 `agent_qa_ragas_evals` |
+| qa 知识库文档解析 | `QA_PARSE` / `qa.parse` | `backend/rag` 自研闭环：MinIO 字节 → 解析（含扫描件 OCR）→ **父子片两阶段切分** → 子片 BGE-M3 向量化写 Milvus（父片全文冗余在子片行）→ 回写 `parse_status` |
+| QA 测评（RAGAS） | `QA_RAGAS_REVIEW` / `qa.ragas_review` | 异步跑 ragas 官方指标（`evaluate` + 官方 metrics），回填 `agent_qa_ragas_evals`；人工标准答案缺失直接 `failed` |
 | 通知 | `NOTIFY_SEND` / `notify.send` | 邮件 / 企微 / Webhook；retry + 死信（外发渠道仍待实现） |
 | 审计 | `AUDIT_FLUSH` / `audit.flush` | handler 存在，当前无生产端 |
-| HITL 超时 / resume 超时 | `NOTIFY_SEND` / 直接 UPDATE | `SchedulerManager` 扫 `agent_escalation` 发提醒；resume 超时直接标 `failed` |
+| 长任务（历史） | `AGENT_RUN` / `agent.run` | **已清理**：统一咨询改为同步流式（SSE），不再经异步任务 |
+| 简历评审 / 考试批改（历史） | `RESUME_REVIEW` / `EXAM_REVIEW` | **已下线**（教育业务域整体移除） |
+| HITL 超时提醒 | — | 未实现：审批由 `interrupt` 承载，超时提醒策略待定 |
 
 **跨副本配置刷新（不走 MQ）**：`AgentRegistry` / `LLMFactory` / `PluginRegistry` 是各副本的进程内缓存，
 超管改配置后只有处理请求的副本刷新了内存。现由 `backend/services/config_refresh.py` 承担：

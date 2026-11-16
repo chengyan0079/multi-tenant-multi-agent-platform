@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from backend.agents.qa.ragas_eval import evaluate_qa_result
+from backend.ragas.ragas_eval import evaluate_qa_result
 from backend.broker.envelope import TaskMessage
 from backend.broker.security import authorize_task
 from backend.common.logger import logger

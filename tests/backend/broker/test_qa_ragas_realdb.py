@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from backend.agents.qa.ragas_eval import RagasScores
+from backend.ragas.ragas_eval import RagasScores
 from backend.broker.envelope import MessageHeader, TaskMessage
 from backend.broker.handlers.qa_ragas import handle_qa_ragas_review
 from backend.broker.types import TaskType

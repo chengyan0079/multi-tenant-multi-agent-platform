@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from backend.agents.qa.ragas_eval import RagasScores
+from backend.ragas.ragas_eval import RagasScores
 from backend.broker.envelope import MessageHeader, TaskMessage
 from backend.broker.handlers.qa_ragas import handle_qa_ragas_review
 from backend.broker.types import TaskType
@@ -50,18 +50,19 @@ def _ragas_msg(eval_id: str = "E1", qa_result_id: str = "R1", retry: int = 0) ->
 
 
 async def test_ragas_handler_pending_to_success(_patched_ragas) -> None:
-    import backend.agents.qa.ragas_eval as re_mod
+    # RAGAS 改为官方指标后，直接替换 handler 内的评测入口（不触真实 LLM/embedding）
+    from backend.broker.handlers import qa_ragas as handler_mod
 
-    with patch.object(re_mod, "get_structured_llm") as m:
-        m.return_value.ainvoke = AsyncMock(
-            return_value=RagasScores(
-                faithfulness=0.9,
-                answer_relevancy=0.8,
-                context_precision=0.7,
-                context_recall=0.6,
-                answer_correctness=0.85,
-            )
-        )
+    fake_scores = RagasScores(
+        faithfulness=0.9,
+        answer_relevancy=0.8,
+        context_precision=0.7,
+        context_recall=0.6,
+        answer_correctness=0.85,
+    )
+    with patch.object(
+        handler_mod, "evaluate_qa_result", new=AsyncMock(return_value=fake_scores)
+    ):
         await handle_qa_ragas_review(_ragas_msg())
 
     args = _patched_ragas.finish_eval.call_args.kwargs
