@@ -55,3 +55,7 @@ pytest==8.3.4
 pytest-asyncio==0.24.0
 
 # minio==7.2.20                        # MinIO S3 兼容对象存储（启用 MinIO FileProvider 后再补，可选）
+aiomysql==0.2.0
+sqlglot==30.31.0
+rapidocr_onnxruntime>=1.4.0
+ragas>=0.4.4                  # RAGAS 官方评测（collections 指标）

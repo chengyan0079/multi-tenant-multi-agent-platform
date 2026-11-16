@@ -42,6 +42,11 @@ function toLogin(): void {
   }
 }
 
+/** SSE / 裸 fetch 等非 http 封装路径复用同一套 401 处理（清 token + 跳登录页）。 */
+export function handleUnauthorized(): void {
+  toLogin();
+}
+
 /** 全链路 trace_id：贯穿整个前端会话（页面生命周期），首次请求时生成并固定。
  * 后端 TraceIdMiddleware 强制要求非登录接口携带 X-Trace-Id（缺失即 400），且不重新生成；
  * 这里前端统一生成并贯穿，使登录请求与后续数据请求共享同一 trace，便于排障串联。 */

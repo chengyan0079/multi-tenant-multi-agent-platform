@@ -18,14 +18,14 @@ class AgentThread(TimestampMixin, Base):
         Index("ix_agent_thread_tenant_user", "tenant_id", "user_id"),
         # 看板「活跃会话」按 (租户, 状态, 更新时间) 区间统计，复合索引直接覆盖
         Index("ix_agent_thread_tenant_status_time", "tenant_id", "status", "updated_at"),
-        # 同一 (租户, 用户, 图, 会话键) 唯一：支撑 qa 等「按 session find-or-create 线程」，
+        # 同一 (租户, 用户, 会话键) 唯一：支撑「按 session find-or-create 线程」，
         # session_key 为 NULL 时允许多个（chat 路径不传会话键），不影响现有 chat 线程。
+        # 收口后所有 Agent 共用统一会话（graph 维度已不再需要）。
         UniqueConstraint(
             "tenant_id",
             "user_id",
-            "graph_name",
             "session_key",
-            name="uq_agent_thread_tenant_user_graph_session",
+            name="uq_agent_thread_tenant_user_session",
         ),
         {"comment": "会话/任务"},
     )
@@ -33,7 +33,7 @@ class AgentThread(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(
@@ -46,7 +46,6 @@ class AgentThread(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(32), default="active", comment="状态（active/archived）"
     )
-    graph_name: Mapped[str] = mapped_column(String(64), default="", comment="运行的图名称")
     session_key: Mapped[Optional[str]] = mapped_column(
         String(255),
         nullable=True,

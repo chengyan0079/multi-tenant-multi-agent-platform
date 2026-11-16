@@ -3,29 +3,14 @@
 from backend.data.postgres.business.file import AgentFile
 from backend.data.postgres.business.meta import (
     KnowledgePendingQueue,
-    Exam,
-    Question,
-    ScoringPoint,
-    ExamSubmission,
-    ExamReview,
-    ResumeReview,
-    InterviewQuestion,
-    InterviewSession,
-    QaResult,
     QaRagasEval,
 )
+from backend.data.postgres.business.change import AgentChangeRequest, AgentChangeReview
 
 __all__ = [
     "KnowledgePendingQueue",
-    "Exam",
-    "Question",
-    "ScoringPoint",
-    "ExamSubmission",
-    "ExamReview",
-    "ResumeReview",
-    "InterviewQuestion",
-    "InterviewSession",
-    "QaResult",
     "QaRagasEval",
     "AgentFile",
+    "AgentChangeRequest",
+    "AgentChangeReview",
 ]

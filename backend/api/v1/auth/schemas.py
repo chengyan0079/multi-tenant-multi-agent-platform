@@ -20,11 +20,11 @@ class LoginIn(BaseModel):
 class MenuNode(BaseModel):
     """菜单树节点。"""
 
-    id: int
-    name: str
-    path: str
-    icon: str | None = None
-    children: list["MenuNode"] = Field(default_factory=list)
+    id: int  # 菜单 id
+    name: str  # 名称
+    path: str  # 路由路径
+    icon: str | None = None  # 图标
+    children: list["MenuNode"] = Field(default_factory=list)  # 子菜单
 
 
 MenuNode.model_rebuild()
@@ -33,11 +33,11 @@ MenuNode.model_rebuild()
 class LoginData(BaseModel):
     """登录响应 data（与文档 §3.1 对齐）。"""
 
-    token: str
-    expires_in: int
-    user: dict[str, Any]
-    is_super_admin: bool
-    is_tenant_admin: bool
-    current_tenant: dict[str, Any] | None
-    scopes: list[str]
-    menus: list[Any]
+    token: str  # JWT
+    expires_in: int  # 有效期（秒）
+    user: dict[str, Any]  # 用户信息
+    is_super_admin: bool  # 是否平台超管
+    is_tenant_admin: bool  # 是否租户管理员
+    current_tenant: dict[str, Any] | None  # 当前租户
+    scopes: list[str]  # 权限点
+    menus: list[Any]  # 菜单树

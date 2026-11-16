@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import jwt
 import secrets
+
+import jwt
 
 from backend.app_state import app_state
 

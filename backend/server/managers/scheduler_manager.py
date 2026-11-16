@@ -1,4 +1,4 @@
-"""定时任务管理器：注册多 job 独立调度，异常互不影响；支持 config_refresh 与 resume 超时扫描。"""
+"""定时任务管理器：注册多 job 独立调度，异常互不影响；支持 config_refresh。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from sqlalchemy import text
-
 from backend.app_state import app_state
 from backend.common.logger import logger
-from backend.data.sql import execute_write, session_scope
 from backend.services.config_refresh import poll_once as poll_config_refresh
 from backend.server.base_manager import BaseManager, HealthInfo
 
@@ -25,14 +22,6 @@ class ScanJob:
     _next_run: float = 0.0
 
 
-_RESUME_TIMEOUT_UPDATE = text(
-    "UPDATE agent_resume_reviews "
-    "SET status='failed', error_msg='评审超时' "
-    "WHERE status='processing' "
-    "AND create_at < now() - make_interval(mins => :timeout)"
-)
-
-
 class SchedulerManager(BaseManager):
     def __init__(self) -> None:
         super().__init__("scheduler")
@@ -45,7 +34,6 @@ class SchedulerManager(BaseManager):
 
     def _register_default_jobs(self) -> None:
         s = app_state.settings.scheduler
-        self.register("resume_review_timeout", s.scan_interval, self._scan_resume_timeout)
         self.register("config_refresh_poll", s.config_refresh_interval, poll_config_refresh)
 
     async def start(self) -> None:
@@ -84,16 +72,3 @@ class SchedulerManager(BaseManager):
                 await asyncio.wait_for(self._stop.wait(), timeout=max(0.0, soonest - loop.time()))
             except asyncio.TimeoutError:
                 continue
-
-    # ---- job 实现 ----
-
-    async def _scan_resume_timeout(self) -> None:
-        """resume 评审兜底：processing 且超过 resume_timeout_min 未完成的记录批量标 failed。"""
-        async with session_scope() as session:
-            rowcount = await execute_write(
-                session,
-                _RESUME_TIMEOUT_UPDATE,
-                {"timeout": app_state.settings.scheduler.resume_timeout_min},
-            )
-            if rowcount:
-                logger.info(f"[resume.timeout] 超时未完成的评审标记 failed 共 {rowcount} 条")

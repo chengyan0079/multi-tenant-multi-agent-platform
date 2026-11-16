@@ -40,9 +40,10 @@ export default function MenuList() {
 
   const request = useCallback(async (params: any) => {
     const res = await listMenus(params.current ?? 1, params.pageSize ?? 50, {
+      id: params.id,
+      parent_id: params.parent_id,
       name: params.name,
-      path: params.path,
-      scope: params.scope,
+      visible: params.visible,
     });
     return { data: sortByTimeThenId(res.items), success: true, total: res.total };
   }, []);
@@ -139,25 +140,31 @@ export default function MenuList() {
   };
 
   const columns: ProColumns<MenuNode>[] = [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 70, search: false },
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 70, search: true, valueType: 'digit' },
     { title: '名称', dataIndex: 'name', key: 'name', valueType: 'text' },
-    { title: '路径', dataIndex: 'path', key: 'path', valueType: 'text' },
+    { title: '路径', dataIndex: 'path', key: 'path', valueType: 'text', search: false },
     { title: '图标', dataIndex: 'icon', key: 'icon', search: false, render: (value: any) => value || '-' },
-    { title: '父级ID', dataIndex: 'parent_id', key: 'parent_id', width: 90, search: false },
+    { title: '父级ID', dataIndex: 'parent_id', key: 'parent_id', width: 90, search: true, valueType: 'digit' },
     { title: '排序', dataIndex: 'sort_order', key: 'sort_order', width: 80, search: false },
     {
       title: '权限点',
       dataIndex: 'scope',
       key: 'scope',
       valueType: 'text',
+      search: false,
       render: (value: any) => value ?? '-',
     },
     {
-      title: '显隐',
+      title: '启动状态',
       dataIndex: 'visible',
       key: 'visible',
       width: 90,
-      search: false,
+      search: true,
+      valueType: 'select',
+      valueEnum: {
+        true: { text: '显示' },
+        false: { text: '隐藏' },
+      },
       render: (value: any, row: MenuNode) =>
         canStatus ? (
           <Switch

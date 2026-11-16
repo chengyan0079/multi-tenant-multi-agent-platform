@@ -60,10 +60,10 @@ class MessageHeader:
 class TaskMessage:
     """一条异步任务消息。"""
 
-    key: str
-    type: TaskType
-    header: MessageHeader
-    data: dict[str, Any] = field(default_factory=dict)
+    key: str  # 幂等键（Outbox 主键），消费端据此去重
+    type: TaskType  # 消息类型
+    header: MessageHeader  # 元数据（身份 / trace / 重试）
+    data: dict[str, Any] = field(default_factory=dict)  # 业务载荷
 
     def to_dict(self) -> dict[str, Any]:
         return {

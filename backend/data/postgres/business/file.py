@@ -28,6 +28,8 @@ class AgentFile(AuditMixin, Base):
             "uploader_user_id",
             text("lower(trim(original_name))"),
         ),
+        Index("idx_agent_file_thread", "thread_id"),
+        Index("idx_agent_file_request", "request_id"),
         {"comment": "文件元数据（MinIO 对象引用，按租户隔离；同一逻辑文件多版本）"},
     )
 
@@ -64,4 +66,16 @@ class AgentFile(AuditMixin, Base):
         server_default=text("'pending'"),
         # server_default 必须保留：FileDao 用裸 SQL INSERT 且不传该列，依赖库默认值
         comment="解析状态：pending 未解析 / parsing 解析中 / parsed 已解析 / failed 解析失败",
+    )
+    # ---- Agent 业务归属（db_review 等；可空，兼容通用文件上传）----
+    agent_type: Mapped[str | None] = mapped_column(
+        String(64), comment="归属 Agent 类型（如 db_review）"
+    )
+    file_kind: Mapped[str | None] = mapped_column(
+        String(16), comment="文件用途：script 脚本 / drill 回滚演练 / attachment 附件"
+    )
+    thread_id: Mapped[str | None] = mapped_column(String(64), comment="关联会话/线程ID")
+    request_id: Mapped[str | None] = mapped_column(String(64), comment="关联变更单ID")
+    db_type: Mapped[str | None] = mapped_column(
+        String(16), comment="目标库类型（mysql/postgresql），用于脚本方言校验"
     )

@@ -8,6 +8,7 @@ import pytest
 
 from backend.app_state import app_state, tenant_id_ctx, user_id_ctx
 from backend.common.memory.memory import MemoryStore, _session_key
+from backend.orchestration.unified_schemas import ShortTermTurn
 
 
 class _FakeRedis:
@@ -64,8 +65,13 @@ async def test_short_memory_not_shared_between_users(
 ) -> None:
     """同一租户、同一 thread_id，不同用户读不到彼此的短期记忆。"""
     store = MemoryStore()
-    await store.push_short("thread-1", {"role": "user", "content": "用户1001的隐私"})
-    assert await store.get_short("thread-1") == [{"role": "user", "content": "用户1001的隐私"}]
+    await store.push_short(
+        "thread-1",
+        ShortTermTurn(turn_id="1", role="user", content="用户1001的隐私", agent_type="qa"),
+    )
+    assert await store.get_short("thread-1") == [
+        ShortTermTurn(turn_id="1", role="user", content="用户1001的隐私", agent_type="qa")
+    ]
 
     user_id_ctx.set(1002)
     assert await store.get_short("thread-1") == []

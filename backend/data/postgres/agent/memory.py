@@ -17,7 +17,7 @@ class AgentLongTermMemory(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID）",
     )
     tenant_id: Mapped[int] = mapped_column(

@@ -1,11 +1,8 @@
-"""编排器：注册四 Agent 图 + Orchestrator 单例。"""
+"""编排器：从 DB 加载注册 + Orchestrator 单例。"""
 
 from __future__ import annotations
 
-from backend.agents.exam.agent import ExamAgent
-from backend.agents.interview.agent import InterviewAgent
-from backend.agents.qa.agent import QAAgent
-from backend.agents.resume.agent import ResumeAgent
+from backend.agents import AGENT_BUILDERS
 from backend.app_state import app_state
 from backend.orchestration.agent_registry import AgentRegistry
 from backend.orchestration.orchestrator import Orchestrator
@@ -14,11 +11,8 @@ from backend.server.base_manager import BaseManager, HealthInfo
 
 class OrchestratorManager(BaseManager):
     async def start(self) -> None:
-        registry = AgentRegistry()
-        # 模块加载时注册四 Agent 图（新增 Agent 只加一行）
-        for agent_cls in (ResumeAgent, QAAgent, ExamAgent, InterviewAgent):
-            agent_cls().register_into(registry)
-        # 从库加载持久化元数据与租户级开通策略（失败仅告警，不阻断）
+        # 唯一注册源：DB（agent 表 tenant_id + enabled）；代码侧只提供 AGENT_BUILDERS
+        registry = AgentRegistry(agent_builders=AGENT_BUILDERS)
         await registry.start()
         app_state.agent_registry = registry
         app_state.orchestrator = Orchestrator(registry)
@@ -34,4 +28,10 @@ class OrchestratorManager(BaseManager):
     async def health(self) -> HealthInfo:
         if app_state.orchestrator is None or app_state.agent_registry is None:
             return HealthInfo(status="down", detail="orchestrator/registry 未初始化")
+        # 注册表对象存在但库规格加载失败：核心可用、能力降级
+        if not app_state.agent_registry.db_loaded:
+            return HealthInfo(
+                status="degraded",
+                detail="agent_registry 库加载失败，仅代码注册 Agent 可用",
+            )
         return HealthInfo(status="running")

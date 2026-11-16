@@ -197,6 +197,9 @@ def _dashboard_env(
     ), patch(
         "backend.data.dao.business.dashboard_dao.DashboardDao.tenant_ranking",
         new=AsyncMock(return_value=[{"tenant_id": 1, "runs": 5}]),
+    ), patch(
+        "backend.data.dao.business.dashboard_dao.DashboardDao.usage_trend",
+        new=AsyncMock(return_value=[{"date": "10-25", "tokens": 100, "avg_ms": 120}]),
     ), patch.object(app_state, "started_at", datetime.now()):
         yield TestClient(_app())
 

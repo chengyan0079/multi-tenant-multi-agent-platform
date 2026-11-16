@@ -34,22 +34,22 @@ class _AppState:
         self.settings = config
         # 中间件客户端容器（显式持有实例，便于整体替换做测试/多实例隔离）
         self.clients: ClientBundle = ClientBundle()
-        self.redis: Optional[Redis] = None
+        self.redis: Optional[Redis] = None  # Redis 客户端（缓存 / 会话 / 短期记忆）
         # RabbitMQ 异步客户端（BrokerClient）；未启用/未连接时为 None
         self.broker = None
-        self.db_engine: Optional[AsyncEngine] = None
-        self.milvus_client = None
-        self.milvus_store: Optional[DocumentMilvusStore] = None
-        self.checkpointer: Optional[AsyncPostgresSaver] = None
-        self.llm_factory: Optional[LLMFactory] = None
-        self.memory: Optional[MemoryStore] = None
-        self.plugin_registry: Optional["PluginRegistry"] = None
-        self.agent_registry: Optional[AgentRegistry] = None
-        self.orchestrator: Optional[Orchestrator] = None
-        self.config_center: Optional[ConfigCenterLoader] = None
-        self.nacos_discovery: Optional[NacosDiscoverManager] = None
-        self.nacos_ai: Optional["NacosAIManager"] = None
-        self.fastapi_app: Optional[FastAPI] = None
+        self.db_engine: Optional[AsyncEngine] = None  # 业务库异步引擎
+        self.milvus_client = None  # Milvus 客户端
+        self.milvus_store: Optional[DocumentMilvusStore] = None  # 文档向量存储
+        self.checkpointer: Optional[AsyncPostgresSaver] = None  # LangGraph 会话级 checkpointer
+        self.llm_factory: Optional[LLMFactory] = None  # 模型工厂（LLM / embedding / reranker / classifier）
+        self.memory: Optional[MemoryStore] = None  # 记忆存储（短期 / 长期）
+        self.plugin_registry: Optional["PluginRegistry"] = None  # MCP / 插件注册表
+        self.agent_registry: Optional[AgentRegistry] = None  # Agent 注册表
+        self.orchestrator: Optional[Orchestrator] = None  # 编排器
+        self.config_center: Optional[ConfigCenterLoader] = None  # 配置中心加载器
+        self.nacos_discovery: Optional[NacosDiscoverManager] = None  # Nacos 服务发现
+        self.nacos_ai: Optional["NacosAIManager"] = None  # Nacos AI 管理（MCP 发布）
+        self.fastapi_app: Optional[FastAPI] = None  # FastAPI 应用实例
         # 运行期持有的 AppServer 实例（main.py 装配时写入），供 /health 等运维接口汇总组件状态
         self.server = None
         # 全部 manager 启动完成的时刻（AppServer.start_all 末尾写入），供 /health 与 /dashboard 算 uptime

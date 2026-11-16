@@ -23,7 +23,7 @@ class AgentOutbox(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键（UUID，同时作为 MQ 消息 message_id）",
     )
     topic: Mapped[str] = mapped_column(
@@ -65,7 +65,7 @@ class AgentDeadLetter(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
-        server_default=text("uuid_generate_v4()"),
+        server_default=text("gen_random_uuid()"),
         comment="主键",
     )
     topic: Mapped[str] = mapped_column(String(64), comment="消息 type")

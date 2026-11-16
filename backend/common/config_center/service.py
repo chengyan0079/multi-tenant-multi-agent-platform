@@ -79,10 +79,17 @@ def _validate_content(data_id: str, content: str | None) -> None:
         raise BizException(40000, f"配置内容不是合法 YAML: {e}")
 
 
-async def _current_config(client, data_id: str, group: str) -> dict | None:
+async def _current_config(
+    client, data_id: str, group: str, namespace: str | None = None
+) -> dict | None:
     """查 Nacos 当前配置（含 id/md5/content/type），不存在返回 None。"""
     result = await _nacos_call(
-        client.list_configs, data_id=data_id, group=group, page_size=1, with_meta=True
+        client.list_configs,
+        data_id=data_id,
+        group=group,
+        page_size=1,
+        with_meta=True,
+        namespace=namespace,
     )
     items = (result or {}).get("pageItems") or []
     return items[0] if items else None
@@ -210,6 +217,33 @@ async def review(
         raise BizException(40000, f"申请已处理（status={req['status']}），不可重复复核")
 
     reviewer_user_id = _operator()
+    # 目标配置已不存在（删除/修改的配置已被删）：无需执行，自动作废（置驳回）并让队列出队
+    if action == RV_PASS and req["op_type"] in (OP_MODIFY, OP_DELETE):
+        client = get_config_center_client()
+        exists = await _current_config(
+            client, req["data_id"], req["group_id"], req.get("namespace")
+        )
+        if not exists:
+            await ConfigDao.add_review(
+                session,
+                approval_id=request_id,
+                reviewer_user_id=reviewer_user_id,
+                action=RV_REJECT,
+                comment="目标配置已不存在，系统自动作废",
+            )
+            await _apply_update(
+                session,
+                req,
+                status=ST_REJECTED,
+                reviewer_user_id=reviewer_user_id,
+                effective_at=True,
+            )
+            logger.info(
+                f"配置申请自动作废（目标配置不存在）: id={request_id} "
+                f"data_id={req['data_id']} group={req['group_id']}"
+            )
+            return req
+
     await ConfigDao.add_review(
         session,
         approval_id=request_id,
@@ -251,8 +285,16 @@ async def execute_request(
         raise BizException(40000, f"申请未处于待执行状态（status={req['status']}），请先通过复核")
 
     client = get_config_center_client()
-    cur = await _current_config(client, req["data_id"], req["group_id"])
+    cur = await _current_config(
+        client, req["data_id"], req["group_id"], req.get("namespace")
+    )
     op = req["op_type"]
+    # 诊断日志（DEBUG）：定位「配置已不存在」时看 namespace 解析与查询结果
+    logger.debug(
+        f"config execute | id={request_id} op={op} namespace={req.get('namespace')} "
+        f"ns_id={client._ns_id_for(req.get('namespace'))} default_ns={client._ns_id()} "
+        f"data_id={req['data_id']} group={req['group_id']} exists={bool(cur)}"
+    )
     if op in (OP_MODIFY, OP_DELETE) and not cur:
         # 配置在执行前已被删除：拒绝执行，避免误建/误删（异常冒泡由 session.begin() 回滚）
         raise BizException(40400, "配置已不存在，无法执行（可能已在复核前被删除）")
@@ -264,6 +306,7 @@ async def execute_request(
                 req["data_id"],
                 req["group_id"],
                 cas_md5=cur["md5"] if cur else None,
+                namespace=req.get("namespace"),
             )
         else:  # OP_ADD / OP_MODIFY / OP_ROLLBACK：统一用申请单已存内容发布，类型随申请记录
             ok = await _nacos_call(
@@ -273,6 +316,7 @@ async def execute_request(
                 req["group_id"],
                 content_format=req["content_format"] or "text",
                 cas_md5=cur["md5"] if cur else None,
+                namespace=req.get("namespace"),
             )
     except ConfigCenterError as e:
         # Nacos 调用失败：异常冒泡，整笔事务由 session.begin() 自动回滚
@@ -412,7 +456,12 @@ async def get_request_detail(session: AsyncSession, *, request_id: int) -> dict[
     if req["op_type"] != OP_ADD:
         client = get_config_center_client()
         try:
-            old_content = await _nacos_call(client.get_config, req["data_id"], req["group_id"])
+            old_content = await _nacos_call(
+                client.get_config,
+                req["data_id"],
+                req["group_id"],
+                namespace=req.get("namespace"),
+            )
         except ConfigCenterError:
             old_content = None
     return {

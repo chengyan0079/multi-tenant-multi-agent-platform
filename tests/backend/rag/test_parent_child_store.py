@@ -103,7 +103,7 @@ async def test_generate_rag_uses_highlight_and_dedups_parent(monkeypatch) -> Non
         def from_messages(_):
             return _P()
 
-    async def fake_get_llm(_):
+    async def fake_get_llm(_, *, thinking=False):
         return object()
 
     monkeypatch.setattr(qa_nodes, "ChatPromptTemplate", FakePrompt)

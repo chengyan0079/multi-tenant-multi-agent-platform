@@ -23,9 +23,11 @@ router = APIRouter(prefix="/qa/results", tags=["qa-results"])
 
 
 class ReviewIn(BaseModel):
-    """测评请求：人工标准答案（必填）。"""
+    """测评请求：人工标准答案（必填），评估模型与数据集版本可选。"""
 
     reference_answer: str = Field(..., min_length=1, max_length=8000)
+    evaluator_model: str | None = Field(None, max_length=64, description="评估用 LLM 标识，缺省取 qa-default")
+    dataset_version: str | None = Field(None, max_length=32, description="数据集版本，缺省 v1")
 
 
 def _json_value(value: Any) -> Any:
@@ -82,13 +84,17 @@ async def list_results(
     page_size: int = Query(20, ge=1, le=200),
     session_id: str | None = Query(None, description="按会话过滤"),
     result_status: str | None = Query(None, alias="status", description="按执行状态过滤"),
-    _: object = Depends(require_scope(Scope.QA_RESULT_PAGE)),  # noqa: B008
+    turn_id: str | None = Query(None, description="按结果 id 模糊过滤"),
+    thread_id: str | None = Query(None, description="按 thread_id 模糊过滤"),
+    trace_id: str | None = Query(None, description="按 trace_id 模糊过滤"),
+    user_id: int | None = Query(None, description="按提问用户过滤"),
+    _: object = Depends(require_scope(Scope.UNIFIED_TURN_PAGE)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
     """分页查询问答结果。
 
     请求：query { page, page_size, session_id?, status? }
-    权限：qa_result:page
+    权限：unified_result:page
     返回：items / total / page / page_size
     """
     tenant_id = _tenant_id(current)
@@ -98,6 +104,10 @@ async def list_results(
         status=result_status,
         page=page,
         page_size=page_size,
+        turn_id=turn_id,
+        thread_id=thread_id,
+        trace_id=trace_id,
+        user_id=user_id,
     )
     items = [
         {
@@ -122,19 +132,24 @@ async def list_results(
 @router.get("/{result_id}", summary="问答结果详情")
 async def get_result(
     result_id: str,
-    _: object = Depends(require_scope(Scope.QA_RESULT_VIEW)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_TURN_VIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
     """获取单条问答结果详情。
 
     请求：path { result_id }
-    权限：qa_result:view
+    权限：unified_result:view
     返回：完整结果视图（含上下文、来源、token 用量等）
     """
-    row = await QaResultDao.get(result_id=result_id, tenant_id=_tenant_id(current))
+    tenant_id = _tenant_id(current)
+    row = await QaResultDao.get(result_id=result_id, tenant_id=tenant_id)
     if row is None:
         raise HTTPException(status_code=404, detail="问答结果不存在")
-    return success(_detail(row))
+    detail = _detail(row)
+    # 阶段2：人工标准答案存在评测记录里，详情取最近一次展示
+    evals = await QaResultDao.list_evals(turn_id=result_id, tenant_id=tenant_id)
+    detail["reference_answer"] = evals[0].get("reference_answer") if evals else None
+    return success(detail)
 
 
 @router.post(
@@ -143,14 +158,14 @@ async def get_result(
 async def submit_review(
     result_id: str,
     body: ReviewIn,
-    _: object = Depends(require_scope(Scope.QA_RESULT_REVIEW)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_TURN_REVIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
     """写入人工标准答案并触发 RAGAS 异步测评。
 
     说明：创建 pending 评估记录，投递 QA_RAGAS_REVIEW 消息；入队失败标记 failed 避免永久 pending。
     请求：path { result_id }, body { reference_answer: str 必填 }
-    权限：qa_result:review
+    权限：unified_result:review
     返回：{ eval_id, status }
     """
     tenant_id = _tenant_id(current)
@@ -161,29 +176,22 @@ async def submit_review(
     row = await QaResultDao.get(result_id=result_id, tenant_id=tenant_id)
     if row is None:
         raise HTTPException(status_code=404, detail="问答结果不存在")
-
-    updated = await QaResultDao.update_reference(
-        result_id=result_id,
-        tenant_id=tenant_id,
-        reference_answer=reference_answer,
-        user_id=current.user_id,
-        tenant_audit_id=current.home_tenant_id or tenant_id,
-    )
-    if updated == 0:
-        raise HTTPException(status_code=404, detail="问答结果不存在")
+    if (row.get("status") or "") != "success" or not (row.get("answer") or "").strip():
+        raise HTTPException(status_code=400, detail="仅成功的问答结果可做 RAGAS 测评")
 
     eval_id = str(uuid6.uuid7())
     await QaResultDao.insert_eval(
         eval_id=eval_id,
         record={
-            "qa_result_id": result_id,
+            # 阶段2：评测直接挂统一 turn
+            "turn_id": result_id,
             "trace_id": row.get("trace_id"),
             "tenant_id": tenant_id,
+            "reference_answer": reference_answer,
+            "retrieved_contexts": row.get("retrieved_contexts"),
             "evaluator": "llm",
-            # TODO(qa_ragas): evaluator_model / dataset_version 目前是固定占位，
-            #  后续接入模型注册表与实际数据集版本后动态写入。
-            "evaluator_model": "qa-default",
-            "dataset_version": "v1",
+            "evaluator_model": (body.evaluator_model or "qa-default")[:64],
+            "dataset_version": (body.dataset_version or "v1")[:32],
             "metrics": None,
             "status": "pending",
             "error_msg": None,
@@ -196,14 +204,14 @@ async def submit_review(
             "update_tenant_id": current.home_tenant_id or tenant_id,
         },
     )
-    # TODO(qa_result): 测评状态目前只落在 agent_qa_ragas_evals；列表页若需展示
+    # 测评状态落在 agent_qa_ragas_evals；列表页若需展示
     #  “是否已测评/最近得分”，需回写 agent_qa_results 或按 qa_result_id 聚合查询。
     try:
         key = await enqueue_task(
             TaskType.QA_RAGAS_REVIEW,
             tenant_id=tenant_id,
             user_id=current.user_id,
-            data={"eval_id": eval_id, "qa_result_id": result_id},
+            data={"eval_id": eval_id, "turn_id": result_id},
         )
     except Exception as exc:  # noqa: BLE001 - 入队异常按失败处理，避免 eval 永久 pending
         logger.exception(f"qa_ragas.enqueue_failed eval={eval_id}: {exc}")
@@ -225,13 +233,13 @@ async def submit_review(
 @router.get("/{result_id}/quality", summary="结果质量（RAGAS 评估记录）")
 async def get_quality(
     result_id: str,
-    _: object = Depends(require_scope(Scope.QA_RESULT_REVIEW)),  # noqa: B008
+    _: object = Depends(require_scope(Scope.UNIFIED_TURN_REVIEW)),  # noqa: B008
     current: CurrentUser = Depends(get_current_user),
 ) -> Any:
     """查询某结果的 RAGAS 质量评估记录。
 
     请求：path { result_id }
-    权限：qa_result:review
+    权限：unified_result:review
     返回：items[{ faithfulness, answer_relevancy, context_precision, ... }]
     """
     tenant_id = _tenant_id(current)
@@ -239,11 +247,12 @@ async def get_quality(
     if row is None:
         raise HTTPException(status_code=404, detail="问答结果不存在")
 
-    rows = await QaResultDao.list_evals(qa_result_id=result_id, tenant_id=tenant_id)
+    rows = await QaResultDao.list_evals(turn_id=result_id, tenant_id=tenant_id)
     items = [
         {
             "id": str(r["id"]),
-            "qa_result_id": str(r["qa_result_id"]),
+            "turn_id": str(r["turn_id"]),
+            "qa_result_id": str(r["turn_id"]),
             "trace_id": r.get("trace_id"),
             "tenant_id": r.get("tenant_id"),
             "evaluator": r.get("evaluator"),

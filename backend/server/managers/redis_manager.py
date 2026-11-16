@@ -12,6 +12,13 @@ from backend.server.base_manager import BaseManager, HealthInfo
 
 
 class RedisManager(BaseManager):
+    async def startup_stats(self) -> str | None:
+        try:
+            n = await app_state.redis.dbsize()
+            return f"keys={int(n)}"
+        except Exception:  # noqa: BLE001 - 统计失败不打印
+            return None
+
     async def start(self) -> None:
         client = app_state.clients.ensure(
             "redis", lambda: RedisClient.from_settings(app_state.settings.redis)

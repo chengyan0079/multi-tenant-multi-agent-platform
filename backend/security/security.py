@@ -12,7 +12,7 @@ from backend.middleware.auth import CurrentUser, get_current_user
 from backend.security.rbac import VALID_SCOPES
 from backend.observability.exception import GuardrailError, TenantError
 
-# //todo 占位违禁词字典；真实清单走配置/外部审核插件挂载（见 plugins 设计 §15.2）
+# 违禁词字典：默认空；真实清单走配置 / 外部审核插件（见 docs/后端TODO清单.md）
 _FORBIDDEN: Set[str] = set()
 _INJECT_HINT = re.compile(
     r"(ignore\s+(previous|above|all)\s+instructions|disregard\s+(the\s+)?system)", re.I

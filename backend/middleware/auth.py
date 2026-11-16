@@ -37,13 +37,13 @@ def _parse_int(v: object) -> int | None:
 class CurrentUser:
     """当前用户身份（贯穿全链路）。单租户内只任一角色，故角色为单值。"""
 
-    user_id: int
-    tenant_id: int | None
-    home_tenant_id: int | None
-    role_name: str
-    is_super_admin: bool
-    is_tenant_admin: bool
-    scopes: list
+    user_id: int  # 用户 id
+    tenant_id: int | None  # 当前租户 id；超管为 None
+    home_tenant_id: int | None  # 归属租户（仅审计用，不参与数据过滤）；超管为 None
+    role_name: str  # 角色名（单租户内单值）
+    is_super_admin: bool  # 是否平台超管
+    is_tenant_admin: bool  # 是否租户管理员
+    scopes: list  # 权限点集合
 
     @property
     def roles(self) -> list:

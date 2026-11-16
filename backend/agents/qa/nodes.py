@@ -454,12 +454,23 @@ async def retrieve_node(state: QAState) -> dict:
         )
         for d in merged
     ]
-    confidence = ranked_chunks[0].score if ranked_chunks else 0.0
+    # confidence 语义：精排分数（0~1，可直接比较阈值）；
+    # 精排不可用时 score 是 RRF 融合分（0.0x），只能排序不能当相似度 → 命中即视为可生成。
+    rerank_used = True
+    if ranked_chunks:
+        extra = ranked_chunks[0].extra or {}
+        rerank_used = bool(extra.get("_rerank_used", True))
+    if ranked_chunks and rerank_used:
+        confidence = ranked_chunks[0].score
+    elif ranked_chunks:
+        confidence = 1.0  # 粗排命中：分数不可比，避免误判低置信
+    else:
+        confidence = 0.0
     is_high_confidence = confidence >= config.qa.high_confidence_threshold
 
     logger.debug(
         f"retrieve.done | {query_type=} | ranked={len(ranked_chunks)} "
-        f"| {confidence=} | {is_high_confidence=}"
+        f"| {rerank_used=} | {confidence=} | {is_high_confidence=}"
     )
     return {
         "ranked_chunks": ranked_chunks,
@@ -507,7 +518,7 @@ async def generate_rag_node(state: QAState) -> dict:
             ("human", await resolve_prompt("rag_answer")),
         ]
     )
-    llm = await get_llm(QA_AGENT_TYPE)
+    llm = await get_llm(QA_AGENT_TYPE, thinking=bool(state.get("thinking")))
     chain = prompt | llm | StrOutputParser()
     answer = await chain.ainvoke({"history": history, "context": context, "query": query})
 
@@ -579,7 +590,7 @@ async def _general_answer(state: QAState, current_prompt: str) -> str:
             ("human", current_prompt),
         ]
     )
-    llm = await get_llm(QA_AGENT_TYPE)
+    llm = await get_llm(QA_AGENT_TYPE, thinking=bool(state.get("thinking")))
     chain = prompt | llm | StrOutputParser()
     return await chain.ainvoke({"history": history, "query": query, "web_context": web_context})
 
@@ -692,8 +703,9 @@ async def enqueue_pending_node(state: QAState) -> dict:
                 confidence=confidence,
             )
             logger.debug(f"enqueue_pending.done | q={state.get('original_query', '')[:50]}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 - SQL 异常必须暴露，不降级
         logger.exception(f"enqueue_pending.failed | {e}")
+        raise
     return {}
 
 
@@ -725,7 +737,8 @@ async def save_memory_node(state: QAState) -> dict:
 
     # 条件触发摘要压缩：优先采用生成节点置位的 should_summarize 标志（数据可观测、阈值可配），
     # 并保留对 messages 轮数的兜底判断以确保安全。
-    if state.get("should_summarize", False) or _should_summarize(messages):
+    triggered = state.get("should_summarize", False) or _should_summarize(messages)
+    if triggered:
         try:
             summary = await _compress_summary(messages, summary)
             logger.debug("save_memory.summary_compressed")
@@ -733,5 +746,11 @@ async def save_memory_node(state: QAState) -> dict:
             logger.exception(f"save_memory.compress_failed | {e}")
 
     if summary:
+        # 摘要压缩成功 → 抽取长期记忆块并写入 agent_long_term_memory（跨会话复用）
+        if triggered:
+            from backend.services.memory_hooks import persist_long_term
+
+            await persist_long_term(agent_id="qa", state=state, summary=summary)
+            logger.debug("save_memory.long_term_persisted")
         return {"existing_summary": summary}
     return {}

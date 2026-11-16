@@ -47,7 +47,7 @@ export interface Paged<T> {
   page_size: number;
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== '') sp.set(k, String(v));
@@ -97,7 +97,12 @@ export async function deleteRole(roleId: number) {
 export async function listMenus(
   page = 1,
   pageSize = 50,
-  filters: { name?: string; path?: string; scope?: string } = {},
+  filters: {
+    name?: string;
+    id?: number | string;
+    parent_id?: number | string;
+    visible?: boolean | string;
+  } = {},
 ) {
   return http.get<Paged<MenuNode>>(
     `/api/v1/admin/menus${qs({ page, page_size: pageSize, ...filters })}`,
@@ -222,22 +227,7 @@ export async function deleteTenant(tenantId: number) {
  * @deprecated 仅作历史参考，前端下拉已改由 listScopes() 动态加载。
  */
 export const SCOPE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'qa:ask', label: 'qa:ask（问答）' },
-  { value: 'qa:page', label: 'qa:page（问答记录查询）' },
-  { value: 'interview:ask', label: 'interview:ask（模拟面试）' },
-  { value: 'interview:page', label: 'interview:page（面试记录查询）' },
-  { value: 'interview:view', label: 'interview:view（面试详情/报告）' },
-  { value: 'interview:delete', label: 'interview:delete（删除面试会话）' },
-  { value: 'resume:ask', label: 'resume:ask（简历问答）' },
-  { value: 'resume:upload', label: 'resume:upload（简历上传）' },
-  { value: 'resume:page', label: 'resume:page（简历查询）' },
-  { value: 'resume:view', label: 'resume:view（评审查看）' },
-  { value: 'resume:delete', label: 'resume:delete（评审删除）' },
-  { value: 'resume:menu', label: 'resume:menu（简历评审菜单）' },
-  { value: 'exam:ask', label: 'exam:ask（试卷问答）' },
-  { value: 'exam:page', label: 'exam:page（试卷查询）' },
-  { value: 'exam:add', label: 'exam:add（出卷）' },
-  { value: 'exam:update', label: 'exam:update（改卷）' },
+  { value: 'unified:ask', label: 'unified:ask（统一咨询提问）' },
   { value: 'config:page', label: 'config:page（配置查询）' },
   { value: 'config:update', label: 'config:update（配置写入）' },
   { value: 'config:review', label: 'config:review（配置复核）' },
@@ -279,16 +269,18 @@ export const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'menu:list', label: 'menu:list（菜单管理查询）' },
   { value: 'menu:page', label: 'menu:page（菜单管理分页）' },
   { value: 'dashboard:menu', label: 'dashboard:menu（监控概览菜单）' },
-  { value: 'qa:menu', label: 'qa:menu（会话运行/咨询问答菜单）' },
+  { value: 'unified_turn:page', label: 'unified_turn:page（问答结果列表）' },
+  { value: 'unified_turn:view', label: 'unified_turn:view（问答结果详情）' },
+  { value: 'unified_turn:review', label: 'unified_turn:review（问答结果测评）' },
   { value: 'agent:menu', label: 'agent:menu（智能体/工具菜单）' },
   { value: 'model:menu', label: 'model:menu（模型配置菜单）' },
   { value: 'config:menu', label: 'config:menu（配置中心菜单）' },
   { value: 'audit:menu', label: 'audit:menu（审计日志菜单）' },
   { value: 'message:menu', label: 'message:menu（消息管理菜单）' },
-  { value: 'qa_file:page', label: 'qa_file:page（文件列表分页）' },
-  { value: 'qa_file:view', label: 'qa_file:view（文件详情）' },
-  { value: 'qa_file:upload', label: 'qa_file:upload（文件上传/解析）' },
-  { value: 'qa_file:download', label: 'qa_file:download（文件下载）' },
+  { value: 'unified_file:page', label: 'unified_file:page（文件列表分页）' },
+  { value: 'unified_file:view', label: 'unified_file:view（文件详情）' },
+  { value: 'unified_file:upload', label: 'unified_file:upload（文件上传/解析）' },
+  { value: 'unified_file:download', label: 'unified_file:download（文件下载）' },
   { value: 'menu:menu', label: 'menu:menu（菜单管理菜单）' },
 ];
 

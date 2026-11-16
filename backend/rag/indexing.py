@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from backend.app_state import app_state
@@ -76,17 +77,51 @@ async def index_document(
 
     data = await get_object_bytes(object_key)
     name = file_name or object_key.rsplit("/", 1)[-1]
-    pages = load_document(data, file_name=name, file_ext=file_ext)
+    # 解析可能含 OCR（CPU 密集）：放线程池执行，避免阻塞事件循环
+    pages = await asyncio.to_thread(
+        load_document, data, file_name=name, file_ext=file_ext
+    )
     if not pages:
-        raise ValueError(f"文档无有效文本内容 file={name}")
+        # 业务性失败（扫描件/图片型 PDF 无文本层）：重试无意义，直接 failed，避免反复进死信队列
+        from backend.observability.exception import BizException, ErrCode
+
+        raise BizException(
+            ErrCode.PARAM_ERROR,
+            f"文档无有效文本内容（可能是扫描件/图片型 PDF，请上传可复制文本的文件或先做 OCR）file={name}",
+        )
 
     chunks = split_documents(pages, file_ext=file_ext or "", file_id=str(file_id))
     if not chunks:
-        raise ValueError(f"文档分块结果为空 file={name}")
+        from backend.observability.exception import BizException, ErrCode
+
+        raise BizException(ErrCode.PARAM_ERROR, f"文档分块结果为空 file={name}")
+
+    # 切片统计（父子片）：split_documents 只返回子片，父片按 parent_id 去重计数
+    # （父片内容随子片 parent_content 回填，不单独入向量库）
+    parent_ids = {
+        (c.metadata or {}).get("parent_id")
+        for c in chunks
+        if (c.metadata or {}).get("parent_id")
+    }
+    parent_cnt = len(parent_ids)
+    child_cnt = len(chunks)
+    total_chars = sum(len(p.content or "") for p in pages)
+    logger.debug(
+        f"rag.index.slices | file_id={file_id} file={name} ext={file_ext} "
+        f"pages={len(pages)} chars={total_chars} chunks={len(chunks)} "
+        f"parent={parent_cnt} child={child_cnt} "
+        f"parent_size={config.qa.parent_chunk_size}/{config.qa.parent_chunk_overlap} "
+        f"child_size={config.qa.child_chunk_size}/{config.qa.child_chunk_overlap}"
+    )
 
     rows = _chunks_to_rows(chunks, file_id=file_id, file_name=name, tenant_id=tenant_id)
     await delete_file_chunks(file_id=file_id, tenant_id=tenant_id)
     written = await store.add_chunks(rows, batch_size=config.qa.index_batch_size)
+    logger.debug(
+        f"rag.index.milvus | file_id={file_id} file={name} ext={file_ext} "
+        f"rows={len(rows)} written={written} batch_size={config.qa.index_batch_size} "
+        f"tenant={tenant_id}"
+    )
     if file_id is not None:
         await FileDao.set_parse_status([int(file_id)], "parsed", tenant_id=tenant_id)
     logger.info(

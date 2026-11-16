@@ -46,14 +46,38 @@ def _strip_front_matter(text: str) -> str:
 def _load_pdf(data: bytes, *, file_name: str) -> list[LoadedPage]:
     import pymupdf
 
+    from backend.config import config
+    from backend.rag import ocr
+
+    # 逐页降级：有文本层用文本；无文本层（扫描页/图片型）走 OCR
+    ocr_enabled = bool(getattr(config.qa, "ocr_enabled", True)) and ocr.is_available()
+    dpi = int(getattr(config.qa, "ocr_dpi", 180))
+    max_ocr_pages = int(getattr(config.qa, "ocr_max_pages", 200))
+
     pages: list[LoadedPage] = []
     doc = pymupdf.open(stream=data, filetype="pdf")
     try:
         total = len(doc)
-        full_text = "\n\n".join(page.get_text() for page in doc)
-        file_hash = _content_hash(full_text)
+        texts: list[str] = []
+        ocr_used = 0
         for page_no in range(total):
             text = doc[page_no].get_text()
+            if not text.strip() and ocr_enabled and ocr_used < max_ocr_pages:
+                try:
+                    pix = doc[page_no].get_pixmap(dpi=dpi)
+                    text = ocr.ocr_image(pix.tobytes("png")) or ""
+                    ocr_used += 1
+                    logger.debug(
+                        f"OCR 页 {page_no + 1}/{total} chars={len(text)} file={file_name}"
+                    )
+                except Exception:  # noqa: BLE001 - 单页失败跳过
+                    logger.exception(f"OCR 渲染失败 第 {page_no + 1} 页 file={file_name}")
+                    text = ""
+            texts.append(text)
+
+        full_text = "\n\n".join(texts)
+        file_hash = _content_hash(full_text)
+        for page_no, text in enumerate(texts):
             if not text.strip():
                 continue
             pages.append(

@@ -1,6 +1,6 @@
 """RBAC DAO：角色目录、角色权限、用户-租户-角色分配。"""
 
-# todo 各表审计列不一致：agent_role 仅 user 列，中间表无审计列，写 SQL 前先核对列定义。
+# 各表审计列不一致：agent_role 仅 user 列，中间表无审计列，写 SQL 前先核对列定义。
 from __future__ import annotations
 
 from typing import Any

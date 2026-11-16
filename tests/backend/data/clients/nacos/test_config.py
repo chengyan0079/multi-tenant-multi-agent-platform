@@ -194,6 +194,33 @@ async def test_list_configs_with_meta_fills_per_item(client) -> None:
     assert item["lastModified"] == 2
 
 
+async def test_list_configs_overwrites_zero_times_from_detail(client) -> None:
+    """Nacos 3.x 列表把时间返回为 0，必须用详情真实值覆盖，否则前端渲染成 1970。"""
+    list_resp = FakeResp(
+        {
+            "code": 0,
+            "data": {
+                "pageItems": [
+                    {"dataId": "a", "groupName": "SYSTEM", "createTime": 0, "modifyTime": 0}
+                ]
+            },
+        }
+    )
+    detail = {
+        "code": 0,
+        "data": {"content": "x", "createTime": 1793992898000, "modifyTime": 1793992900000},
+    }
+    with patch(
+        "backend.data.clients.nacos.config.requests.get",
+        side_effect=[list_resp, FakeResp(detail)],
+    ):
+        data = await client.list_configs(group="SYSTEM", with_meta=True)
+    item = data["pageItems"][0]
+    assert item["createTime"] == 1793992898000
+    assert item["modifyTime"] == 1793992900000
+    assert item["lastModified"] == 1793992900000
+
+
 async def test_list_history_normalizes_nid_and_time() -> None:
     c = NacosConfigClient(server_addr="x", namespace="3d523e88-a17f-4a90-88c5-d31793405818")
     list_resp = FakeResp({"code": 0, "data": {"pageItems": [{"id": 99, "lastModifiedTime": 5}]}})

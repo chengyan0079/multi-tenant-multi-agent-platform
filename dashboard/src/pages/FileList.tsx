@@ -82,10 +82,10 @@ export default function FileList() {
   const [remark, setRemark] = useState('');
   const [uploading, setUploading] = useState(false);
   const [maxUploadMb, setMaxUploadMb] = useState(200);
-  // 各操作权限：与后端 require_scope 对齐（详情 qa_file:view、下载 qa_file:download、上传/解析 qa_file:upload）
-  const canUpload = hasScope('qa_file:upload');
-  const canView = hasScope('qa_file:view');
-  const canDownload = hasScope('qa_file:download');
+  // 各操作权限：与后端 require_scope 对齐（详情 unified_file:view、下载 unified_file:download、上传/解析 unified_file:upload）
+  const canUpload = hasScope('unified_file:upload');
+  const canView = hasScope('unified_file:view');
+  const canDownload = hasScope('unified_file:download');
   const [autoParse, setAutoParse] = useState(true);
 
   const load = useCallback(async () => {

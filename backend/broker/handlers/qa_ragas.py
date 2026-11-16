@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from backend.agents.qa.ragas_eval import evaluate_qa_result
+from backend.ragas.ragas_eval import evaluate_qa_result
 from backend.broker.envelope import TaskMessage
 from backend.broker.security import authorize_task
 from backend.common.logger import logger
@@ -27,14 +27,14 @@ def _parse_json(value: Any) -> Any:
 
 
 async def handle_qa_ragas_review(msg: TaskMessage) -> None:
-    # 零信任：消费端重校验 qa_result:review（该权限点仅租户用户持有）
-    await authorize_task(msg.header.user_id, msg.header.tenant_id, [Scope.QA_RESULT_REVIEW])
+    # 零信任：消费端重校验 unified_result:review（该权限点仅租户用户持有）
+    await authorize_task(msg.header.user_id, msg.header.tenant_id, [Scope.UNIFIED_TURN_REVIEW])
 
     data = msg.data
     eval_id = data.get("eval_id")
-    qa_result_id = data.get("qa_result_id")
-    if not eval_id or not qa_result_id:
-        logger.warning("[qa.ragas_review] 缺少 eval_id/qa_result_id，丢弃")
+    turn_id = data.get("turn_id")
+    if not eval_id or not turn_id:
+        logger.warning("[qa.ragas_review] 缺少 eval_id/turn_id，丢弃")
         return
 
     tenant_id = int(msg.header.tenant_id)  # authorize_task 已保证非空
@@ -44,7 +44,7 @@ async def handle_qa_ragas_review(msg: TaskMessage) -> None:
         logger.info(f"[qa.ragas_review] 跳过 eval={eval_id}（不存在或已处理）")
         return
 
-    result = await QaResultDao.get(result_id=str(qa_result_id), tenant_id=tenant_id)
+    result = await QaResultDao.get(result_id=str(turn_id), tenant_id=tenant_id)
     if result is None:
         await QaResultDao.finish_eval(
             eval_id=str(eval_id),
@@ -56,14 +56,28 @@ async def handle_qa_ragas_review(msg: TaskMessage) -> None:
         )
         return
 
-    contexts = _parse_json(result.get("retrieved_contexts")) or []
+    # 评测输入以 eval 记录为准（标准答案 + 上下文快照），回退到 turn 上的上下文
+    contexts = _parse_json(row.get("retrieved_contexts")) or _parse_json(
+        result.get("retrieved_contexts")
+    ) or []
     context_texts = [str(c.get("content", "")) for c in contexts if isinstance(c, dict)]
+    reference_answer = str(row.get("reference_answer") or "")
+    if not reference_answer.strip():
+        await QaResultDao.finish_eval(
+            eval_id=str(eval_id),
+            status="failed",
+            error_msg="缺少人工标准答案，拒绝评测",
+            eval_at=datetime.now(),
+            user_id=msg.header.user_id,
+            tenant_id=tenant_id,
+        )
+        return
     try:
         scores = await evaluate_qa_result(
             question=str(result.get("question") or ""),
             answer=str(result.get("answer") or ""),
             contexts=context_texts,
-            reference_answer=str(result.get("reference_answer") or ""),
+            reference_answer=reference_answer,
         )
     except Exception as exc:  # noqa: BLE001 - 交由框架重试/死信
         logger.exception(f"[qa.ragas_review] 评估失败 eval={eval_id}: {exc}")
@@ -91,4 +105,4 @@ async def handle_qa_ragas_review(msg: TaskMessage) -> None:
         user_id=msg.header.user_id,
         tenant_id=tenant_id,
     )
-    logger.info(f"[qa.ragas_review] 完成 eval={eval_id} qa_result={qa_result_id}")
+    logger.info(f"[qa.ragas_review] 完成 eval={eval_id} turn={turn_id}")

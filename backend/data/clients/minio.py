@@ -166,14 +166,16 @@ def build_object_key(
     name: str,
     ext: str,
     yyyymm: str | None = None,
+    subtype: str = "",
 ) -> str:
     """生成统一的 MinIO 对象 key。
 
-    模板：{filetype}/{tenant_id}/{yyyyMM}/{user_id}/{name}.{ext}
+    模板：{filetype}/{tenant_id}/{yyyyMM}/{user_id}/{subtype/}{name}.{ext}
     所有文件上传入口统一走此函数，避免 key 拼接散落硬编码。
     """
     ym = yyyymm or current_yyyymm()
-    return f"{filetype}/{tenant_id}/{ym}/{user_id}/{name}.{ext}"
+    seg = f"{subtype}/" if subtype else ""
+    return f"{filetype}/{tenant_id}/{ym}/{user_id}/{seg}{name}.{ext}"
 
 
 async def get_object_bytes(key: str) -> bytes:

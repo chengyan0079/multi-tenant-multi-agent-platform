@@ -1,7 +1,4 @@
-"""通知外发：按渠道分发，渠道以注册表方式扩展。
-
-新增渠道只需实现 NotifyChannel 并注册到 CHANNELS，handler 与调用方都不用改。
-"""
+"""通知外发：按渠道分发，渠道以注册表方式扩展。"""
 
 from __future__ import annotations
 
@@ -27,7 +24,7 @@ class NotifyChannel(Protocol):
         ...
 
 
-# TODO(notify.send)：实现并注册 email / wecom / webhook / ticket 四个渠道
+# 渠道注册表：默认空；实现 email / wecom / webhook / ticket 后注册于此（见 docs/后端TODO清单.md）
 CHANNELS: dict[str, NotifyChannel] = {}
 
 

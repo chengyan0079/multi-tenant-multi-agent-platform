@@ -178,7 +178,7 @@ class PostgresClient(BaseClient):
             connect_args: dict = {}
             if self._search_path:
                 # asyncpg 通过 server_settings 在建立连接时注入 search_path，
-                # 使裸 SQL 默认解析到专属 schema（如 agent_platform）
+                # 使裸 SQL 默认解析到专属 schema（unified_schemas）
                 connect_args["server_settings"] = {"search_path": self._search_path}
             self._engine = create_async_engine(
                 self._url, echo=self._echo, future=True, connect_args=connect_args

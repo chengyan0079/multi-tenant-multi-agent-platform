@@ -1,14 +1,4 @@
-"""Langfuse trace 封装：适配 langfuse SDK 5.x（OTEL 采集），未配置/不可用时降级 no-op。
-
-设计：
-- 模块级单例 `tracing`，由 ObservabilityManager.start() 调 configure() 初始化客户端；
-- SDK 5.x 构造 Langfuse 即注册为全局单例，CallbackHandler 用 public_key 取回该客户端；
-- 5.x 的 LangChain 集成位于 langfuse.langchain，原生要求 langchain-core>=1，
-  本项目即 1.x，无需任何兼容 shim；
-- trace_id 与 JSON 日志共用（uuid7 hex，符合 W3C trace id 格式）；
-- tenant_id / user_id / session_id 经 LangChain config.metadata 注入
-  （langfuse_session_id / langfuse_user_id 等约定键）。
-"""
+"""Langfuse trace 封装：未配置或 SDK 不可用时降级为 no-op。"""
 
 from __future__ import annotations
 

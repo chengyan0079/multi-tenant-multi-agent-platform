@@ -13,7 +13,7 @@ from backend.security.rbac import RbacService
 
 async def test_resolve_identity_maps_row_to_identity() -> None:
     """库行转 Identity：角色名与 scopes 原样透传，租户即查询用的 tenant_id。"""
-    row = {"role_name": "tenant_admin", "scopes": ["qa:ask"]}
+    row = {"role_name": "tenant_admin", "scopes": ["unified:ask"]}
     with patch.object(RbacDao, "get_identity", new=AsyncMock(return_value=row)):
         identity = await RbacService.resolve_identity(2001, 200)
 
@@ -22,7 +22,7 @@ async def test_resolve_identity_maps_row_to_identity() -> None:
     assert identity.tenant_id == 200
     assert identity.role_name == "tenant_admin"
     assert identity.is_super_admin is False
-    assert identity.scopes == ["qa:ask"]
+    assert identity.scopes == ["unified:ask"]
 
 
 async def test_resolve_identity_returns_none_when_missing() -> None:

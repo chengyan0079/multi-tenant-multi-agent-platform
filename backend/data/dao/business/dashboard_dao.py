@@ -13,7 +13,7 @@ from backend.data.sql import fetch_all, fetch_one, session_scope
 # 显式 CAST：:tenant_id 传 None 时 asyncpg 无从推断类型（首个出现位置是 IS NULL），
 # 不转型会报 could not determine data type of parameter。
 _SCOPE = "(CAST(:tenant_id AS BIGINT) IS NULL OR {t}.tenant_id = CAST(:tenant_id AS BIGINT))"
-_SCOPE_ALIASES = frozenset({"l", "th", "r", "al"})
+_SCOPE_ALIASES = frozenset({"l", "th", "r", "al", "ut"})
 
 
 def _scope(alias: str) -> str:
@@ -37,16 +37,8 @@ SELECT
      WHERE {_scope("th")} AND th.status = 'active'
        AND th.updated_at >= :prev_since AND th.updated_at < :since)
      AS active_threads_prev,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :since) AS runs,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :since AND r.status = 'error') AS error_runs,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :prev_since AND r.create_at < :since) AS runs_prev,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE {_scope("r")} AND r.create_at >= :prev_since AND r.create_at < :since
-       AND r.status = 'error') AS error_runs_prev,
-  -- agent_run 尚未接入时，用 API 日志兜底成功率，避免永远显示 100%
+  -- agent_run 运行台账已下线（设计合并入统一会话历史 agent_unified_turn），
+  -- 看板成功率统一由 API 日志口径兜底，避免永远显示 100%
   (SELECT COUNT(*) FROM agent_api_call_log l
      WHERE {_scope("l")} AND l.req_time >= :since) AS api_requests,
   (SELECT COUNT(*) FROM agent_api_call_log l
@@ -62,15 +54,10 @@ SELECT
 # 智能体总数：超管看平台存量；租户看「全局启用且未被本租户显式关闭」的数量。
 # 与 AgentRegistry.is_enabled_for_tenant 一致：策略未配置视为开通，只有 enabled=false 才关闭。
 _AGENT_TOTAL_PLATFORM = text("SELECT COUNT(*) AS total FROM agent WHERE enabled")
+# agent 已租户级（agent 表含 tenant_id + enabled）；直接按租户统计，不再依赖已删除的 capability_policy
 _AGENT_TOTAL_TENANT = text(
-    "SELECT COUNT(*) AS total FROM agent a "
-    "WHERE a.enabled "
-    "  AND NOT EXISTS ("
-    "    SELECT 1 FROM agent_capability_policy p "
-    "    WHERE p.tenant_id = CAST(:tenant_id AS BIGINT) "
-    "      AND p.agent_type = a.agent_type "
-    "      AND p.enabled = false"
-    "  )"
+    "SELECT COUNT(*) AS total FROM agent "
+    "WHERE enabled AND tenant_id = CAST(:tenant_id AS BIGINT)"
 )
 
 # 近 N 天请求量 / 错误量：错误按 HTTP >= 400 计（4xx 参数错、5xx 服务错都算失败请求）
@@ -85,38 +72,26 @@ GROUP BY date_trunc('day', l.req_time)
 ORDER BY date_trunc('day', l.req_time)
 """)
 
-# 各智能体调用占比：graph_name 可能不等于 agent_type，取不到展示名时回落图名
-_AGENT_DISTRIBUTION = text(f"""
-SELECT
-  COALESCE(a.name, r.graph_name) AS name,
-  COUNT(*) AS value
-FROM agent_run r
-LEFT JOIN agent a ON a.agent_type = r.graph_name
-WHERE {_scope("r")} AND r.create_at >= :since
-GROUP BY COALESCE(a.name, r.graph_name)
-ORDER BY value DESC, name ASC
-LIMIT :limit
-""")
-
-# agent_run 尚未接入时，按业务 API 路径归类出调用占比
+# 各智能体调用占比：按业务 API 路径归类，直接输出中文业务名（不依赖 agent 表旧名）
 _AGENT_DISTRIBUTION_API = text(f"""
-SELECT COALESCE(a.name, x.agent_type) AS name, COUNT(*) AS value
+SELECT x.agent_name AS name, COUNT(*) AS value
 FROM (
   SELECT CASE
-    WHEN l.path LIKE '/api/v1/tenant/qa/%' THEN 'qa'
-    WHEN l.path LIKE '/api/v1/tenant/resume/%' THEN 'resume'
-    WHEN l.path LIKE '/api/v1/tenant/exam/%'
-      OR l.path LIKE '/api/v1/tenant/agent/exam/%' THEN 'exam'
-    WHEN l.path LIKE '/api/v1/tenant/agent/files/%' THEN 'qa'
-    WHEN l.path LIKE '/api/v1/tenant/agent/%' THEN 'agent'
+    WHEN l.path LIKE '%/db_change%' AND l.path LIKE '%/review%' THEN '变更评审'
+    WHEN l.path LIKE '%/db_change%' AND l.path LIKE '%/release%' THEN '变更发布'
+    WHEN l.path LIKE '%/qa/results%' THEN '知识问答'
+    WHEN l.path LIKE '%/agent/files%' THEN '知识库文件'
+    WHEN l.path LIKE '%/unified/chat%' THEN '统一咨询'
+    WHEN l.path LIKE '%/unified/sessions%' THEN '会话管理'
+    WHEN l.path LIKE '%/db_change%' THEN '变更单管理'
+    WHEN l.path LIKE '%/unified/%' THEN '统一咨询'
     ELSE NULL
-  END AS agent_type
+  END AS agent_name
   FROM agent_api_call_log l
   WHERE {_scope("l")} AND l.req_time >= :since
 ) x
-LEFT JOIN agent a ON a.agent_type = x.agent_type
-WHERE x.agent_type IS NOT NULL
-GROUP BY COALESCE(a.name, x.agent_type)
+WHERE x.agent_name IS NOT NULL
+GROUP BY x.agent_name
 ORDER BY value DESC, name ASC
 LIMIT :limit
 """)
@@ -129,6 +104,28 @@ SELECT
 FROM agent_api_call_log l
 WHERE {_scope("l")} AND l.req_time >= :since
 GROUP BY 1
+ORDER BY 1
+""")
+
+# Token 与平均耗时按天：token 取统一会话 turn，耗时取 API 日志（两者按天 FULL JOIN 对齐）
+_USAGE_TREND = text(f"""
+WITH lat AS (
+  SELECT to_char(date_trunc('day', l.req_time), 'MM-DD') AS date,
+         CAST(COALESCE(AVG(l.cost_ms), 0) AS BIGINT) AS avg_ms
+  FROM agent_api_call_log l
+  WHERE {_scope("l")} AND l.req_time >= :since
+  GROUP BY 1
+), tok AS (
+  SELECT to_char(date_trunc('day', ut.create_at), 'MM-DD') AS date,
+         CAST(COALESCE(SUM(COALESCE((ut.token_usage->>'total')::bigint, 0)), 0) AS BIGINT) AS tokens
+  FROM agent_unified_turn ut
+  WHERE {_scope("ut")} AND ut.create_at >= :since
+  GROUP BY 1
+)
+SELECT COALESCE(lat.date, tok.date) AS date,
+       COALESCE(tok.tokens, 0) AS tokens,
+       COALESCE(lat.avg_ms, 0) AS avg_ms
+FROM lat FULL OUTER JOIN tok USING(date)
 ORDER BY 1
 """)
 
@@ -176,7 +173,7 @@ SELECT
   (SELECT COUNT(*) FROM agent WHERE enabled) AS agents_enabled,
   (SELECT COUNT(*) FROM agent_model_registry) AS models,
   (SELECT COUNT(*) FROM agent_model_registry WHERE enabled) AS models_enabled,
-  (SELECT COUNT(*) FROM agent_plugin) AS plugins
+  (SELECT COUNT(*) FROM agent_tool) AS plugins
 """)
 
 _RANKING = text("""
@@ -185,10 +182,13 @@ SELECT
   t.name,
   t.enabled,
   (SELECT COUNT(*) FROM agent_thread th WHERE th.tenant_id = t.id) AS threads,
-  (SELECT COUNT(*) FROM agent_run r
-     WHERE r.tenant_id = t.id AND r.create_at >= :since) AS runs,
-  (SELECT CAST(COALESCE(SUM(r.prompt_tokens + r.completion_tokens), 0) AS BIGINT)
-     FROM agent_run r WHERE r.tenant_id = t.id AND r.create_at >= :since) AS tokens
+  (SELECT COUNT(*) FROM agent_api_call_log l
+     WHERE l.tenant_id = t.id AND l.req_time >= :since) AS runs,
+  (SELECT ROUND(AVG(l.cost_ms)) FROM agent_api_call_log l
+     WHERE l.tenant_id = t.id AND l.req_time >= :since) AS avg_cost_ms,
+  (SELECT COALESCE(SUM(COALESCE((ut.token_usage->>'total')::bigint, 0)), 0)
+     FROM agent_unified_turn ut
+     WHERE ut.tenant_id = t.id AND ut.create_at >= :since) AS tokens
 FROM agent_tenant t
 ORDER BY runs DESC, t.id ASC
 LIMIT :limit
@@ -234,11 +234,11 @@ class DashboardDao:
     async def agent_distribution(
         *, tenant_id: Optional[int], since: datetime, limit: int = 10
     ) -> list[dict[str, Any]]:
-        """各智能体运行量占比（按运行条数倒序）。"""
+        """各智能体调用占比（按 API 路径归类；agent_run 台账已下线）。"""
         async with session_scope() as session:
             return await fetch_all(
                 session,
-                _AGENT_DISTRIBUTION,
+                _AGENT_DISTRIBUTION_API,
                 {"tenant_id": tenant_id, "since": since, "limit": limit},
             )
 
@@ -284,6 +284,12 @@ class DashboardDao:
         async with session_scope() as session:
             row = await fetch_one(session, _GLOBAL, {})
         return row or {}
+
+    @staticmethod
+    async def usage_trend(*, tenant_id: Optional[int], since: datetime) -> list[dict[str, Any]]:
+        """按天返回 token 与平均耗时（按 scope：超管全局 / 租户本租户）。"""
+        async with session_scope() as session:
+            return await fetch_all(session, _USAGE_TREND, {"tenant_id": tenant_id, "since": since})
 
     @staticmethod
     async def tenant_ranking(*, since: datetime, limit: int = 10) -> list[dict[str, Any]]:

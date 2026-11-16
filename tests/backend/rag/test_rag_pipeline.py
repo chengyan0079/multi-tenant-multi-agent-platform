@@ -131,7 +131,9 @@ async def test_retrieve_falls_back_to_coarse_scores(monkeypatch) -> None:
     # 父片内高亮：命中子片被 <mark> 包住，父片其余部分保留
     assert "<mark>A</mark>" in result[0].highlighted_content
     assert "前言" in result[0].highlighted_content
-    assert result[1].extra == {"doc_type": "txt"}
+    assert result[1].extra["doc_type"] == "txt"
+    # 降级粗排：标记未使用精排（RRF 分数不可当相似度）
+    assert result[1].extra["_rerank_used"] is False
 
 
 @pytest.mark.asyncio

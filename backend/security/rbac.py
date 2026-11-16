@@ -15,16 +15,15 @@ logger = get_logger("rbac")
 
 
 class Business(str, Enum):
-    """AI 业务域（权限点的资源部分）：qa / interview / resume / exam / knowledge。新增业务域在此登记。"""
+    """AI 业务域（权限点的资源部分）：qa_file / unified / knowledge。新增业务域在此登记。"""
 
-    QA = "qa"
-    QA_FILE = "qa_file"
-    QA_RESULT = "qa_result"
-    QA_SESSION = "qa_session"
-    INTERVIEW = "interview"
-    RESUME = "resume"
-    EXAM = "exam"
-    EXAM_RESULT = "exam_result"
+    # 统一知识库文件（原 qa_file；文档上传/下载/列表）
+    UNIFIED_FILE = "unified_file"
+    # 统一咨询入口（单聊天框收口 Agent 的发起动作）
+    UNIFIED = "unified"
+    UNIFIED_SESSION = "unified_session"
+    # 统一咨询结果（agent_unified_turn：详情 / 质量测评）
+    UNIFIED_TURN = "unified_turn"
     # 业务域分组菜单（/agent 父节点，仅用于菜单可见性）
     BUSINESS = "business"
 
@@ -36,6 +35,7 @@ class Agent(str, Enum):
     AGENT = "agent"
     MODEL = "model"
     TOOL = "tool"
+    DB_CONNECTION = "db_connection"
 
 
 class System(str, Enum):
@@ -91,6 +91,16 @@ class Scope:
     # ===== Dashboard 仪表盘：菜单可见性用 dashboard:menu，接口访问用 dashboard:view =====
     DASHBOARD_MENU = f"{System.DASHBOARD.value}:{Action.MENU.value}"
     DASHBOARD_VIEW = f"{System.DASHBOARD.value}:{Action.VIEW.value}"
+
+    # ===== Unified 统一咨询入口 =====
+    # 菜单可见性用 unified:menu（资源在前，见 scope 命名规范）；
+    # 接口统一用 unified:ask 作为发起门槛（运行期再按 spec 做 agent 级启用校验）。
+    UNIFIED_MENU = f"{Business.UNIFIED.value}:{Action.MENU.value}"
+    UNIFIED_ASK = f"{Business.UNIFIED.value}:{Action.ASK.value}"
+    # 会话管理（双入口：聊天框内列表用 unified:ask；管理页用以下三个）
+    UNIFIED_SESSION_PAGE = f"{Business.UNIFIED_SESSION.value}:{Action.PAGE.value}"
+    UNIFIED_SESSION_VIEW = f"{Business.UNIFIED_SESSION.value}:{Action.VIEW.value}"
+    UNIFIED_SESSION_DELETE = f"{Business.UNIFIED_SESSION.value}:{Action.DELETE.value}"
 
     # ===== Agent 基建域（config / agent / model，仅超管） =====
     # Config 配置中心：分页列表/历史列表(page)、详情/历史详情/对比(view)、发起申请(add)、编辑/撤回(update)
@@ -181,45 +191,24 @@ class Scope:
     TOOL_DELETE = f"{Agent.TOOL.value}:{Action.DELETE.value}"
     TOOL_STATUS = f"{Agent.TOOL.value}:{Action.STATUS.value}"
 
-    # ===== Business AI 业务域（qa / interview / resume / exam / knowledge） =====
-    # 问哪一类就要求哪一类的 ask 权限；page=历史列表、view=单条详情
-    QA_MENU = f"{Business.QA.value}:{Action.MENU.value}"
-    QA_ASK = f"{Business.QA.value}:{Action.ASK.value}"
-    # 问答结果
-    QA_RESULT_PAGE = f"{Business.QA_RESULT.value}:{Action.PAGE.value}"
-    QA_RESULT_VIEW = f"{Business.QA_RESULT.value}:{Action.VIEW.value}"
-    QA_RESULT_REVIEW = f"{Business.QA_RESULT.value}:{Action.REVIEW.value}"
-    # 问答会话
-    QA_SESSION_PAGE = f"{Business.QA_SESSION.value}:{Action.PAGE.value}"
-    QA_SESSION_ADD = f"{Business.QA_SESSION.value}:{Action.ADD.value}"
-    QA_SESSION_VIEW = f"{Business.QA_SESSION.value}:{Action.VIEW.value}"
-    QA_SESSION_DELETE = f"{Business.QA_SESSION.value}:{Action.DELETE.value}"
-    # 问答文件
-    QA_FILE_UPLOAD = f"{Business.QA_FILE.value}:{Action.UPLOAD.value}"
-    QA_FILE_DOWNLOAD = f"{Business.QA_FILE.value}:{Action.DOWNLOAD.value}"
-    QA_FILE_PAGE = f"{Business.QA_FILE.value}:{Action.PAGE.value}"
-    QA_FILE_VIEW = f"{Business.QA_FILE.value}:{Action.VIEW.value}"
+    DB_CONNECTION_PAGE = f"{Agent.DB_CONNECTION.value}:{Action.PAGE.value}"
+    DB_CONNECTION_VIEW = f"{Agent.DB_CONNECTION.value}:{Action.VIEW.value}"
+    DB_CONNECTION_ADD = f"{Agent.DB_CONNECTION.value}:{Action.ADD.value}"
+    DB_CONNECTION_UPDATE = f"{Agent.DB_CONNECTION.value}:{Action.UPDATE.value}"
+    DB_CONNECTION_DELETE = f"{Agent.DB_CONNECTION.value}:{Action.DELETE.value}"
+    DB_CONNECTION_STATUS = f"{Agent.DB_CONNECTION.value}:{Action.STATUS.value}"
 
-    INTERVIEW_MENU = f"{Business.INTERVIEW.value}:{Action.MENU.value}"
-    INTERVIEW_PAGE = f"{Business.INTERVIEW.value}:{Action.PAGE.value}"
-    INTERVIEW_VIEW = f"{Business.INTERVIEW.value}:{Action.VIEW.value}"
-    INTERVIEW_ASK = f"{Business.INTERVIEW.value}:{Action.ASK.value}"
-    INTERVIEW_DELETE = f"{Business.INTERVIEW.value}:{Action.DELETE.value}"
+    # ===== 统一咨询结果（agent_unified_turn） =====
+    # page=结果列表、view=详情/测评报告、review=发起质量测评
+    UNIFIED_TURN_PAGE = f"{Business.UNIFIED_TURN.value}:{Action.PAGE.value}"
+    UNIFIED_TURN_VIEW = f"{Business.UNIFIED_TURN.value}:{Action.VIEW.value}"
+    UNIFIED_TURN_REVIEW = f"{Business.UNIFIED_TURN.value}:{Action.REVIEW.value}"
 
-    RESUME_MENU = f"{Business.RESUME.value}:{Action.MENU.value}"
-    RESUME_UPLOAD = f"{Business.RESUME.value}:{Action.UPLOAD.value}"
-    RESUME_PAGE = f"{Business.RESUME.value}:{Action.PAGE.value}"
-    RESUME_VIEW = f"{Business.RESUME.value}:{Action.VIEW.value}"
-    RESUME_DELETE = f"{Business.RESUME.value}:{Action.DELETE.value}"
-
-    EXAM_MENU = f"{Business.EXAM.value}:{Action.MENU.value}"
-    EXAM_PAGE = f"{Business.EXAM.value}:{Action.PAGE.value}"
-    EXAM_UPLOAD = f"{Business.EXAM.value}:{Action.UPLOAD.value}"
-    EXAM_VIEW = f"{Business.EXAM.value}:{Action.VIEW.value}"
-    EXAM_REVIEW = f"{Business.EXAM.value}:{Action.REVIEW.value}"
-
-    EXAM_RESULT_PAGE = f"{Business.EXAM_RESULT.value}:{Action.PAGE.value}"
-    EXAM_RESULT_VIEW = f"{Business.EXAM_RESULT.value}:{Action.VIEW.value}"
+    # ===== 统一知识库文件（原 qa_file；文档上传/下载/列表） =====
+    UNIFIED_FILE_UPLOAD = f"{Business.UNIFIED_FILE.value}:{Action.UPLOAD.value}"
+    UNIFIED_FILE_DOWNLOAD = f"{Business.UNIFIED_FILE.value}:{Action.DOWNLOAD.value}"
+    UNIFIED_FILE_PAGE = f"{Business.UNIFIED_FILE.value}:{Action.PAGE.value}"
+    UNIFIED_FILE_VIEW = f"{Business.UNIFIED_FILE.value}:{Action.VIEW.value}"
 
 
 # 所有合法权限点，供 require_scope 校验声明合法性（Scope 不再是 Enum）
@@ -232,12 +221,11 @@ VALID_SCOPES: frozenset[str] = frozenset(
 
 # agent_type → 调用该 Agent 所需权限点（动态入口鉴权的单一权威来源）。
 # 编排/统一聊天在运行期才决定 agent_type，无法用静态 require_scope 声明，故按此表查权限点。
-# 注：resume / exam 业务域没有 :ask 权限点，沿用各自的 :upload 作为调用门槛。
 SCOPE_BY_AGENT: dict[str, str] = {
-    "qa": Scope.QA_ASK,
-    "resume": Scope.RESUME_UPLOAD,
-    "exam": Scope.EXAM_UPLOAD,
-    "interview": Scope.INTERVIEW_ASK,
+    # 统一入口统一用 unified:ask（三个 agent 一致，不再按 agent 细分）
+    "qa": Scope.UNIFIED_ASK,
+    "db_review": Scope.UNIFIED_ASK,
+    "db_release": Scope.UNIFIED_ASK,
 }
 
 
@@ -279,11 +267,11 @@ class Identity:
     超管没有租户上下文，tenant_id 恒为 None。
     """
 
-    user_id: int
-    tenant_id: int | None
-    role_name: str
-    scopes: list[str]
-    is_super_admin: bool = False
+    user_id: int  # 用户 id
+    tenant_id: int | None  # 当前租户 id；超管为 None
+    role_name: str  # 角色名
+    scopes: list[str]  # 权限点集合
+    is_super_admin: bool = False  # 是否平台超管
 
     @property
     def is_tenant_admin(self) -> bool:

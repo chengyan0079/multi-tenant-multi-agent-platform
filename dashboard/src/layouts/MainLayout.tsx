@@ -85,7 +85,10 @@ export default function MainLayout() {
 
   const user = getUser();
   const session = getSession();
-  const menuRoutes = useMemo(() => buildMenuRoutes(session?.menus ?? []), [session]);
+  const menuRoutes = useMemo(
+    () => buildMenuRoutes(session?.menus ?? []),
+    [session],
+  );
 
   const handleLogout = () => {
     logout();

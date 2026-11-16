@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from backend.api.router import api_router
+from backend.api.v1.metrics import router as metrics_router
 from backend.api.exceptions import register_exception_handlers
 from backend.app_state import app_state
 from backend.common.response import DatetimeJSONResponse
@@ -40,10 +41,14 @@ def _build_app() -> FastAPI:
         default_response_class=DatetimeJSONResponse,
     )
     app.state.limiter = limiter
+    # /unified/* 端点通过 request.app.state.app_state 取运行时单例；测试可覆盖该属性注入 fake
+    app.state.app_state = app_state
     app.add_middleware(ApiLogMiddleware)
     app.add_middleware(TraceIdMiddleware)
     # 认证依赖在路由层按需声明（Depends(get_current_user)），不做全局强制
     app.include_router(api_router)
+    # 运维指标：根路径 /metrics，免鉴权，供 Prometheus 抓取
+    app.include_router(metrics_router)
     register_exception_handlers(app)
 
     @app.get("/health", tags=["ops"], summary="健康检查（汇总各组件状态）")

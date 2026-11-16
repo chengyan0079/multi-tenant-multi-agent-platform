@@ -1,4 +1,4 @@
-/** Agent 管理接口（后端 /api/v1/admin/agents，超管专用）。 */
+/** Agent 管理接口（后端 /api/v1/admin/agents，租户级）。 */
 
 import { http } from './http';
 
@@ -15,6 +15,7 @@ export interface PageParams {
 }
 
 export interface AgentItem {
+  tenant_id: number;
   agent_type: string;
   name: string;
   description: string | null;
@@ -23,14 +24,6 @@ export interface AgentItem {
   registered: boolean;
   input_schema: Record<string, unknown> | null;
   updated_at: string | null;
-}
-
-export interface CapabilityItem {
-  agent_type: string;
-  name: string;
-  global_enabled: boolean;
-  enabled: boolean;
-  configured: boolean;
 }
 
 export const listAgents = (params: PageParams & { tenant_id?: number; only_enabled?: boolean } = {}) => {
@@ -43,42 +36,35 @@ export const listAgents = (params: PageParams & { tenant_id?: number; only_enabl
   return http.get<PagedResult<AgentItem>>(`/api/v1/admin/agents${s ? '?' + s : ''}`);
 };
 
-export const setAgentEnabled = (agentType: string, enabled: boolean) =>
-  http.patch<{ agent_type: string; enabled: boolean }>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/enabled`,
+export const setAgentEnabled = (agentType: string, enabled: boolean, tenantId: number) =>
+  http.patch<{ agent_type: string; tenant_id: number; enabled: boolean }>(
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/enabled?tenant_id=${tenantId}`,
     { enabled },
   );
 
-export const listCapabilities = (tenantId: number, params: PageParams = {}) => {
-  const qs = new URLSearchParams();
-  if (params.page) qs.set('page', String(params.page));
-  if (params.page_size) qs.set('page_size', String(params.page_size));
-  const s = qs.toString();
-  return http.get<PagedResult<CapabilityItem>>(
-    `/api/v1/admin/agents/tenants/${tenantId}/capabilities${s ? '?' + s : ''}`,
-  );
-};
+export const listAgentTenants = (agentType: string) =>
+  http.get<number[]>(`/api/v1/admin/agents/${encodeURIComponent(agentType)}/tenants`);
 
-export const setCapabilities = (
-  tenantId: number,
-  items: { agent_type: string; enabled: boolean }[],
-) =>
-  http.put<{ tenant_id: number; updated: number }>(
-    `/api/v1/admin/agents/tenants/${tenantId}/capabilities`,
-    items,
+export const bindAgentTenant = (agentType: string, tenantId: number) =>
+  http.post<{ agent_type: string; tenant_id: number }>(
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/tenants?tenant_id=${tenantId}`,
   );
 
-/** 新增/更新智能体的请求体（input_schema 为 JSON 文本，可空）。 */
+export const unbindAgentTenant = (agentType: string, tenantId: number) =>
+  http.delete<{ agent_type: string; tenant_id: number }>(
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/tenants/${tenantId}`,
+  );
+
+/** 新增/更新智能体的请求体。 */
 export interface AgentPayload {
+  tenant_id: number;
   agent_type: string;
   name: string;
   description?: string;
   version: string;
-  enabled: boolean;
   input_schema?: string | null;
 }
 
-/** 智能体 ↔ 模型绑定项（含模型展示信息）。 */
 export interface AgentModelBinding {
   agent_id: number;
   model_id: number;
@@ -99,41 +85,43 @@ export const updateAgent = (agentType: string, payload: AgentPayload) =>
     payload,
   );
 
-export const deleteAgent = (agentType: string) =>
+export const deleteAgent = (agentType: string, tenantId: number) =>
   http.delete<{ agent_type: string }>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}`,
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}?tenant_id=${tenantId}`,
   );
 
-export const listAgentModels = (agentType: string, params: PageParams = {}) => {
+export const listAgentModels = (agentType: string, tenantId: number, params: PageParams = {}) => {
   const qs = new URLSearchParams();
+  qs.set('tenant_id', String(tenantId));
   if (params.page) qs.set('page', String(params.page));
   if (params.page_size) qs.set('page_size', String(params.page_size));
-  const s = qs.toString();
   return http.get<PagedResult<AgentModelBinding>>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models${s ? '?' + s : ''}`,
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models?${qs.toString()}`,
   );
 };
 
 export const addAgentModel = (
   agentType: string,
+  tenantId: number,
   payload: { model_id: number; is_default: boolean; priority: number },
 ) =>
   http.post<{ agent_type: string; model_id: number }>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models`,
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models?tenant_id=${tenantId}`,
     payload,
   );
 
 export const updateAgentModel = (
   agentType: string,
+  tenantId: number,
   modelId: number,
   payload: { is_default?: boolean; priority?: number },
 ) =>
   http.put<{ agent_type: string; model_id: number }>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models/${modelId}`,
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models/${modelId}?tenant_id=${tenantId}`,
     payload,
   );
 
-export const removeAgentModel = (agentType: string, modelId: number) =>
+export const removeAgentModel = (agentType: string, tenantId: number, modelId: number) =>
   http.delete<{ agent_type: string; model_id: number }>(
-    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models/${modelId}`,
+    `/api/v1/admin/agents/${encodeURIComponent(agentType)}/models/${modelId}?tenant_id=${tenantId}`,
   );

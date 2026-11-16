@@ -45,6 +45,8 @@ class QAState(TypedDict, total=False):
     # 请求上下文
     user_id: int
     tenant_id: int
+    # 思考模式（前端开关）：True 时 LLM 开启推理，流式输出思考过程
+    thinking: bool
     session_id: str
     query: str  # 统一聊天入口的 query 透传；classify 优先读 messages
 

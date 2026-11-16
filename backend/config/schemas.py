@@ -28,15 +28,15 @@ class PostgresSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="POSTGRES_")
 
-    host: str = "localhost"
-    port: int = 5432
-    user: str = "postgres"
-    password: str = ""
-    db: str = "agent_platform"
+    host: str = "localhost"  # 主机
+    port: int = 5432  # 端口
+    user: str = "postgres"  # 用户名
+    password: str = ""  # 密码
+    db: str = "agent_platform"  # 库名
     # 专属 schema：schema.sql 把所有表建在此 schema 下，连接时通过 asyncpg
     # server_settings 设置 search_path，否则 ORM/DAO 裸 SQL 找不到表。
-    # 可用环境变量 POSTGRES_SEARCH_PATH 覆盖。
-    search_path: str = "agent_platform"
+    # 可用环境变量 POSTGRES_SEARCH_PATH 覆盖（存量库可指回旧 schema）。
+    search_path: str = "unified_schemas"
     # SQL 调试日志（POSTGRES_SQL_DEBUG）：开启后把实际执行的 SQL（参数内联成可执行语句）
     # 打到 DEBUG 日志；仅排查用，默认关，避免生产泄露参数与性能开销。
     sql_debug: bool = False
@@ -65,10 +65,10 @@ class RedisSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="REDIS_")
 
-    host: str = "localhost"
-    port: int = 6379
-    password: str = ""
-    db: int = 1
+    host: str = "localhost"  # 主机
+    port: int = 6379  # 端口
+    password: str = ""  # 密码（空=无认证）
+    db: int = 1  # 逻辑库编号
 
     @property
     def url(self) -> str:
@@ -91,12 +91,12 @@ class BrokerSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="RABBITMQ_")
 
-    enabled: bool = False
-    host: str = "localhost"
-    port: int = 5672
-    user: str = "agent"
-    password: str = "agent"
-    vhost: str = "agent_platform"
+    enabled: bool = False  # 是否启用 broker（关闭则不注册 Manager）
+    host: str = "localhost"  # 主机
+    port: int = 5672  # 端口
+    user: str = "agent"  # 用户名
+    password: str = "agent"  # 密码
+    vhost: str = "agent_platform"  # 虚拟主机
 
     @property
     def url(self) -> str:
@@ -115,7 +115,6 @@ class SchedulerSettings(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON, env_prefix="SCHEDULER_")
 
     escalation_timeout_min: int = 30  # HITL 转人工超时阈值（分钟），可调
-    resume_timeout_min: int = 10  # resume 评审 processing 超时阈值（分钟，=600s），可调
     scan_interval: int = 60  # 默认扫描间隔（秒），各 job 可独立覆盖
     config_refresh_interval: int = 5  # 跨副本配置刷新信号轮询间隔（秒）
 
@@ -125,11 +124,11 @@ class MilvusSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="MILVUS_")
 
-    host: str = "localhost"
-    port: int = 19530
-    token: str = ""
-    db_name: str = "agent_platform"
-    collection: str = "agent_rag_docs"
+    host: str = "localhost"  # 主机
+    port: int = 19530  # 端口
+    token: str = ""  # 认证 token（空=无）
+    db_name: str = "agent_platform"  # 数据库名
+    collection: str = "agent_rag_docs"  # 文档向量集合名
     dense_dim: int = 1024  # bge-m3 dense 维度
     dense_weight: float = 0.8  # 混合检索 dense 权重（与 sparse_weight 和为 1）
     sparse_weight: float = 0.2  # 混合检索 sparse 权重
@@ -148,7 +147,8 @@ class QaSettings(BaseSettings):
     vague_top_k: int = 8  # VAGUE（HyDE）检索召回数
     broad_per_query_top_k: int = 5  # BROAD 多查询每个子查询召回数
     merge_top_k: int = 5  # BROAD 合并后取前 N
-    high_confidence_threshold: float = 0.75  # 高置信度判定阈值（精排分数）
+    # 高置信度判定阈值：取首条精排分数（bge-reranker 归一化分数常见 0.2~0.6）
+    high_confidence_threshold: float = 0.45
     web_search_max_results: int = 5  # Web 搜索结果上限
     summary_trigger_turns: int = 6  # 用户提问轮数达到即触发摘要压缩
 
@@ -164,10 +164,16 @@ class QaSettings(BaseSettings):
     child_chunk_overlap: int = 20  # 子片重叠
     parent_context_by_highlight: bool = True  # 生成节点用"父片内高亮子片"替代纯子片
     index_batch_size: int = 32  # 单批向量化/写入条数
+    # —— OCR（扫描件/图片型 PDF 无文本层时逐页降级，QA_OCR_* 可覆盖）——
+    ocr_enabled: bool = True  # 关闭则扫描页直接跳过（整篇无文本 → 解析失败）
+    ocr_dpi: int = 180  # 页面渲染 DPI（越高越准但越慢）
+    ocr_max_pages: int = 200  # 单文件 OCR 页数上限（防超大文件拖死解析）
     # —— 检索 / 精排 ——
-    recall_top_k: int = 10  # 混合召回候选数（精排前）
-    rerank_top_k: int = 3  # 精排后保留条数
+    recall_top_k: int = 20  # 混合召回候选数（精排前，候选不足会导致精排无料可选）
+    rerank_top_k: int = 5  # 精排后保留条数（与 precise_top_k 对齐）
     rerank_max_input_chars: int = 1200  # 单条候选送入精排的最大字符数
+    # —— 思考模式（前端开关开启后透传给 LLM 的 extra_body，JSON 字符串）——
+    thinking_extra_body: str = '{"thinking": {"type": "enabled"}}'
 
 
 class SecuritySettings(BaseSettings):
@@ -204,10 +210,10 @@ class MinioSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="MINIO_")
 
-    endpoint: str = "http://localhost:9000"  # 含 scheme，如 http://localhost:9000
-    bucket: str = "agent-platform"
-    access_key: str = "minioadmin"
-    secret_key: str = "minioadmin"
+    endpoint: str = "http://localhost:9000"  # 服务地址（含 scheme）
+    bucket: str = "agent-platform"  # 默认桶名
+    access_key: str = "minioadmin"  # 访问密钥
+    secret_key: str = "minioadmin"  # 私密密钥
 
     @property
     def secure(self) -> bool:
@@ -225,20 +231,20 @@ class ServiceSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, populate_by_name=True)
 
-    name: str = Field(default="agent-platform", validation_alias="SERVICE_NAME")
-    ip: str = Field(default="127.0.0.1", validation_alias="SERVICE_IP")
-    port: int = Field(default=8000, validation_alias="PORT")
-    version: str = Field(default="0.1.0", validation_alias="VERSION")
-    docs_enabled: bool = Field(default=False, validation_alias="DOCS_ENABLED")
+    name: str = Field(default="agent-platform", validation_alias="SERVICE_NAME")  # 服务名
+    ip: str = Field(default="127.0.0.1", validation_alias="SERVICE_IP")  # 绑定 IP
+    port: int = Field(default=8000, validation_alias="PORT")  # 端口
+    version: str = Field(default="0.1.0", validation_alias="VERSION")  # 版本
+    docs_enabled: bool = Field(default=False, validation_alias="DOCS_ENABLED")  # 是否开放 Swagger
 
 
 class NacosAuthMixin:
     """Nacos 鉴权字段（3.x 默认开启鉴权，需透传；二选一：user/password 或 access_key/secret_key）。"""
 
-    user: str = ""
-    password: str = ""
-    access_key: str = ""
-    secret_key: str = ""
+    user: str = ""  # Nacos 用户名
+    password: str = ""  # Nacos 密码
+    access_key: str = ""  # 访问密钥（与 user/password 二选一）
+    secret_key: str = ""  # 私密密钥
 
 
 class NacosSettings(BaseSettings, NacosAuthMixin):
@@ -249,10 +255,10 @@ class NacosSettings(BaseSettings, NacosAuthMixin):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="NACOS_")
 
-    enabled: bool = True
-    server_addr: str = "http://localhost:8848"
-    namespace: str = "public"
-    group: str = "DEFAULT_GROUP"
+    enabled: bool = True  # 是否启用服务发现
+    server_addr: str = "http://localhost:8848"  # Nacos 地址
+    namespace: str = "public"  # 命名空间
+    group: str = "DEFAULT_GROUP"  # 分组
     discover_strict: bool = True  # True=注册失败 fail-fast；False=仅告警继续
 
 
@@ -261,10 +267,10 @@ class NacosConfigSettings(BaseSettings, NacosAuthMixin):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="NACOS_CONFIG_")
 
-    enabled: bool = True
-    server_addr: str = "http://localhost:8848"
-    namespace: str = "3d523e88-a17f-4a90-88c5-d31793405818"
-    group: str = "SYSTEM"
+    enabled: bool = True  # 是否启用配置中心
+    server_addr: str = "http://localhost:8848"  # Nacos 地址
+    namespace: str = "3d523e88-a17f-4a90-88c5-d31793405818"  # 配置命名空间
+    group: str = "SYSTEM"  # 分组
 
 
 class NacosAISettings(BaseSettings, NacosAuthMixin):
@@ -275,10 +281,10 @@ class NacosAISettings(BaseSettings, NacosAuthMixin):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="NACOS_AI_")
 
-    enabled: bool = True
-    server_addr: str = "http://localhost:8848"
-    namespace: str = "3d523e88-a17f-4a90-88c5-d31793405818"
-    group: str = "DEFAULT_GROUP"
+    enabled: bool = True  # 是否启用 Nacos AI
+    server_addr: str = "http://localhost:8848"  # Nacos 地址
+    namespace: str = "3d523e88-a17f-4a90-88c5-d31793405818"  # AI 资产命名空间
+    group: str = "DEFAULT_GROUP"  # 分组
 
     # ---- 发布本平台 MCP Server 到 Nacos AI（release_mcp_server）----
     # 需 Nacos 服务端 >= 3.1.0。Agent Card / Prompt / Skill 暂未对接（等 SDK 更新；Prompt 走配置中心）。
@@ -314,10 +320,10 @@ class LoggingSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON, env_prefix="LOG_")
 
-    level: str = "INFO"
+    level: str = "INFO"  # 日志级别
     file: str = "logs/app.log"  # 相对路径以项目根目录为基准（见 common/logger.py）
-    size: int = 1024**3
-    days: int = 7
+    size: int = 1024**3  # 单文件切片大小（字节，默认 1GB）
+    days: int = 7  # 保留天数
 
 
 class ApiLogSettings(BaseSettings):
@@ -362,23 +368,23 @@ class AppSettings(BaseSettings):
 
     model_config = SettingsConfigDict(**_COMMON)
 
-    app_name: str = "agent-platform"
-    app_env: str = "dev"
+    app_name: str = "agent-platform"  # 应用名（APP_NAME）
+    app_env: str = "dev"  # 运行环境（APP_ENV）
 
-    model: ModelSettings = Field(default_factory=ModelSettings)
+    model: ModelSettings = Field(default_factory=ModelSettings)  # 本地模型根目录
 
-    service: ServiceSettings = Field(default_factory=ServiceSettings)
-    nacos: NacosSettings = Field(default_factory=NacosSettings)
-    nacos_config: NacosConfigSettings = Field(default_factory=NacosConfigSettings)
-    nacos_ai: NacosAISettings = Field(default_factory=NacosAISettings)
-    logging: LoggingSettings = Field(default_factory=LoggingSettings)
-    api_log: ApiLogSettings = Field(default_factory=ApiLogSettings)
-    postgres: PostgresSettings = Field(default_factory=PostgresSettings)
-    redis: RedisSettings = Field(default_factory=RedisSettings)
-    broker: BrokerSettings = Field(default_factory=BrokerSettings)
-    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
-    milvus: MilvusSettings = Field(default_factory=MilvusSettings)
-    minio: MinioSettings = Field(default_factory=MinioSettings)
-    qa: QaSettings = Field(default_factory=QaSettings)
-    security: SecuritySettings = Field(default_factory=SecuritySettings)
-    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    service: ServiceSettings = Field(default_factory=ServiceSettings)  # 服务身份
+    nacos: NacosSettings = Field(default_factory=NacosSettings)  # 服务发现
+    nacos_config: NacosConfigSettings = Field(default_factory=NacosConfigSettings)  # 配置中心
+    nacos_ai: NacosAISettings = Field(default_factory=NacosAISettings)  # Nacos AI
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)  # 日志
+    api_log: ApiLogSettings = Field(default_factory=ApiLogSettings)  # API 调用日志
+    postgres: PostgresSettings = Field(default_factory=PostgresSettings)  # PostgreSQL
+    redis: RedisSettings = Field(default_factory=RedisSettings)  # Redis
+    broker: BrokerSettings = Field(default_factory=BrokerSettings)  # RabbitMQ
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)  # 定时任务
+    milvus: MilvusSettings = Field(default_factory=MilvusSettings)  # Milvus
+    minio: MinioSettings = Field(default_factory=MinioSettings)  # MinIO
+    qa: QaSettings = Field(default_factory=QaSettings)  # 问答检索参数
+    security: SecuritySettings = Field(default_factory=SecuritySettings)  # 安全
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)  # 可观测

@@ -5,18 +5,16 @@ import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Agents from './pages/Agents';
-import Sessions from './pages/agent/qa/Sessions';
-import QaChat from './pages/agent/qa/QaChat';
 import QaResults from './pages/agent/qa/QaResults';
-import ResumeAnalysis from './pages/agent/resume/ResumeAnalysis';
-import ResumeReport from './pages/agent/resume/ResumeReport';
-import ExamStart from './pages/agent/exam/ExamStart';
-import ExamResults from './pages/agent/exam/ExamResults';
-import ExamReport from './pages/agent/exam/ExamReport';
-import InterviewStart from './pages/agent/interview/InterviewStart';
-import InterviewResults from './pages/agent/interview/InterviewResults';
-import InterviewReport from './pages/agent/interview/InterviewReport';
+import UnifiedChat from './pages/unified/UnifiedChat';
+import UnifiedSessionList from './pages/unified/UnifiedSessionList';
+import UnifiedSessionDetail from './pages/unified/UnifiedSessionDetail';
 import Tools from './pages/Tools';
+import DbConnections from './pages/tools/DbConnections';
+import DbReview from './pages/agent/DbReview';
+import GraphStates from './pages/GraphStates';
+import DbRelease from './pages/agent/DbRelease';
+import DbWorkflow from './pages/agent/DbWorkflow';
 import UserList from './pages/rbac/UserList';
 import TenantList from './pages/rbac/TenantList';
 import RoleList from './pages/rbac/RoleList';
@@ -31,9 +29,6 @@ import MessageQueueList from './pages/MessageQueueList';
 import DeadLetterList from './pages/DeadLetterList';
 import ModelList from './pages/ModelList';
 import FileList from './pages/FileList';
-import ResumeUpload from './pages/resume/ResumeUpload';
-import ResumeList from './pages/resume/ResumeList';
-import ResumeView from './pages/resume/ResumeView';
 import { hasScope, isLogin } from './services/auth';
 
 /** 登录守卫：未登录跳转登录页 */
@@ -68,29 +63,55 @@ export default function App() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="agents" element={<Navigate to="/agents/list" replace />} />
         <Route path="agents/list" element={<Agents />} />
-        <Route path="tools" element={<Tools />} />
+        <Route path="tools" element={<Navigate to="/tools/agent-tools" replace />} />
+        <Route path="tools/agent-tools" element={<Tools />} />
+        <Route path="tools/db-connections" element={<DbConnections />} />
+        <Route path="agent/db-review" element={<DbReview />} />
+        <Route path="agent/db-release" element={<DbRelease />} />
+        <Route path="agent/db-workflow" element={<DbWorkflow />} />
+        <Route path="consultation/graph-states" element={<GraphStates />} />
         <Route path="models" element={<ModelList />} />
-        {/* 智能体业务域：咨询 / 简历 / 考试 / 面试 */}
-        <Route path="agent" element={<Navigate to="/agent/qa" replace />} />
+        {/* 智能体业务域：统一咨询 / 问答 */}
+        <Route path="agent" element={<Navigate to="/consultation/chat" replace />} />
         <Route path="agent/qa" element={<Navigate to="/agent/qa/files" replace />} />
         <Route path="agent/qa/files" element={<FileList />} />
         <Route path="agent/qa/results" element={<QaResults />} />
-        <Route path="agent/qa/chat" element={<QaChat />} />
-        <Route path="agent/qa/sessions" element={<Sessions />} />
-        <Route path="agent/resume" element={<Navigate to="/agent/resume/analysis" replace />} />
-        <Route path="agent/resume/analysis" element={<ResumeAnalysis />} />
-        <Route path="agent/resume/analysis/:id" element={<ResumeReport />} />
-        <Route path="agent/exam" element={<Navigate to="/agent/exam/start" replace />} />
-        <Route path="agent/exam/start" element={<ExamStart />} />
-        <Route path="agent/exam/results" element={<ExamResults />} />
-        <Route path="agent/exam/results/:id" element={<ExamReport />} />
-        <Route path="agent/exam/analysis" element={<Navigate to="/agent/exam/results" replace />} />
-        <Route path="agent/interview" element={<Navigate to="/agent/interview/start" replace />} />
-        <Route path="agent/interview/start" element={<InterviewStart />} />
-        <Route path="agent/interview/results" element={<InterviewResults />} />
-        <Route path="agent/interview/results/:id" element={<InterviewReport />} />
+        {/* 统一咨询入口（Step 8）：聊天框 + 会话管理，scope 守卫 */}
+        <Route path="consultation" element={<Navigate to="/consultation/chat" replace />} />
+        <Route
+          path="consultation/chat"
+          element={
+            <RequireScope scope="unified:ask">
+              <UnifiedChat />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="consultation/sessions"
+          element={
+            <RequireScope scope="unified_session:page">
+              <UnifiedSessionList />
+            </RequireScope>
+          }
+        />
+        <Route
+          path="consultation/sessions/:threadId"
+          element={
+            <RequireScope scope="unified_session:view">
+              <UnifiedSessionDetail />
+            </RequireScope>
+          }
+        />
+        {/* 咨询结果（agent_unified_turn）：详情 + 质量测评 */}
+        <Route
+          path="consultation/results"
+          element={
+            <RequireScope scope="unified_turn:page">
+              <QaResults />
+            </RequireScope>
+          }
+        />
         {/* 旧入口重定向，避免历史链接失效 */}
-        <Route path="sessions" element={<Navigate to="/agent/qa/sessions" replace />} />
         <Route path="files" element={<Navigate to="/agent/qa/files" replace />} />
         <Route path="files/list" element={<Navigate to="/agent/qa/files" replace />} />
         <Route
@@ -137,31 +158,6 @@ export default function App() {
         <Route path="messages" element={<Navigate to="/messages/queue" replace />} />
         <Route path="messages/queue" element={<MessageQueueList />} />
         <Route path="messages/dead-letters" element={<DeadLetterList />} />
-        <Route path="resume" element={<Navigate to="/resume/upload" replace />} />
-        <Route
-          path="resume/upload"
-          element={
-            <RequireScope scope="resume:upload">
-              <ResumeUpload />
-            </RequireScope>
-          }
-        />
-        <Route
-          path="resume/page"
-          element={
-            <RequireScope scope="resume:page">
-              <ResumeList />
-            </RequireScope>
-          }
-        />
-        <Route
-          path="resume/view/:id"
-          element={
-            <RequireScope scope="resume:view">
-              <ResumeView />
-            </RequireScope>
-          }
-        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

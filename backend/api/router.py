@@ -4,27 +4,33 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from backend.api.v1.tenant.agent.exam import router as exam_router
+from backend.api.v1.tenant.agent.db_change import router as db_change_router
+from backend.api.v1.tenant.agent.entry_orchestrate import router as entry_orchestrate_router
+from backend.api.v1.tenant.agent.db_review_upload import router as db_review_upload_router
 from backend.api.v1.tenant.agent.files import router as files_router
-from backend.api.v1.tenant.agent.interview import router as interview_router
-from backend.api.v1.tenant.agent.qa import router as qa_router
 from backend.api.v1.tenant.agent.qa_results import router as qa_results_router
-from backend.api.v1.tenant.agent.qa_sessions import router as qa_sessions_router
-from backend.api.v1.tenant.agent.resume import router as resume_router
+from backend.api.v1.tenant.agent.unified_chat import router as unified_chat_router
+from backend.api.v1.tenant.agent.unified_sessions import (
+    router as unified_sessions_router,
+)
+from backend.api.v1.tenant.agent.unified_session_admin import (
+    router as unified_session_admin_router,
+)
 from backend.api.v1 import dashboard as dashboard_api
 from backend.api.v1 import health as health_api
 from backend.api.v1.admin import agents as admin_agents
 from backend.api.v1.admin import audit as admin_audit
 from backend.api.v1.admin import config_center as admin_config
 from backend.api.v1.admin import models as admin_models
-from backend.api.v1.admin import plugins as admin_plugins
+from backend.api.v1.admin import tools as admin_tools
 from backend.api.v1.admin import menu as admin_menu
 from backend.api.v1.admin import messages as admin_messages
 from backend.api.v1.admin import rbac as admin_rbac
 from backend.api.v1.admin import tenant as admin_tenant
 from backend.api.v1.auth import router as auth_router
-from backend.api.v1.tenant.agent import orchestrator
 from backend.api.v1.tenant import audit as tenant_audit
+from backend.api.v1.tenant import db_connections as tenant_db_connections
+from backend.api.v1.tenant import graph_states as tenant_graph_states
 from backend.api.v1.tenant import messages as tenant_messages
 from backend.api.v1.tenant import roles as tenant_roles
 from backend.api.v1.tenant import users as tenant_users
@@ -39,7 +45,7 @@ TENANT_PREFIX = f"{API_PREFIX}/tenant"
 # 基建域整组 require_super_admin；rbac/messages/config_center 鉴权混用，单独挂载、由端点各自声明（见各 router）。
 _ADMIN = (
     admin_agents.router,
-    admin_plugins.router,
+    admin_tools.router,
     admin_models.router,
     admin_tenant.router,
     admin_menu.router,
@@ -49,14 +55,16 @@ _ADMIN = (
 # 业务域：会话、编排执行，外加各业务 Agent 的直连入口，以及租户管理员自管的用户/角色/审计，
 # 统一收进 /api/v1/tenant/（按 token 鉴权，超管无租户一律 403）。
 _BUSINESS = (
-    orchestrator.router,
-    qa_router,
+    unified_chat_router,
+    unified_sessions_router,
+    unified_session_admin_router,
     qa_results_router,
-    qa_sessions_router,
+    db_change_router,
+    entry_orchestrate_router,
+    db_review_upload_router,
     files_router,
-    resume_router,
-    exam_router,
-    interview_router,
+    tenant_db_connections.router,
+    tenant_graph_states.router,
     tenant_users.router,
     tenant_roles.router,
     tenant_audit.router,

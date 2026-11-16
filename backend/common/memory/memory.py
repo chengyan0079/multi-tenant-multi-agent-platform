@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from backend.app_state import app_state, get_tenant_id, get_user_id
 from backend.common.logger import get_logger
+from backend.orchestration.unified_schemas import ShortTermTurn
 
 logger = get_logger("memory")
 
@@ -33,19 +34,22 @@ class MemoryStore:
         if app_state.redis is None:
             logger.warning("Redis 未就绪，短期记忆降级为无操作")
 
-    async def push_short(self, thread_id: str, message: Dict[str, Any]) -> None:
-        """追加一条短期记忆到滚动窗口（Redis t:{tenant}:u:{user}:session:{thread}）。"""
+    async def push_short(self, thread_id: str, message: ShortTermTurn) -> None:
+        """追加一条短期记忆到滚动窗口（Redis t:{tenant}:u:{user}:session:{thread}）。
+
+        入参为 Pydantic 具体对象（D17），Redis 内仍以 JSON 字符串存储，序列化只在本方法内完成。
+        """
         if app_state.redis is None:
             return
         key = _session_key(thread_id)
         if key is None:
             logger.warning("缺少租户或用户上下文，跳过短期记忆写入（避免跨用户共享）")
             return
-        await app_state.redis.rpush(key, _json(message))
+        await app_state.redis.rpush(key, message.model_dump_json())
         await app_state.redis.expire(key, SHORT_TTL_S)
 
-    async def get_short(self, thread_id: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """读取最近 limit 条短期记忆。"""
+    async def get_short(self, thread_id: str, limit: int = 20) -> list[ShortTermTurn]:
+        """读取最近 limit 条短期记忆，返回 Pydantic 具体对象（D17）。"""
         if app_state.redis is None:
             return []
         key = _session_key(thread_id)
@@ -53,7 +57,7 @@ class MemoryStore:
             logger.warning("缺少租户或用户上下文，跳过短期记忆读取（避免跨用户共享）")
             return []
         raw = await app_state.redis.lrange(key, -limit, -1)
-        return [_loads(x) for x in raw]
+        return [ShortTermTurn.model_validate_json(x) for x in raw]
 
     async def append_long(self, agent_id: str, block: str, content: str) -> None:
         """长期记忆：写入 PG（agent_long_term_memory，Letta 式分页块）。
@@ -76,20 +80,9 @@ class MemoryStore:
                 block=block,
                 content=content,
             )
-        except Exception as e:  # noqa: BLE001 - 表未创建/连接异常时降级
-            logger.exception(f"长记忆写入 PG 失败（表可能尚未创建）：{e}")
+        except Exception as e:  # noqa: BLE001 - SQL 写失败必须暴露，不降级
+            logger.exception(f"长记忆写入 PG 失败：{e}")
+            raise
 
     async def stop(self) -> None:
         return None
-
-
-def _json(obj: Any) -> str:
-    import json
-
-    return json.dumps(obj, ensure_ascii=False)
-
-
-def _loads(s: str) -> Dict[str, Any]:
-    import json
-
-    return json.loads(s)

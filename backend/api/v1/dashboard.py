@@ -62,6 +62,24 @@ def _fill_trend(rows: list[dict[str, Any]], *, days: int, today: date) -> list[d
     return out
 
 
+def _fill_usage(rows: list[dict[str, Any]], *, days: int, today: date) -> list[dict[str, Any]]:
+    """按天补齐 token 与平均耗时，缺数据的天填 0。"""
+    found = {r["date"]: r for r in rows}
+    start = today - timedelta(days=days - 1)
+    out: list[dict[str, Any]] = []
+    for i in range(days):
+        key = (start + timedelta(days=i)).strftime("%m-%d")
+        row = found.get(key)
+        out.append(
+            {
+                "date": key,
+                "tokens": int(row["tokens"]) if row else 0,
+                "avg_ms": int(row["avg_ms"]) if row else 0,
+            }
+        )
+    return out
+
+
 @router.get("", summary="监控看板（超管全局 / 租户管理员本租户）")
 async def dashboard(
     days: int = Query(7, ge=1, le=90, description="统计区间（天）"),
@@ -120,7 +138,7 @@ async def dashboard(
     api_requests_prev = int(raw.get("api_requests_prev") or 0)
     api_errors_prev = int(raw.get("api_errors_prev") or 0)
 
-    # 优先用 agent_run 的业务成功率；尚未接入运行台账时用 API HTTP 成功率兜底，
+    # agent_run 运行台账已下线，看板成功率统一由 API HTTP 成功率兜底，
     # 没有任何请求时显示 0 而不是误导性的 100%。
     if runs:
         success_rate = round((runs - error_runs) / runs * 100, 1)
@@ -178,7 +196,7 @@ async def dashboard(
         },
     ]
 
-    # agent_run 尚未写入时，用 API 日志兜底调用占比；审计为空时用 API 调用兜底最近活动
+    # agent_run 已下线，调用占比直接由 API 日志归类；审计为空时用 API 调用兜底最近活动
     distribution = await DashboardDao.agent_distribution(tenant_id=scope_tenant, since=since)
     if not distribution:
         distribution = await DashboardDao.agent_distribution_from_api(
@@ -222,6 +240,11 @@ async def dashboard(
         ),
         "agent_distribution": distribution,
         "latency_by_hour": await DashboardDao.latency_by_hour(tenant_id=scope_tenant, since=since),
+        "usage_trend": _fill_usage(
+            await DashboardDao.usage_trend(tenant_id=scope_tenant, since=since),
+            days=days,
+            today=today,
+        ),
         "recent_activities": recent_activities,
     }
 

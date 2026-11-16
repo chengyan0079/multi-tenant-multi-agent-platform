@@ -24,6 +24,21 @@ def _operator(current: CurrentUser) -> dict[str, int]:
     return {"tenant_id": current.home_tenant_id, "user_id": current.user_id}
 
 
+async def _assignable_roles_for_operator(current: CurrentUser) -> set[str]:
+    """按操作者身份返回可授予的角色集合。
+
+    平台超管仅可任命租户管理员；租户管理员仅可分配普通角色（排除 admin/tenant_admin）。
+    """
+    if current.is_super_admin:
+        return {RoleName.TENANT_ADMIN.value}
+    rows = await RbacDao.list_roles_with_permissions()
+    return {
+        r["name"]
+        for r in rows
+        if r["name"] not in (RoleName.ADMIN.value, RoleName.TENANT_ADMIN.value)
+    }
+
+
 @router.get("/users", summary="全量用户（只读，分页）")
 async def list_users(
     tenant_id: Optional[int] = Query(None),
@@ -253,13 +268,23 @@ async def change_user_role(
     # admin 角色仍不可通过此接口授予（见下方校验）。
     if body.role == RoleName.ADMIN.value:
         raise BizException(ErrCode.PARAM_ERROR, "admin 角色不可通过此接口授予，仅种子预置")
-    # 校验目标用户归属目标租户，防止越租户改角色
+    # 按操作者身份约束可授予角色：超管仅 tenant_admin，租管仅普通角色
+    allowed = await _assignable_roles_for_operator(current)
+    if body.role not in allowed:
+        if current.is_super_admin:
+            raise BizException(
+                ErrCode.PARAM_ERROR, "平台超管只能将用户任命为租户管理员（tenant_admin）"
+            )
+        raise BizException(
+            ErrCode.PARAM_ERROR, "本租户仅可分配普通角色（非 admin/tenant_admin）"
+        )
     target = await UserDao.get(user_id)
     if target is None:
         raise BizException(ErrCode.NOT_FOUND, f"用户不存在: {user_id}")
     if target.get("is_super_admin"):
         raise BizException(ErrCode.FORBIDDEN, "超管账号不可修改角色")
-    if target.get("tenant_id") != body.tenant_id:
+    # 非超管只能改本租户用户；超管可跨租户任命管理员
+    if not current.is_super_admin and target.get("tenant_id") != body.tenant_id:
         raise BizException(ErrCode.FORBIDDEN, "只能修改本租户用户角色")
     role_id = await RbacDao.get_role_id(body.role)
     if role_id is None:

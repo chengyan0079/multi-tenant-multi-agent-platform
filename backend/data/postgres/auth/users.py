@@ -35,6 +35,18 @@ class User(TimestampMixin, Base):
         nullable=True,
         comment="归属租户ID（登录默认选中；超管为 NULL；真实授权以 agent_user_tenant 为准）",
     )
+    is_super_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        comment="平台超管标记；超管不挂租户，身份判定只认该列",
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+        comment="账号是否启用；停用后不可登录",
+    )
 
 
 class Tenant(TimestampMixin, Base):

@@ -10,6 +10,7 @@ _STOP_TTL_S = 60
 
 
 def _key(tenant_id: int, user_id: int, session_id: str) -> str:
+    """停止标记的 Redis key（按租户 / 用户 / 会话隔离）。"""
     return f"qa:chatstop:{tenant_id}:{user_id}:{session_id}"
 
 

@@ -18,6 +18,20 @@ class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: Dict[str, AgentPlugin] = {}
         self._tools: Dict[str, BaseTool] = {}
+        # 租户 → 已注册（启用）的工具名集合；按 agent_tool 租户 enabled 注册
+        self._tenant_tools: Dict[int, set] = {}
+
+    def set_tenant_tools(self, mapping: Dict[int, set]) -> None:
+        self._tenant_tools = mapping
+
+    def tenant_tool_names(self, tenant_id: int) -> list:
+        return sorted(self._tenant_tools.get(tenant_id, set()))
+
+    def is_tool_enabled_for_tenant(self, tenant_id: int, name: str) -> bool:
+        if not self._tenant_tools:
+            # 未按租户加载（离线/测试）：不限制
+            return True
+        return name in self._tenant_tools.get(tenant_id, set())
 
     async def start(self) -> None:
         for plugin in self._plugins.values():
