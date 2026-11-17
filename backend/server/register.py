@@ -6,6 +6,7 @@ from backend.server.app_server import AppServer
 from backend.server.managers.checkpointer_manager import CheckpointerManager
 from backend.server.managers.fastapi_manager import FastAPIManager
 from backend.server.managers.logging_manager import LoggingManager
+from backend.server.managers.mcp_server_manager import MCPServerManager
 from backend.server.managers.memory_manager import MemoryManager
 from backend.server.managers.milvus_manager import MilvusManager
 from backend.server.managers.model_manager import ModelManager
@@ -57,6 +58,8 @@ def build_server() -> AppServer:
 
     # 阶段 5：HTTP 装配
     server.register(FastAPIManager(), 50)
+    # 阶段 5.5：MCP Server 挂载（依赖 FastAPI app 已创建）
+    server.register(MCPServerManager(), 55)
 
     # 阶段 6：配置中心热加载（提示词预热写 Redis）
     server.register(NacosConfigManager(), 60)

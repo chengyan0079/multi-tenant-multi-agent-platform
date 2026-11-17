@@ -128,6 +128,7 @@ class UnifiedRouter:
                     reason=intent.reason,
                     execution_mode=exec_mode,
                     init_values=intent.init_values,
+                    plan=intent.plan if exec_mode == "pipeline" else None,
                 )
             agent_type = self._registry.label_to_agent(intent.label)
             if agent_type is None:

@@ -1,7 +1,7 @@
 """统一编排层引擎：薄图 UnifiedGraph + UnifiedState（会话级上下文与请求编排）。"""
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 import asyncio
 import uuid
@@ -27,7 +27,6 @@ from backend.orchestration.unified_schemas import (
     EntryPayload,
     GuidanceEvent,
     MetaEvent,
-    PipelinePlan,
     RoutingDecision,
     UnifiedEvent,
 )
@@ -79,8 +78,6 @@ class UnifiedGraph:
         adapter: Any = None,
         authz: Optional[Callable[[str, int, int], bool]] = None,
         classify_fn: Optional[Callable[..., Any]] = None,
-        plan_fn: Optional[Callable[[str, list], PipelinePlan]] = None,
-        pipeline_runner: Any = None,
     ) -> None:
         self._registry = registry
         self._conv = conversation_service
@@ -90,8 +87,6 @@ class UnifiedGraph:
         self._adapter = adapter or DefaultAgentAdapter(orchestrator=orchestrator)
         self._authz = authz
         self._classify_fn = classify_fn
-        self._plan_fn = plan_fn
-        self._pipeline_runner = pipeline_runner
 
     async def run(
         self,
@@ -132,11 +127,12 @@ class UnifiedGraph:
         # ③ 预分配本轮唯一 turn_id
         turn_id = uuid.uuid4().hex
 
-        # ④ 双通道路由
+        # ④ 双通道路由（读一次历史，供路由消解指代）
+        _, route_history_text = await self._history_for_route(U, tenant_id, user_id)
         routing = await self._router.route(
             message=message,
             explicit_agent_type=agent_type,
-            history="",
+            history=route_history_text,
             classify_fn=self._classify_fn,
             tenant_id=tenant_id,
         )
@@ -186,23 +182,25 @@ class UnifiedGraph:
             status = "failed"
             error_code = "INIT_REQUIRED"
         elif routing.execution_mode == "pipeline":
-            plan = PipelinePlan()
-            if self._plan_fn is not None:
-                plan = self._plan_fn(message, self._registry.specs())
-                if asyncio.iscoroutine(plan):
-                    plan = await plan
-            outcome = await self._run_pipeline(
-                plan, cfg_U, U, tenant_id, user_id, trace_id, turn_id
-            )
-            assistant_content = outcome.content
-            events.extend(outcome.events)
-            # 逐步失败（如鉴权不通过）向上传播为整体失败
-            err_evt = next(
-                (e for e in outcome.events if e.event_type == "error"), None
-            )
-            if err_evt is not None:
+            plan = routing.plan or {}
+            if not plan.get("steps"):
                 status = "failed"
-                error_code = err_evt.payload.code
+                error_code = "INVALID_PLAN"
+                events.append(
+                    UnifiedEvent(event_type="error", payload=_Err("INVALID_PLAN", "未取得有效的多步骤计划"))
+                )
+            else:
+                outcome = await self._run_plan(
+                    plan, message, entry, U, session_id, tenant_id, user_id, trace_id, turn_id
+                )
+                assistant_content = outcome.content
+                events.extend(outcome.events)
+                err_evt = next(
+                    (e for e in outcome.events if e.event_type == "error"), None
+                )
+                if err_evt is not None:
+                    status = "failed"
+                    error_code = err_evt.payload.code
         else:
             # 运行期鉴权（⑤）
             if not self._authorize(routing.agent_type, tenant_id, user_id):
@@ -234,7 +232,9 @@ class UnifiedGraph:
                     unified_state: UnifiedState = {
                         "thread_id": U,
                         "messages": [],
-                        "existing_summary": None,
+                        "existing_summary": await self._load_summary(
+                            thread_id=U, tenant_id=tenant_id, user_id=user_id
+                        ),
                     }
                     outcome = await dispatch(
                         agent_type=routing.agent_type,
@@ -307,6 +307,78 @@ class UnifiedGraph:
         except Exception:  # noqa: BLE001 - 历史不可用不影响本轮
             return []
 
+    async def _history_for_route(self, thread_id: str, tenant_id: int, user_id: int) -> tuple[list, str]:
+        """读一次历史，同时产出路由文本与消息列表（路由与 dispatch 各用一份，不重复查库）。
+
+        路由只取近期 6 轮（约 12 条消息）消解指代，避免长历史稀释当前输入。
+        """
+        msgs = await self._load_history(thread_id, tenant_id, user_id)
+        recent = msgs[-12:]
+        text = "\n".join(
+            f"{'用户' if isinstance(m, HumanMessage) else '助手'}: {m.content}"
+            for m in recent
+        )
+        return msgs, text
+
+    @staticmethod
+    async def _load_summary(
+        *, thread_id: str, tenant_id: int, user_id: int
+    ) -> str | None:
+        """读会话最近一条摘要；失败降级为 None（历史不可用不影响本轮）。"""
+        try:
+            from backend.data.dao.agent.unified_turn_dao import UnifiedTurnDao
+
+            return await UnifiedTurnDao.get_latest_summary(
+                thread_id=thread_id, tenant_id=tenant_id, user_id=user_id
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    async def _maybe_compress_summary(
+        *,
+        turn_index: int,
+        history: list,
+        existing_summary: str | None,
+        config_key: str = "qa.summary_trigger_turns",
+    ) -> str | None:
+        """每 N 轮用 LLM 把历史压成摘要；失败降级为 None（不覆盖旧摘要）。
+
+        返回 None 表示本轮不写摘要；返回空串之外的内容表示要写回 turn 表。
+        """
+        try:
+            from backend.config import config
+            from backend.common.llm.llm_factory import get_llm
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_core.output_parsers import StrOutputParser
+            from backend.prompts.unified import SUMMARY_COMPRESS_PROMPT
+
+            trigger = 6
+            try:
+                trigger = int(config.qa.summary_trigger_turns) or 6
+            except Exception:  # noqa: BLE001
+                pass
+            if turn_index <= 0 or turn_index % trigger != 0:
+                return None
+            if not history:
+                return existing_summary
+            history_text = "\n".join(
+                f"{'用户' if isinstance(m, HumanMessage) else '助手'}: {m.content}"
+                for m in history[-20:]
+                if not isinstance(m, SystemMessage)
+            )
+            if not history_text.strip():
+                return existing_summary
+            prompt = ChatPromptTemplate.from_messages([("human", SUMMARY_COMPRESS_PROMPT)])
+            chain = prompt | await get_llm("qa") | StrOutputParser()
+            return str(
+                await chain.ainvoke(
+                    {"existing_summary": existing_summary or "（无）", "messages": history_text}
+                )
+            ).strip() or None
+        except Exception:  # noqa: BLE001 - 压缩失败保留旧摘要，不阻断主链路
+            return None
+
     async def run_stream(
         self,
         *,
@@ -352,10 +424,12 @@ class UnifiedGraph:
         )
         turn_id = uuid.uuid4().hex
 
+        # 读一次历史：路由用它消解指代，dispatch 用同一份消息列表（不重复查库）
+        history, route_history_text = await self._history_for_route(U, tenant_id, user_id)
         routing = await self._router.route(
             message=message,
             explicit_agent_type=agent_type,
-            history="",
+            history=route_history_text,
             classify_fn=self._classify_fn,
             tenant_id=tenant_id,
         )
@@ -373,6 +447,8 @@ class UnifiedGraph:
         assistant_content: Optional[str] = None
         outcome: Optional[AgentOutcome] = None
         meta_sink: dict = {}
+        existing_summary: Optional[str] = None
+        history: list = []
 
         if routing.error_code:
             # 路由阶段已判定不可用（如显式请求了已停用的 Agent）
@@ -398,21 +474,25 @@ class UnifiedGraph:
             status = "failed"
             error_code = "INIT_REQUIRED"
         elif routing.execution_mode == "pipeline":
-            plan = PipelinePlan()
-            if self._plan_fn is not None:
-                plan = self._plan_fn(message, self._registry.specs())
-                if asyncio.iscoroutine(plan):
-                    plan = await plan
-            outcome = await self._run_pipeline(
-                plan, cfg_U, U, tenant_id, user_id, trace_id, turn_id
-            )
-            assistant_content = outcome.content
-            for e in outcome.events:
-                yield e
-            err_evt = next((e for e in outcome.events if e.event_type == "error"), None)
-            if err_evt is not None:
+            plan = routing.plan or {}
+            if not plan.get("steps"):
                 status = "failed"
-                error_code = err_evt.payload.code
+                error_code = "INVALID_PLAN"
+                yield UnifiedEvent(
+                    event_type="error",
+                    payload=_Err("INVALID_PLAN", "未取得有效的多步骤计划"),
+                )
+            else:
+                outcome = await self._run_plan(
+                    plan, message, entry, U, session_id, tenant_id, user_id, trace_id, turn_id
+                )
+                assistant_content = outcome.content
+                for e in outcome.events:
+                    yield e
+                err_evt = next((e for e in outcome.events if e.event_type == "error"), None)
+                if err_evt is not None:
+                    status = "failed"
+                    error_code = err_evt.payload.code
         else:
             if not self._authorize(routing.agent_type, tenant_id, user_id):
                 status = "failed"
@@ -440,15 +520,18 @@ class UnifiedGraph:
                         spec, thread_id=U, turn_id=turn_id, artifact_id=""
                     )
                     cfg = fork_config(cfg_U, thread_id=partition)
-                    # 多轮历史 + 当前输入（压缩由 to_subgraph_input 完成）
-                    history = await self._load_history(U, tenant_id, user_id)
+                    # 复用路由前读的历史 + 当前输入（压缩由 to_subgraph_input 完成）
+                    history = list(history)
                     if message:
                         history.append(HumanMessage(content=message))
+                    existing_summary = await self._load_summary(
+                        thread_id=U, tenant_id=tenant_id, user_id=user_id
+                    )
                     initial = self._adapter.to_subgraph_input(
                         unified_state={
                             "thread_id": U,
                             "messages": history,
-                            "existing_summary": None,
+                            "existing_summary": existing_summary,
                             "query": message,
                             # 关键上下文（缺了会让检索/记忆落到租户 0 或直接 KeyError）
                             "tenant_id": tenant_id,
@@ -551,6 +634,11 @@ class UnifiedGraph:
         )
         yield UnifiedEvent(event_type="done", payload=_Done())
 
+        new_summary = await self._maybe_compress_summary(
+            turn_index=turn_index,
+            history=[*history, AIMessage(content=assistant_content or "")],
+            existing_summary=existing_summary,
+        )
         await self._conv.append_turn(
             turn_id=turn_id,
             thread_id=U,
@@ -574,32 +662,126 @@ class UnifiedGraph:
             },
             latency_ms=int((time.perf_counter() - t0) * 1000),
             token_usage=usage,
+            session_summary=new_summary,
             routing=routing.model_dump(),
             status=status,
             error_code=error_code,
         )
 
     # ------------------------------------------------------------------ #
-    async def _run_pipeline(
-        self, plan, cfg_U, U, tenant_id, user_id, trace_id, turn_id
+    async def _run_plan(
+        self,
+        plan: dict,
+        message: str,
+        entry: Optional[EntryPayload],
+        U: str,
+        session_id: str,
+        tenant_id: int,
+        user_id: int,
+        trace_id: str,
+        turn_id: str,
     ) -> AgentOutcome:
-        from backend.orchestration.pipeline_runner import PipelineRunner
-
-        runner = self._pipeline_runner or PipelineRunner(
-            orchestrator=self._orch,
-            adapter=self._adapter,
-            registry=self._registry,
-            authz=self._authz,
+        """多 Agent DSL 串行：统一入口调 orchestrator.run_plan，转成 SSE 事件并写子步 turn。"""
+        from backend.orchestration.unified_schemas import (
+            PipelineResultEvent,
+            PipelineStepResultEvent,
         )
-        return await runner.run(
-            plan=plan,
-            cfg_U=cfg_U,
-            thread_id=U,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            trace_id=trace_id,
-            turn_id=turn_id,
-            conversation_service=self._conv,
+
+        inputs: dict[str, Any] = {
+            "query": message,
+            "messages": [HumanMessage(content=message)] if message else [],
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "thread_id": U,
+            "turn_id": turn_id,
+            "trace_id": trace_id,
+        }
+        if entry is not None:
+            inputs.update(
+                {
+                    k: v
+                    for k, v in {
+                        "sql_text": getattr(entry, "sql_text", None),
+                        "request_id": getattr(entry, "request_id", None),
+                        "connection_id": getattr(entry, "connection_id", None),
+                        "sandbox_connection_id": getattr(entry, "sandbox_connection_id", None),
+                    }.items()
+                    if v is not None
+                }
+            )
+
+        try:
+            result = await self._orch.run_plan(plan, U, inputs)
+        except Exception as exc:  # noqa: BLE001 - 编排失败转 error 帧
+            return AgentOutcome(
+                content="",
+                events=[
+                    UnifiedEvent(
+                        event_type="error",
+                        payload=_Err("PIPELINE_FAILED", str(exc)),
+                    )
+                ],
+                state_patch=None,
+                persistence=None,
+            )
+
+        events: list[UnifiedEvent] = []
+        for item in result.get("_step_results") or []:
+            events.append(
+                UnifiedEvent(
+                    event_type="pipeline_step_result",
+                    payload=PipelineStepResultEvent(
+                        step=str(item.get("step", "")),
+                        agent_type=str(item.get("agent_type", "")),
+                        content=str(item.get("content") or ""),
+                    ),
+                )
+            )
+            await self._conv.append_turn(
+                turn_id=f"{turn_id}:{item.get('step')}",
+                thread_id=U,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_type=str(item.get("agent_type") or ""),
+                spec_version="",
+                trace_id=trace_id,
+                turn_index=-(int(item.get("step") or 0)),  # 负数区分 pipeline 子步
+                event_type="pipeline_step",
+                user_content=None,
+                assistant_content=str(item.get("content") or ""),
+                payload={"step": item.get("step"), "status": item.get("status") or ""},
+                routing={"execution_mode": "pipeline"},
+                status="success",
+            )
+        interrupted = "__interrupt__" in result
+        content = str(result.get("content") or result.get("answer") or "")
+        if result.get("error_code"):
+            events.append(
+                UnifiedEvent(
+                    event_type="error",
+                    payload=_Err(
+                        str(result["error_code"]),
+                        str(result.get("error_msg") or "pipeline 步骤执行失败"),
+                    ),
+                )
+            )
+        if not interrupted and not result.get("error_code"):
+            events.append(
+                UnifiedEvent(
+                    event_type="pipeline_result",
+                    payload=PipelineResultEvent(content=content, trace_id=trace_id),
+                )
+            )
+        return AgentOutcome(
+            content=content,
+            events=events,
+            state_patch={
+                "_pipeline_plan": plan,
+                "_pipeline_current_step": int(result.get("_current_step") or 0),
+                "_pipeline_interrupted": interrupted,
+            },
+            persistence=None,
         )
 
     def _authorize(self, agent_type: str, tenant_id: int, user_id: int) -> bool:

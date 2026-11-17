@@ -291,10 +291,11 @@ ON CONFLICT (model_type, name) DO NOTHING;
 
 -- ------------------------------------------------------------
 -- 工具目录种子（web_search / code_exec）
--- config 存运行期凭据（api_key / endpoint / provider 等），由运营在 agent_tool 表维护；默认空 {} 走降级。
+-- web_search 走 MCP 协议（plugin='mcp'），config 存 url/max_results；api_key 由环境变量 TAVILY_API_KEY 提供，不入库。
+-- code_exec 仍走本地插件注册表，config 存 provider 等运行期配置；默认空 {} 走降级。
 -- ------------------------------------------------------------
 INSERT INTO agent_tool (id, tenant_id, name, plugin, description, "schema", config, enabled) VALUES
-('11111111-1111-1111-1111-111111111111', 0, 'web_search', 'web_search', '联网检索兜底', '{}', '{}', true),
+('11111111-1111-1111-1111-111111111111', 0, 'web_search', 'mcp', '联网检索兜底（MCP）', '{}', '{"max_results": 5}', true),
 ('22222222-2222-2222-2222-222222222222', 0, 'code_exec', 'code_exec', '代码沙箱执行', '{}', '{}', true)
 ON CONFLICT (tenant_id, name) DO NOTHING;
 

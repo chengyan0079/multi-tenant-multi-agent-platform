@@ -909,6 +909,7 @@ CREATE TABLE IF NOT EXISTS agent_unified_turn (
 	error_msg TEXT, 
 	latency_ms INTEGER, 
 	token_usage JSON, 
+	session_summary TEXT, 
 	create_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	updated_at TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT date_trunc('second', now()) NOT NULL, 
 	create_user_id BIGINT NOT NULL, 

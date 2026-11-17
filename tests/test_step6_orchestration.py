@@ -19,8 +19,6 @@ from backend.orchestration.unified_schemas import (
     EntryPayload,
     InitValuesPayload,
     IntentResponse,
-    PipelinePlan,
-    PipelineStep,
 )
 from backend.prompts import unified as prompts
 
@@ -32,10 +30,31 @@ class FakeOrchestrator:
     def __init__(self, registry: AgentRegistry) -> None:
         self._registry = registry
         self.calls: list[tuple] = []
+        self.authz = None
 
     async def run_agent(self, agent_type: str, thread_id: str, inputs: dict) -> dict:
         self.calls.append((agent_type, thread_id, inputs))
         return {"content": f"answer from {agent_type}"}
+
+    async def run_plan(self, plan: dict, thread_id: str, inputs: dict) -> dict:
+        carry = dict(inputs)
+        results = []
+        for i, step in enumerate(plan.get("steps") or [], 1):
+            agent = step.get("agent", "")
+            if self.authz and not self.authz(agent, 1, 2):
+                return {
+                    **carry,
+                    "status": "failed",
+                    "error_code": "FORBIDDEN",
+                    "_step_results": results,
+                    "_current_step": i - 1,
+                }
+            res = await self.run_agent(agent, f"{thread_id}:{agent}", dict(carry))
+            carry = {**carry, **res}
+            results.append(
+                {"step": i, "agent_type": agent, "content": res.get("content", ""), "status": ""}
+            )
+        return {**carry, "_step_results": results, "_current_step": len(results)}
 
 
 class FakeThreadDao:
@@ -117,9 +136,9 @@ def _build_registry() -> AgentRegistry:
     return reg
 
 
-async def _classify(label: str, confidence: float = 0.9):
+async def _classify(label: str, confidence: float = 0.9, plan: dict | None = None):
     async def _fn(system_prompt: str, user_input: str) -> IntentResponse:
-        return IntentResponse(label=label, confidence=confidence)
+        return IntentResponse(label=label, confidence=confidence, plan=plan)
 
     return _fn
 
@@ -186,13 +205,13 @@ async def test_unknown_label_falls_back_to_default():
 # --------------------------------------------------------------------------- #
 async def _make_graph(reg, *, authz=None, plan_fn=None, classify_fn=None):
     orch = FakeOrchestrator(reg)
+    orch.authz = authz
     graph = UnifiedGraph(
         registry=reg,
         conversation_service=FakeConv(),
         orchestrator=orch,
         thread_dao=FakeThreadDao(),
         authz=authz,
-        plan_fn=plan_fn,
         classify_fn=classify_fn,
     )
     return graph, orch
@@ -265,20 +284,16 @@ async def test_forbidden_agent_blocks():
 # --------------------------------------------------------------------------- #
 # Pipeline
 # --------------------------------------------------------------------------- #
-async def _plan_fn(message: str, specs) -> PipelinePlan:
-    return PipelinePlan(
-        title="组合",
-        steps=[
-            PipelineStep(step="1", agent_type="qa", label="问答"),
-            PipelineStep(step="2", agent_type="interview", label="面试"),
-        ],
-    )
+_PLAN = {
+    "type": "sequence",
+    "steps": [{"type": "agent", "agent": "qa"}, {"type": "agent", "agent": "interview"}],
+}
 
 
 async def test_pipeline_runs_all_steps():
     reg = _build_registry()
     graph, orch = await _make_graph(
-        reg, plan_fn=_plan_fn, classify_fn=await _classify("multi_agent")
+        reg, classify_fn=await _classify("multi_agent", plan=_PLAN)
     )
     res = await graph.run(session_id="S6", tenant_id=1, user_id=2, message="帮我做组合任务")
     assert res.routing.execution_mode == "pipeline"
@@ -294,8 +309,7 @@ async def test_pipeline_step_forbidden_blocks_entire():
     reg = _build_registry()
     graph, orch = await _make_graph(
         reg,
-        plan_fn=_plan_fn,
-        classify_fn=await _classify("multi_agent"),
+        classify_fn=await _classify("multi_agent", plan=_PLAN),
         authz=lambda at, tid, uid: at != "interview",
     )
     res = await graph.run(session_id="S7", tenant_id=1, user_id=2, message="组合")

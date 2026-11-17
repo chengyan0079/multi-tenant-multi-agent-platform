@@ -18,6 +18,8 @@ from backend.app_state import app_state
 from backend.common.llm.llm_factory import get_llm
 from backend.common.logger import get_logger
 from backend.config import config
+from backend.mcp.client import call_web_search
+from backend.mcp.guard import check as check_tool
 from backend.rag.ranked import Chunk
 from backend.rag.retrieval import retrieve as retrieve_chunks
 
@@ -552,15 +554,16 @@ async def web_search_node(state: QAState) -> dict:
     返回空列表，不阻断后续生成节点。
     """
     try:
-        registry = app_state.plugin_registry
-        if registry is None:
+        tenant_id = int(state.get("tenant_id", 0))
+        available, reason = await check_tool("web_search", tenant_id)
+        if not available:
+            logger.warning(f"web_search.skipped | tenant={tenant_id} | {reason}")
             return {"web_search_results": []}
-        results = await registry.call(
-            "web_search",
+        results = await call_web_search(
             query=state.get("original_query", ""),
             max_results=config.qa.web_search_max_results,
+            tenant_id=tenant_id,
         )
-        results = results or []
         web_search_results = [WebSearchResult(**r) if isinstance(r, dict) else r for r in results]
         logger.debug(f"web_search.done | count={len(web_search_results)}")
         return {"web_search_results": web_search_results}

@@ -1,6 +1,0 @@
-name: web_search
-version: 0.1.0
-capabilities:
-  - web_search
-dependencies: []
-description: 联网兜底检索（低置信问答走此插件）

@@ -369,7 +369,14 @@ async def persist_node(state: DbReviewState) -> dict:
         return {"answer": answer}
     dimensions = state.get("dimensions") or {}
     risk = state.get("risk_level") or "medium"
-    status = "approved" if risk == "low" else "pending_approval"
+    approval = state.get("approval")
+    approved = approval.get("approved") if isinstance(approval, dict) else None
+    if approved is True or (approved is None and risk == "low"):
+        status = "approved"
+    elif approved is False:
+        status = "rejected"
+    else:
+        status = "pending_approval"
     answer = (
         f"风险等级：{risk}；建议：{'；'.join((state.get('suggestions') or [])[:5]) or '无'}"
     )

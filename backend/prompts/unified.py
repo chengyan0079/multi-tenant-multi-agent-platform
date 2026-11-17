@@ -20,10 +20,11 @@ ROUTE_SYSTEM_PROMPT: str = """你是「数据库变更治理中台」的统一�
 # 输出要求
 只输出一个 JSON 对象（合法 JSON，键名带引号）：
 {{
-  "label": "命中 Agent 的 agent_type；无法判断时填 general",
+  "label": "命中 Agent 的 agent_type；无法判断时填 general；多步骤意图填 multi_agent",
   "reason": "一句话分类依据",
   "confidence": 0.0~1.0 的浮点数,
-  "init_values": {{ "request_id": "", "connection_id": "", "sandbox_connection_id": "", "target_database": "" }}
+  "init_values": {{ "request_id": "", "connection_id": "", "sandbox_connection_id": "", "target_database": "" }},
+  "plan": null 或按下述模板填写的 DSL 计划
 }}
 
 # 判定规则
@@ -32,6 +33,20 @@ ROUTE_SYSTEM_PROMPT: str = """你是「数据库变更治理中台」的统一�
 3. 只问规范、原理、最佳实践、事故复盘 → qa
 4. 问候、闲聊、与数据库无关 → general（init_values 留空）
 5. 信息不足时优先 general，**不要臆造** request_id 等参数
+6. 同时要求多个步骤（如「先评审再沙箱验证」「问完规范再评审」）→ label=multi_agent，并按【多步骤模板】填 plan
+
+# 多轮指代（结合【最近对话】）
+- 当前输入含「它 / 这个 / 上面 / 继续 / 再 / 接着 / 同样 / 那」等指代词时，参考最近对话判断承接的意图
+- 历史只用于消解指代，**不得因历史话题改变本轮明确表达的业务意图**（上一轮评审、本轮问规范仍归 qa）
+- 最近对话为空时按单轮处理
+
+# 多步骤模板（label=multi_agent 时必填 plan；只能二选一，不得自由编排 Agent 名）
+- 问答 + 评审：
+  {{ "type": "sequence", "steps": [{{"type": "agent", "agent": "qa"}}, {{"type": "agent", "agent": "db_review"}}] }}
+- 评审 + 发布：
+  {{ "type": "sequence", "steps": [{{"type": "agent", "agent": "db_review"}}, {{"type": "agent", "agent": "db_release"}}] }}
+禁止把人工审批/放行节点（approve/gate）写进 plan——它们由各 Agent 内部的 HITL 处理。
+单步骤意图 plan 填 null。
 
 # 可选 Agent 列表
 {agent_list}

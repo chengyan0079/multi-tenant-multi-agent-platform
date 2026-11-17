@@ -323,6 +323,8 @@ class ResumeChatRequest(BaseModel):
     agent_type: str
     approved: bool = True
     comment: str | None = None
+    turn_id: str | None = None  # pipeline 断点续跑用；不传则从 thread_id 末段解析
+    session_id: str | None = None
 
 
 @router.post("/chat/resume")
@@ -422,6 +424,76 @@ async def unified_chat_resume(
                 default=str,
             )
         }
+        # pipeline 断点续跑：本轮是串行中的一步时，按 turn 表里的 plan 决定终止或继续
+        try:
+            turn_id = req.turn_id or req.thread_id.rsplit(":", 1)[-1]
+            from backend.data.dao.agent.unified_turn_dao import UnifiedTurnDao
+
+            row = await UnifiedTurnDao.get_by_id(
+                turn_id, tenant_id=int(current.tenant_id), user_id=int(current.user_id)
+            )
+            routing = (row or {}).get("routing") or {}
+            if isinstance(routing, str):
+                import json as _json
+
+                routing = _json.loads(routing)
+            plan = routing.get("plan") if isinstance(routing, dict) else None
+            if plan and plan.get("steps"):
+                if not req.approved:
+                    yield {
+                        "data": json.dumps(
+                            {
+                                "type": "pipeline_result",
+                                "content": "",
+                                "status": "rejected",
+                                "stopped_at": req.agent_type,
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                else:
+                    current_step = int((state.get("_pipeline_current_step") or 0))
+                    remaining = list(plan["steps"])[current_step:]
+                    if remaining:
+                        rest_plan = {"type": "sequence", "steps": remaining}
+                        carry = {
+                            "query": str(state.get("answer") or state.get("query") or ""),
+                            "messages": [],
+                            "tenant_id": int(current.tenant_id),
+                            "user_id": int(current.user_id),
+                            "session_id": req.session_id or "",
+                            "thread_id": (row or {}).get("thread_id") or req.thread_id,
+                            "turn_id": turn_id,
+                            "trace_id": (row or {}).get("trace_id") or "",
+                        }
+                        rest = await orch.run_plan(rest_plan, carry["thread_id"], carry)
+                        for item in rest.get("_step_results") or []:
+                            yield {
+                                "data": json.dumps(
+                                    {
+                                        "type": "pipeline_step_result",
+                                        "step": item.get("step"),
+                                        "agent_type": item.get("agent_type"),
+                                        "content": item.get("content"),
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        yield {
+                            "data": json.dumps(
+                                {
+                                    "type": "pipeline_result",
+                                    "content": str(rest.get("content") or ""),
+                                    "status": "done",
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+        except Exception as exc:  # noqa: BLE001 - 续跑失败只告警，主 result_card 已发出
+            from backend.common.logger import get_logger as _get_logger
+
+            _get_logger("unified_chat").warning(f"pipeline resume 续跑失败: {exc}")
+
         yield {"data": json.dumps({"type": "done"}, ensure_ascii=False)}
 
     return EventSourceResponse(event_gen(), ping=15)
