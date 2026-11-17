@@ -14,7 +14,6 @@ from backend.orchestration.unified_schemas import (
     ArtifactRef,
     AttachmentRef,
     EntryPayload,
-    PipelinePlan,
     PersistencePayload,
     ProgressEvent,
     ReasoningEvent,
@@ -411,20 +410,6 @@ async def dispatch(
     if spec.execution_mode == "clarify":
         return AgentOutcome(content="", events=[], state_patch=None, persistence=None)
 
-    if spec.execution_mode == "pipeline":
-        from backend.orchestration.pipeline_runner import PipelineRunner
-
-        runner = PipelineRunner(orchestrator=orchestrator, adapter=adapter, registry=registry)
-        # pipeline 计划由编排层（plan_fn）生成后传入；此处仅兜底为空计划
-        plan = PipelinePlan()
-        return await runner.run(
-            plan=plan,
-            cfg_U=parent_cfg,
-            thread_id=unified_state.get("thread_id", ""),
-            tenant_id=tenant_id,
-            user_id=user_id,
-            trace_id=trace_id,
-            turn_id=turn_id,
-        )
-
+    # pipeline 由统一编排层直接调 orchestrator.run_plan（见 unified_graph._run_plan），
+    # 不经过单 Agent 的 dispatch；此处不再提供旧 PipelineRunner 分支。
     raise ValueError(f"未知 execution_mode: {spec.execution_mode}")

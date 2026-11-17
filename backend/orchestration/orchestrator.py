@@ -112,8 +112,26 @@ class Orchestrator:
         - sequence: {"steps": [step, ...]}
         - branch:   {"on": "risk_level", "cases": {"low": step, ...}, "default": step}
         - loop:     {"step": step, "max": 3}（state.done=true 提前退出）
+
+        carry 里维护 ``_step_results``（每步摘要）与 ``_current_step``（停在第几步）；
+        遇到 HITL ``__interrupt__`` 或人工拒绝（rejected/blocked）立即停住，不跑后续步骤，
+        由统一入口发 interrupt 事件 / 终止整链。
         """
-        return await self._exec_step(plan, thread_id, dict(inputs))
+        carry = dict(inputs)
+        carry.setdefault("_step_results", [])
+        carry.setdefault("_current_step", 0)
+        return await self._exec_step(plan, thread_id, carry)
+
+    @staticmethod
+    def _is_halted(carry: Dict[str, Any]) -> bool:
+        """本步执行后是否应停止后续步骤：HITL 挂起或人工否决。"""
+        if "__interrupt__" in carry:
+            return True
+        return str(carry.get("status") or carry.get("release_status") or "") in {
+            "rejected",
+            "blocked",
+            "pending_approval",
+        }
 
     async def _exec_step(
         self, step: Dict[str, Any], thread_id: str, carry: Dict[str, Any]
@@ -121,15 +139,39 @@ class Orchestrator:
         t = (step or {}).get("type")
         if t == "agent":
             agent = step["agent"]
-            res = await self.run_agent(agent, f"{thread_id}:{agent}", dict(carry))
-            return {**carry, **res}
+            try:
+                meta = self._registry.get(agent)
+            except KeyError:
+                meta = None
+            if meta is None or not meta.enabled:
+                raise TenantError(f"pipeline 步骤指向未注册或未启用的 Agent: {agent}")
+            turn_id = str(carry.get("turn_id") or "")
+            partition = f"{thread_id}:{agent}:{turn_id}" if turn_id else f"{thread_id}:{agent}"
+            res = await self.run_agent(agent, partition, dict(carry))
+            merged = {**carry, **res}
+            idx = len(merged.get("_step_results") or []) + 1
+            merged["_current_step"] = idx
+            merged.setdefault("_step_results", []).append(
+                {
+                    "step": idx,
+                    "agent_type": agent,
+                    "content": str(res.get("content") or res.get("answer") or ""),
+                    "status": res.get("status") or res.get("release_status") or "",
+                    "interrupted": "__interrupt__" in res,
+                }
+            )
+            return merged
         if t == "parallel":
+            if self._is_halted(carry):
+                return carry
             res = await self.run_parallel(step["agents"], thread_id, dict(carry))
             return {**carry, **res}
         if t == "sequence":
             cur = dict(carry)
             for sub in step.get("steps") or []:
                 cur = await self._exec_step(sub, thread_id, cur)
+                if self._is_halted(cur):
+                    break
             return cur
         if t == "branch":
             key = str(carry.get(step.get("on")))
@@ -140,7 +182,7 @@ class Orchestrator:
         if t == "loop":
             cur = dict(carry)
             for _ in range(int(step.get("max") or 3)):
-                if cur.get("done"):
+                if cur.get("done") or self._is_halted(cur):
                     break
                 cur = await self._exec_step(step["step"], thread_id, cur)
             return cur

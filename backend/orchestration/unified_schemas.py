@@ -33,6 +33,7 @@ class RoutingDecision(BaseModel):
     spec_version: str = ""
     init_values: InitValuesPayload = Field(default_factory=InitValuesPayload)
     error_code: str | None = None  # 路由阶段即判定不可用（如显式请求已停用 Agent）
+    plan: dict[str, Any] | None = None  # multi_agent 时由意图识别给出的 DSL 计划
 
 
 class IntentResponse(BaseModel):
@@ -43,6 +44,7 @@ class IntentResponse(BaseModel):
     reason: str = ""
     confidence: float = 0.0
     init_values: InitValuesPayload = Field(default_factory=InitValuesPayload)
+    plan: dict[str, Any] | None = None  # multi_agent 时的 DSL 计划（模板二选一）
 
 
 # --------------------------------------------------------------------------- #
@@ -139,11 +141,6 @@ class ArtifactRef(BaseModel):
     artifact_type: str
     artifact_id: str
     route_key: str = ""
-
-
-class PipelineCarry(BaseModel):
-    content: str = ""
-    artifacts: list[ArtifactRef] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #

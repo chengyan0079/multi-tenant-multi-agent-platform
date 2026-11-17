@@ -81,6 +81,18 @@ _LIST_TENANTS = text(
 )
 
 
+_IS_ENABLED = text(
+    "SELECT 1 FROM agent_tool "
+    "WHERE tenant_id = :tenant_id AND name = :name AND enabled = true"
+)
+
+
+async def is_tool_enabled(tenant_id: int, name: str) -> bool:
+    """判断某租户是否启用了指定工具（DB 为准，供 MCP 等非注册表工具使用）。"""
+    async with session_scope() as session:
+        return await fetch_one(session, _IS_ENABLED, {"tenant_id": tenant_id, "name": name}) is not None
+
+
 async def get_tool_config(name: str, tenant_id: int = 0) -> dict[str, Any]:
     """读工具运行配置（JSON）；仅取该租户下 enabled=true 的工具。"""
     async with session_scope() as s:
@@ -96,13 +108,14 @@ async def get_tool_config(name: str, tenant_id: int = 0) -> dict[str, Any]:
 class ToolDao:
     @staticmethod
     async def list_all_enabled() -> list[dict[str, Any]]:
-        """所有租户启用的工具（tenant_id, name），供按租户注册。"""
+        """所有租户启用的本地工具（tenant_id, name, plugin）；排除走 MCP 协议的工具。"""
         async with session_scope() as session:
             return await fetch_all(
                 session,
                 text(
-                    "SELECT tenant_id, name FROM agent_tool "
-                    "WHERE enabled = true ORDER BY tenant_id, name"
+                    "SELECT tenant_id, name, plugin FROM agent_tool "
+                    "WHERE enabled = true AND (plugin IS NULL OR plugin <> 'mcp') "
+                    "ORDER BY tenant_id, name"
                 ),
             )
 

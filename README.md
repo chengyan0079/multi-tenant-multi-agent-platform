@@ -30,9 +30,62 @@
 | **变更评审** `db_review` | 对**待执行** SQL 做静态风险评审（只分析不执行） | `load` → `fetch`（pre_lock / pre_rows / pre_slow / pre_meta 并行）→ `aggregate` → `grade` → `suggest` → `approve`(interrupt) → `persist` |
 | **变更发布** `db_release` | 对**已审批**变更单做影子库验证并输出 SQL | `load_request` → `guard` → `shadow_execute` → `verify` → `gate`(interrupt) → `persist` |
 
-调用关系（父编排图 + 各 Agent 图、thread_id 分区与 HITL 恢复路径）：
+**调用关系**
 
-![统一咨询编排](docs/graphs/unified_agent_orchestration.png)
+总览图（编排层调用链与 HITL 恢复）——stream/rule/error 已实现，task/clarify/pipeline 待实现（虚线节点）：
+
+```mermaid
+flowchart TD
+    A["① build_session<br/>thread_id=U, turn_index=max+1"] --> B{"② 双通道路由"}
+
+    B -->|"卡片: agent_type + execution_mode"| RC["显式路由<br/>跳过分类"]
+    B -->|"自由输入"| RULE{"规则分类<br/>5 类命中?"}
+    RULE -->|"命中"| RR["模板直答<br/>rule 已实现"]
+    RULE -->|"未命中"| LLM["LLM 分类 IntentResponse<br/>label / init_values / plan<br/>读近 6 轮历史消解指代"]
+    LLM --> RD["RoutingDecision<br/>execution_mode / agent_type / plan"]
+    RC --> RD
+    LLM -.->|"分类异常"| DEF["默认 qa"]
+
+    RD --> MODE{"execution_mode"}
+    MODE -->|"stream 已实现"| AUTZ{"③ authz + entry_fields"}
+    MODE -->|"rule 已实现"| RR
+    MODE -->|"error 已实现"| ERR["error 帧 + 写 turn"]
+    MODE -.->|"task 待实现"| TASK["artifact + task_started<br/>不发 token"]
+    MODE -.->|"clarify 待实现"| CLAR["INIT_REQUIRED guidance<br/>不跑图"]
+    MODE -.->|"pipeline 待实现"| PLAN["生成 DSL 计划<br/>两个固定模板二选一"]
+
+    AUTZ -->|"鉴权失败"| ERR
+    AUTZ -->|"缺入口字段"| GUID["guidance 追问<br/>不调子图"]
+    AUTZ -->|"通过"| SUB["④ to_subgraph_input<br/>近 20 轮截为最近 6 条 + token 预算<br/>注入 session_summary<br/>显式透传 tenant/user/session/thread/turn/trace<br/>checkpoint 分区 U:agent:turn"]
+
+    SUB --> AD["AgentAdapter → 子图"]
+    PLAN -.->|"AgentRegistry 校验 待实现"| RP["orchestrator.run_plan 待实现<br/>carry 累积 request_id/sql_text<br/>HITL 或拒绝即停步"]
+    RP -.-> AD
+
+    AD --> NODES["qa / 变更评审 / 变更发布<br/>独立 State，互不共享"]
+    NODES --> EM["⑤ 事件映射<br/>generate_nodes token 透传<br/>progress / interrupt 帧<br/>输出单向回流编排层"]
+    EM --> OUT["归一 AgentOutcome + 结果卡片"]
+    OUT --> TURN["⑥ append_turn<br/>写 user/assistant/routing/trace/耗时/token/摘要<br/>每 6 轮压摘要写 session_summary"]
+    TURN --> TB[("agent_unified_turn<br/>业务历史唯一真相源")]
+
+    NODES -->|"approve / gate"| HITL["interrupt 挂起<br/>发 interrupt 帧"]
+    HITL --> RESUME["POST /resume<br/>approved + comment"]
+    RESUME --> V{"approved"}
+    V -->|"false"| REJ["status=rejected<br/>不输出 SQL<br/>终止整链"]
+    V -->|"true · 单 Agent"| NODES
+    V -.->|"true · pipeline 待实现"| RESTORE["读 plan + _current_step<br/>自动跑剩余步骤"]
+
+    NODES -.->|"工具调用: 节点写死, 非 function calling"| TOOLS["注册层只决定租户能否用<br/>agent_tool.enabled 热刷新"]
+    TOOLS -.-> WS["qa 低置信 → web_search<br/>MCP → 本进程 FastMCP → Tavily"]
+    TOOLS -.-> LOCAL["评审: 元数据/慢 SQL<br/>发布: 沙箱<br/>本地插件注册表"]
+
+    classDef pending stroke-dasharray: 5 5,stroke:#d33,color:#d33
+    class TASK,CLAR,PLAN,RP,RESTORE pending
+```
+
+业务 Agent 内部执行图（`qa` 四类查询分流、`db_review` 四路并行与风险分级、`db_release` 影子库验证与人工放行）：
+
+![三个业务 Agent 内部执行图](docs/graphs/business_agents_flow.svg)
 
 ---
 
@@ -48,8 +101,8 @@ FastAPI  /api/v1
   └─ tenant/**    租户侧：统一咨询 / 会话 / 问答结果 / 变更单 / 文件 / 看板
   │  middleware: trace_id → api_log → 限流
   ▼
-统一编排层  UnifiedGraph（薄图）
-  ├─ 路由：显式（点卡片/模板）· 隐式（规则分类，未命中问 LLM）
+统一编排层  UnifiedGraph（命令式编排类，非 StateGraph）
+  ├─ 路由：显式（点卡片/模板）· 隐式（规则5类 → LLM → 兜底 qa）
   ├─ 按 execution_mode 分派到各 Agent 图（独立 thread_id 分区）
   └─ 事件映射：token / progress / reasoning / meta / interrupt / result_card
   ▼

@@ -36,8 +36,15 @@ class AgentSpec:
     entry_fields: tuple[EntryField, ...] = ()  # 入口表单字段
     accept_files: tuple[str, ...] = ()  # 支持的文件后缀
 
-    # 执行
-    execution_mode: Literal["stream", "task", "clarify", "pipeline"] = "stream"  # 执行模式
+    # 执行模式（Agent 能力声明；当前三个业务 Agent 全为 stream）
+    # - stream   ：调子图并透传 generate_nodes 的 token 帧（qa / db_review / db_release 在用）
+    # - task     ：预留，不调子图，建 artifact + task_started 帧、不发 token；
+    #             面向文件处理/批处理这类"提交后异步出产物"的 Agent
+    # - clarify  ：预留，不跑图，由编排层发 INIT_REQUIRED guidance 反问用户；
+    #             生产实际由路由 label=clarify 触发，而非 Agent 声明此模式
+    # - pipeline ：预留，多 Agent 串行，由编排层直接调 run_plan，不走单 Agent dispatch；
+    #             生产实际由路由 label=multi_agent + plan 触发
+    execution_mode: Literal["stream", "task", "clarify", "pipeline"] = "stream"
     adapter: str | None = None  # 事件适配器
     checkpoint_scope: bool = True  # checkpoint 分区：True=按业务实例，False=按轮次
     progress_labels: tuple[ProgressLabel, ...] = ()  # 进度标签

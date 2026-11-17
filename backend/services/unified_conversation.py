@@ -65,6 +65,7 @@ class UnifiedConversationService:
         error_msg: Optional[str] = None,
         latency_ms: Optional[int] = None,
         token_usage: Optional[dict[str, Any]] = None,
+        session_summary: Optional[str] = None,
     ) -> str:
         """写回一轮：turn 行 + 短期记忆 push。返回 turn_id。
 
@@ -92,6 +93,7 @@ class UnifiedConversationService:
             error_msg=error_msg,
             latency_ms=latency_ms,
             token_usage=token_usage,
+            session_summary=session_summary,
         )
         turn_id = await self.turn_dao.append(row=row)
 
