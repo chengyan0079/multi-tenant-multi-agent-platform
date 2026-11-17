@@ -83,9 +83,78 @@ flowchart TD
     class TASK,CLAR,PLAN,RP,RESTORE pending
 ```
 
-业务 Agent 内部执行图（`qa` 四类查询分流、`db_review` 四路并行与风险分级、`db_release` 影子库验证与人工放行）：
+业务 Agent 内部执行图。三张图都是 DAG、无循环，各自独立 State，统一入口显式透传 messages/summary/tenant_id/user_id/thread_id/turn_id/trace_id，输出单向回流编排层。
 
-![三个业务 Agent 内部执行图](docs/graphs/business_agents_flow.svg)
+```mermaid
+flowchart TD
+    subgraph QA["qa · 知识问答"]
+        direction TB
+        QC["classify_query<br/>查询分类"] --> QTYPE{"类型"}
+        QTYPE -->|"PRECISE 精确"| QR["retrieve<br/>混合召回 + bge-reranker 精排"]
+        QTYPE -->|"VAGUE 模糊"| QH["hyde_generate<br/>假设文档"]
+        QTYPE -->|"BROAD 宽泛"| QM["multi_query_rewrite<br/>改写 3-5 子查询"]
+        QTYPE -->|"GENERAL 闲聊"| QG["generate_general"]
+        QTYPE -->|"GENERAL + 联网"| QW["web_search"]
+        QH --> QR
+        QM --> QR
+        QR --> QCONF{"首条精排分 ≥ 0.45?"}
+        QCONF -->|"是"| QG1["generate_rag<br/>父子片 + 来源"]
+        QCONF -->|"否 + 联网"| QW
+        QCONF -->|"否 + 未联网"| QD["generate_direct<br/>入待审队列"]
+        QW --> QWOUT{"结果"}
+        QWOUT --> QG
+        QWOUT --> QD
+        QG1 --> QSM["save_memory"]
+        QG --> QSM
+        QD --> QP["enqueue_pending"] --> QSM
+        QSM --> QEND(["END"])
+    end
+
+    subgraph REV["db_review · 变更评审"]
+        direction TB
+        RL["load<br/>校验 SQL/db_type<br/>建变更单 + 检查工具"] --> RT{"ok?"}
+        RT -->|"工具禁用"| RP0["persist: blocked"]
+        RT -->|"ok"| RF["fetch 取元数据"]
+        RF --> R1["pre_lock<br/>锁与影响估算"]
+        RF --> R2["pre_rows<br/>est_rows 最大值"]
+        RF --> R3["pre_slow<br/>慢 SQL 分析"]
+        RF --> R4["pre_meta<br/>AST 规则"]
+        R1 --> RA["aggregate 汇聚"]
+        R2 --> RA
+        R3 --> RA
+        R4 --> RA
+        RA --> RG["grade<br/>LLM 风险分级<br/>DROP/无WHERE → critical"]
+        RG --> RS["suggest 优化建议"]
+        RS --> RR{"risk_level"}
+        RR -->|"low 免审批"| RP2["persist: approved"]
+        RR -->|"其他"| RA2["approve<br/>interrupt: change_approve"]
+        RA2 -->|"拒绝"| RP3["persist: rejected"]
+        RA2 -->|"通过"| RSM["save_memory"] --> RP2
+        RP0 --> REND(["END"])
+        RP3 --> REND
+        RP2 --> REND
+    end
+
+    subgraph REL["db_release · 变更发布"]
+        direction TB
+        LL["load_request<br/>按 request_id 取 approved 单<br/>不接受入参 SQL"] --> LT{"ok?"}
+        LT -->|"无 approved 单"| LP0["persist: blocked"]
+        LT -->|"ok"| LG["guard<br/>env=sandbox + 单语句"]
+        LG --> LGT{"ok?"}
+        LGT -->|"失败"| LP0
+        LGT -->|"通过"| LS["shadow_execute<br/>影子库执行 + 强制回滚"]
+        LS --> LV["verify<br/>exec_ok + 耗时/影响行数"]
+        LV --> LGA["gate<br/>interrupt: gate_approve"]
+        LGA --> LA{"approved"}
+        LA -->|"false"| LP1["persist: rejected"]
+        LA -->|"true"| LSM["save_memory"] --> LP2["persist: ready_for_prod<br/>输出原样 SQL"]
+        LP0 --> LEND(["END"])
+        LP1 --> LEND
+        LP2 --> LEND
+    end
+```
+
+> 平台不执行生产变更；生产执行由 DBA 人工完成。
 
 ---
 
