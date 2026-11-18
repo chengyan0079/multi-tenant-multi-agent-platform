@@ -7,7 +7,7 @@ import httpx
 
 from backend.common.logger import logger
 from backend.data.dao.agent.tool_dao import get_tool_config
-from backend.mcp.protocol import BaseTool
+from backend.tools.protocol import BaseTool
 
 # provider 名称 → 执行函数（参数为 code/language/cfg）。
 # 内置 http provider（对接任意兼容的沙箱 HTTP 服务）；后续接 E2B/Docker 时在此注册。

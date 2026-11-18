@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from backend.orchestration.agent_registry import AgentRegistry
 from backend.orchestration.orchestrator import Orchestrator
-from backend.mcp.registry import PluginRegistry
+from backend.tools.registry import PluginRegistry
 
 
 def test_registries_instantiate() -> None:

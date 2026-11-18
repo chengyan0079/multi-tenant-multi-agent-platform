@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.mcp.protocol import BaseTool
+from backend.tools.protocol import BaseTool
 
 _SLOW_SCAN = {"ALL", "index", "full"}
 _BAD_FEATURES = ("Using temporary", "Using filesort", "Using join buffer")

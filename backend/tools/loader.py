@@ -9,8 +9,8 @@ from typing import List, Optional
 import yaml
 
 from backend.common.logger import get_logger
-from backend.mcp.protocol import AgentPlugin, PluginManifest
-from backend.mcp.registry import PluginRegistry
+from backend.tools.protocol import AgentPlugin, PluginManifest
+from backend.tools.registry import PluginRegistry
 
 logger = get_logger("plugin_loader")
 
@@ -42,7 +42,7 @@ def discover_builtin() -> List[AgentPlugin]:
         if not os.path.isdir(pkg_dir) or not os.path.exists(os.path.join(pkg_dir, "__init__.py")):
             continue
         try:
-            module = importlib.import_module(f"backend.mcp.builtin.{name}")
+            module = importlib.import_module(f"backend.tools.builtin.{name}")
             plugin = getattr(module, "plugin", None)
             if plugin is None:
                 logger.warning(f"插件未导出 plugin 实例: {name}")

@@ -36,6 +36,7 @@ demo/
 models/
 docs/
 !docs/graphs/
+data/
 .*
 
 # ---- 前端 dashboard ----

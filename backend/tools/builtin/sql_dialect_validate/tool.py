@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.mcp.protocol import BaseTool
+from backend.tools.protocol import BaseTool
 from backend.services.sql_script_service import ensure_sql_filename, validate_script
 
 

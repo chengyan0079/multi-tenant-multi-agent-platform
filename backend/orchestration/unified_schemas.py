@@ -180,6 +180,8 @@ class RoutingDecisionEvent(_EventBase):
     reason: str = ""
     execution_mode: str = ""
     spec_version: str = ""
+    label: str = ""  # 意图标签（评测口径：单 agent / clarify / multi_agent）
+    agents: list[str] = Field(default_factory=list)  # 路由到的 agent 集合，多个用列表（评测口径）
 
 
 class TokenEvent(_EventBase):

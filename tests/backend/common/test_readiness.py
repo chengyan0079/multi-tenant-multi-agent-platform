@@ -10,7 +10,7 @@ import pytest
 
 from backend.app_state import app_state
 from backend.data.dao.agent.model_dao import ModelDao
-from backend.mcp.registry import PluginRegistry
+from backend.tools.registry import PluginRegistry
 from backend.server.managers.model_manager import ModelManager
 from backend.server.managers.plugin_manager import PluginManager, reload_plugins
 

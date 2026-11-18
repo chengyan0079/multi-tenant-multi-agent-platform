@@ -14,8 +14,8 @@ from typing import Any
 from backend.app_state import app_state
 from backend.common.logger import get_logger
 from backend.data.dao.agent.tool_dao import ToolDao
-from backend.mcp.loader import discover_builtin
-from backend.mcp.registry import PluginRegistry
+from backend.tools.loader import discover_builtin
+from backend.tools.registry import PluginRegistry
 from backend.server.base_manager import BaseManager, HealthInfo
 
 logger = get_logger("plugin_manager")

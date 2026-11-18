@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from backend.common.logger import get_logger
 from backend.observability.exception import CapabilityError
-from backend.mcp.protocol import AgentPlugin, BaseTool
+from backend.tools.protocol import AgentPlugin, BaseTool
 
 logger = get_logger("plugin_registry")
 

@@ -836,9 +836,41 @@ class UnifiedGraph:
 
 
 # 小工具：构造事件载荷（避免与 unified_schemas 判别联合 import 过宽）
+def _plan_agents(plan: dict | None) -> list[str]:
+    """从 DSL 计划里提取 agent 集合（评测口径：去重保序）。"""
+    if not plan:
+        return []
+    out: list[str] = []
+
+    def walk(node: dict | None) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "agent" and node.get("agent"):
+            agent = str(node["agent"])
+            if agent not in out:
+                out.append(agent)
+        for key in ("steps", "agents"):
+            for sub in node.get(key) or []:
+                if isinstance(sub, dict):
+                    walk(sub)
+                elif isinstance(sub, str) and sub not in out:
+                    out.append(sub)
+        if isinstance(node.get("step"), dict):
+            walk(node["step"])
+        for sub in (node.get("cases") or {}).values():
+            if isinstance(sub, dict):
+                walk(sub)
+
+    walk(plan)
+    return out
+
+
 def _routing_event(r: RoutingDecision, display: str = ""):
     from backend.orchestration.unified_schemas import RoutingDecisionEvent
 
+    agents = _plan_agents(r.plan)
+    if not agents and r.agent_type and r.agent_type not in ("clarify", "multi_agent"):
+        agents = [r.agent_type]
     return RoutingDecisionEvent(
         agent_type=r.agent_type,
         agent_display=display,
@@ -847,6 +879,8 @@ def _routing_event(r: RoutingDecision, display: str = ""):
         reason=r.reason,
         execution_mode=r.execution_mode,
         spec_version=r.spec_version,
+        label=r.label,
+        agents=agents,
     )
 
 

@@ -18,8 +18,8 @@ from backend.app_state import app_state
 from backend.common.llm.llm_factory import get_llm
 from backend.common.logger import get_logger
 from backend.config import config
-from backend.mcp.client import call_web_search
-from backend.mcp.guard import check as check_tool
+from backend.tools.client import call_web_search
+from backend.tools.guard import check as check_tool
 from backend.rag.ranked import Chunk
 from backend.rag.retrieval import retrieve as retrieve_chunks
 

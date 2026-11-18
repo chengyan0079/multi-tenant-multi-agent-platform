@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from backend.common.memory.memory import MemoryStore
     from backend.data.milvus.store import DocumentMilvusStore
     from backend.orchestration.orchestrator import Orchestrator
-    from backend.mcp.registry import PluginRegistry
+    from backend.tools.registry import PluginRegistry
     from backend.server.managers.nacos_discover_manager import NacosDiscoverManager
     from backend.server.managers.nacos_ai_manager import NacosAIManager
 

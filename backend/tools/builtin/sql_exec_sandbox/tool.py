@@ -17,7 +17,7 @@ from sqlalchemy import text
 from backend.common.logger import get_logger
 from backend.data.dao.agent.db_connection_dao import DbConnectionDao
 from backend.data.sql import fetch_one, session_scope
-from backend.mcp.protocol import BaseTool
+from backend.tools.protocol import BaseTool
 from backend.services.sql_script_service import analyze_sql
 
 logger = get_logger("sql_exec_sandbox")

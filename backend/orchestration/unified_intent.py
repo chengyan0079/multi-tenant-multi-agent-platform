@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Optional
 
+from backend.common.logger import get_logger
 from backend.orchestration.agent_registry import AgentRegistry
 from backend.orchestration.unified_schemas import (
     InitValuesPayload,
@@ -10,6 +11,8 @@ from backend.orchestration.unified_schemas import (
     RoutingDecision,
 )
 from backend.prompts import unified as prompts
+
+logger = get_logger("unified_intent")
 
 # 内建保留 label（§3.3）：不对应具体 Agent，由编排层直接映射执行模式
 _RESERVED_LABELS = frozenset({"clarify", "multi_agent"})
@@ -42,7 +45,7 @@ async def _default_classify(system_prompt: str, user_input: str) -> IntentRespon
     """真实 LLM 结构化分类（默认实现，Step 7 接线；单测用 classify_fn 注入替换）。"""
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from backend.llm.llm_factory import get_structured_llm
+    from backend.common.llm.llm_factory import get_structured_llm
 
     llm = await get_structured_llm("unified", IntentResponse)
     resp = await llm.ainvoke(
@@ -145,7 +148,11 @@ class UnifiedRouter:
                 spec_version=spec.version or "" if spec else "",
                 init_values=intent.init_values,
             )
-        except Exception:
+        except Exception as exc:  # 分类失败不阻断对话，但必须留痕
+            # 静默吞异常会让「LLM 通道失效」在线上完全不可观测，故告警 + 带栈
+            logger.warning(
+                f"意图分类异常，回退默认 Agent: {type(exc).__name__}: {exc}", exc_info=True
+            )
             default = default_agent_type or self._default_agent_type()
             return self._fallback(default, "分类异常，使用默认 Agent")
 

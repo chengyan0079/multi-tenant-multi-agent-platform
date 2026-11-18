@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from backend.app_state import app_state
-from backend.mcp.web_search_server import web_search_mcp
+from backend.tools.web_search_server import web_search_mcp
 from backend.server.base_manager import BaseManager, HealthInfo
 
 

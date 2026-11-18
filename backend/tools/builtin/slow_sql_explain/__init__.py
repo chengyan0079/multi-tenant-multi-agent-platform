@@ -1,7 +1,7 @@
 """slow_sql_explain 插件入口：导出 plugin 实例供 loader 发现。"""
 
-from backend.mcp.builtin.slow_sql_explain.tool import SlowSqlExplainTool
-from backend.mcp.protocol import BasePlugin, PluginManifest
+from backend.tools.builtin.slow_sql_explain.tool import SlowSqlExplainTool
+from backend.tools.protocol import BasePlugin, PluginManifest
 
 manifest = PluginManifest(
     name="slow_sql_explain",

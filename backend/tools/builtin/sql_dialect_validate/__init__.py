@@ -1,7 +1,7 @@
 """sql_dialect_validate 插件入口：导出 plugin 实例供 loader 发现。"""
 
-from backend.mcp.builtin.sql_dialect_validate.tool import SqlDialectValidateTool
-from backend.mcp.protocol import BasePlugin, PluginManifest
+from backend.tools.builtin.sql_dialect_validate.tool import SqlDialectValidateTool
+from backend.tools.protocol import BasePlugin, PluginManifest
 
 manifest = PluginManifest(
     name="sql_dialect_validate",
